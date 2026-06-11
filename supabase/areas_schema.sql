@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS areas (
   descripcion  TEXT,
   color        VARCHAR(7) DEFAULT '#6366f1',
   dias_trabajo INT[] DEFAULT '{1,2,3,4,5}',  -- 1=Lun … 7=Dom
+  valor_hora_default      NUMERIC(10, 2),
+  cobertura_minima_diaria INT DEFAULT 1,
+  cobertura_maxima_diaria INT DEFAULT 10,
+  cobertura_por_turno     JSONB DEFAULT '{}'::jsonb,
+  modo_operacion          VARCHAR(10) DEFAULT 'OFICINA' CHECK (modo_operacion IN ('OFICINA', '24_7')),
   activo       BOOLEAN DEFAULT true,
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );

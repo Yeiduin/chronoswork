@@ -696,6 +696,10 @@ export default function SchedulingPage() {
           strategyOptions,
           diasToProcess: processedDays,
           areaId: area.id,  // nuevo: para cargar curva de demanda horaria si existe
+          modoOperacion: area.modo_operacion,
+          coberturaMinimaDiaria: area.cobertura_minima_diaria,
+          coberturaMaximaDiaria: area.cobertura_maxima_diaria,
+          coberturaPorTurno: area.cobertura_por_turno,
         });
         
         if (result.error) {

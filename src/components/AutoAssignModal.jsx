@@ -1,18 +1,18 @@
 import { useState } from 'react';
 import { MdClose } from 'react-icons/md';
 
-export function AutoAssignModal({ scope, areas = [], onClose, onConfirm }) {
-  // If scope is 'area' and we are in SchedulingPage, we should probably default to the currently selected area
-  // We'll let the parent pass the default scope or we manage it here.
+export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm }) {
+  // scope puede ser un area.id (string UUID) cuando viene desde AreasPage
   const [targetScope, setTargetScope] = useState(scope === 'area' ? 'all' : scope || 'all');
-  const [strategy, setStrategy] = useState('fijo');
   const [dateRangeOption, setDateRangeOption] = useState('this_week');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [reprogramar, setReprogramar] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const selectedArea = targetScope !== 'all' ? areas.find(a => a.id === targetScope) : null;
+  // Detectar si el área seleccionada es 24/7
+  const selectedArea = area || (targetScope !== 'all' ? areas.find(a => a.id === targetScope) : null);
+  const is24_7 = selectedArea?.modo_operacion === '24_7';
 
   const handleConfirm = async () => {
     if (dateRangeOption === 'custom' && (!customStart || !customEnd)) {
@@ -30,7 +30,7 @@ export function AutoAssignModal({ scope, areas = [], onClose, onConfirm }) {
     }
 
     setLoading(true);
-    await onConfirm(targetScope, { strategy, reprogramar, dateRangeOption, customStart, customEnd });
+    await onConfirm(targetScope, { reprogramar, dateRangeOption, customStart, customEnd });
     setLoading(false);
     onClose();
   };
@@ -82,24 +82,19 @@ export function AutoAssignModal({ scope, areas = [], onClose, onConfirm }) {
           </div>
         )}
 
-        <div className="cw-form-group">
-          <label className="cw-label">Estrategia de asignación</label>
-          <select className="cw-select" value={strategy} onChange={e => setStrategy(e.target.value)}>
-              <option value="fijo">Mismo turno toda la semana</option>
-              <option value="intercalado_dias">Intercalado Día a Día</option>
-              <option value="intercalado_mitad">Mitad de Semana (3 días / resto)</option>
-              <option value="rotacion_semanal">Rotación Semanal (Invierte turno previo)</option>
-            </select>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.5rem', background: 'var(--bg-glass)', padding: '0.75rem', borderRadius: 8 }}>
-              {strategy === 'fijo' && 'Se asignará un turno por defecto según la rotación básica. Todos recibirán turno si hay disponibilidad.'}
-              {strategy === 'intercalado_dias' && 'Alterna el turno cada día laborable (ej. Mañana, Tarde, Mañana).'}
-              {strategy === 'intercalado_mitad' && 'Asigna un turno la primera mitad de la semana y otro diferente la segunda mitad.'}
-              {strategy === 'rotacion_semanal' && 'Revisa el historial de la semana anterior para asignar el turno opuesto esta semana.'}
-              <div style={{ marginTop: '0.5rem', color: 'var(--cw-accent)' }}>
-                <em>Nota: Si esta área tiene Curvas de Demanda (WFM) configuradas, la estrategia seleccionada será ignorada y el algoritmo se adaptará a la demanda horaria.</em>
-              </div>
+        {/* Info modo operación */}
+        {is24_7 && (
+          <div style={{ marginBottom: '1.25rem', padding: '0.875rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#d97706', marginBottom: '0.4rem' }}>🔄 Área en Operación 24/7</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              El algoritmo cubrirá <strong>todos los días del rango</strong> incluyendo domingos y festivos.
+              Los recargos por HON, HOD y HCDN se calcularán automáticamente en la prenómina según el CST colombiano.
+              Cada empleado tendrá al menos <strong>1 día de descanso por semana</strong>, evitando los días de mayor demanda.
             </div>
           </div>
+        )}
+
+        {/* Estrategia — eliminada para evitar confusión ya que el algoritmo se basa en score */}
 
         <div className="cw-form-group" style={{ flexDirection: 'row', alignItems: 'flex-start', gap: '0.5rem', background: reprogramar ? 'rgba(239, 68, 68, 0.1)' : 'var(--bg-glass)', padding: '1rem', borderRadius: 8, border: reprogramar ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid var(--border-subtle)', transition: 'all 0.2s' }}>
           <input type="checkbox" id="reprogramar" checked={reprogramar} onChange={e => setReprogramar(e.target.checked)} style={{ width: 18, height: 18, cursor: 'pointer', marginTop: 2 }} />

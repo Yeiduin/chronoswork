@@ -21,7 +21,8 @@ export function generateAutomaticShifts({
   coberturaMaximaDiaria,
   coberturaPorTurno = {},
   diasToProcess = [],
-  demandSlots = []
+  demandSlots = [],
+  modoOperacion = 'OFICINA'
 }) {
   const generatedShifts = [];
   const warnings = [];
@@ -34,6 +35,7 @@ export function generateAutomaticShifts({
     date: d,
     dateStr: format(d, 'yyyy-MM-dd'),
     dayOfWeek: d.getDay() === 0 ? 7 : d.getDay(),
+    isDomFest: d.getDay() === 0 // Simplificado a Domingo
   })).filter(d => diasTrabajoArea.includes(d.dayOfWeek)); // Solo días de trabajo del área
 
   const minCoverage = coberturaMinimaDiaria || 1;
@@ -94,7 +96,9 @@ export function generateAutomaticShifts({
   // Fase D: Descansos Inteligentes para empleados 'POR_HORAS'
   // Extraemos configuración de alta demanda para que Phase D evite dar descansos en esos días
   const diasAltaDemanda = coberturaPorTurno?.diasAltaDemanda || [];
-  const franjasAltaDemanda = coberturaPorTurno?.franjasAltaDemanda || [];
+  const franjasAltaDemandaRaw = coberturaPorTurno?.franjasAltaDemanda || [];
+  const validTemplateIds = templates.map(t => t.id);
+  const franjasAltaDemanda = franjasAltaDemandaRaw.filter(id => validTemplateIds.includes(id));
 
   // Dividimos los días en semanas para asignar los descansos
   // Asumiremos lunes-domingo como una semana
@@ -187,7 +191,8 @@ export function generateAutomaticShifts({
         day,
         template,
         dateStr: day.dateStr,
-        templateId: template.id
+        templateId: template.id,
+        isDomFest: day.isDomFest
       });
     });
   });
@@ -275,6 +280,10 @@ export function generateAutomaticShifts({
           } else {
              score = (deficitResolved * 10000) - (overStaffedHours * 100);
              score -= (slotCov * 10);
+             // Permitir que alta demanda y modo operación actúen como desempate o priorización adicional
+             if (diasAltaDemanda.includes(slot.day.dayOfWeek)) score += 500;
+             if (franjasAltaDemanda.includes(slot.templateId)) score += 500;
+             if (modoOperacion === '24_7' && slot.isDomFest) score += 400; // Prioridad domingos en 24/7 con WFM
           }
       } else {
           // Prioridad 1: Llegar al mínimo del día (Tradicional)
@@ -287,10 +296,12 @@ export function generateAutomaticShifts({
             // Desempate de alta demanda también en la base
             if (diasAltaDemanda.includes(slot.day.dayOfWeek)) score += 50;
             if (franjasAltaDemanda.includes(slot.templateId)) score += 50;
+            if (modoOperacion === '24_7' && slot.isDomFest) score += 200; // Priorizar domingos en 24/7 sin WFM
           } else {
             // Prioridad 2: Días y Franjas de Alta demanda
             if (diasAltaDemanda.includes(slot.day.dayOfWeek)) score += 500;
             if (franjasAltaDemanda.includes(slot.templateId)) score += 500;
+            if (modoOperacion === '24_7' && slot.isDomFest) score += 400; // Prioridad domingos en 24/7 sin WFM
             
             // Evitar superar el máximo por día
             if (dayCov >= maxCoverage) {

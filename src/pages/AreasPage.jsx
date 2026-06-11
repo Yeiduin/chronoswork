@@ -41,6 +41,7 @@ function AreaModal({ area, onClose, onSave }) {
     cobertura_minima_diaria: area?.cobertura_minima_diaria || 1,
     cobertura_maxima_diaria: area?.cobertura_maxima_diaria || 10,
     cobertura_por_turno: area?.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] },
+    modo_operacion: area?.modo_operacion || 'OFICINA',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -115,6 +116,61 @@ function AreaModal({ area, onClose, onSave }) {
               value={form.descripcion} onChange={e => setForm(p => ({ ...p, descripcion: e.target.value }))} />
           </div>
 
+          {/* Modo de operación */}
+          <div className="cw-form-group">
+            <label className="cw-label">Tipo de Operación del Área <span className="required">*</span></label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              {/* Opción: Horario de Oficina */}
+              <button
+                type="button"
+                onClick={() => setForm(p => ({ ...p, modo_operacion: 'OFICINA' }))}
+                style={{
+                  padding: '0.875rem', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+                  border: `2px solid ${form.modo_operacion === 'OFICINA' ? '#6366f1' : 'var(--border-subtle)'}`,
+                  background: form.modo_operacion === 'OFICINA' ? '#6366f118' : 'var(--bg-glass)',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <div style={{ fontSize: '1.25rem', marginBottom: '0.3rem' }}>🏢</div>
+                <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>Horario de Oficina</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem', lineHeight: 1.4 }}>
+                  Lunes a viernes (o días configurados). Turnos fijos como 8–6, 6–2 pm, 2–10 pm. Máx. 42h/sem.
+                </div>
+              </button>
+              {/* Opción: 24/7 */}
+              <button
+                type="button"
+                onClick={() => setForm(p => ({
+                  ...p,
+                  modo_operacion: '24_7',
+                  dias_trabajo: [1, 2, 3, 4, 5, 6, 7],
+                }))}
+                style={{
+                  padding: '0.875rem', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+                  border: `2px solid ${form.modo_operacion === '24_7' ? '#f59e0b' : 'var(--border-subtle)'}`,
+                  background: form.modo_operacion === '24_7' ? '#f59e0b18' : 'var(--bg-glass)',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <div style={{ fontSize: '1.25rem', marginBottom: '0.3rem' }}>🔄</div>
+                <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>Operación 24/7</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem', lineHeight: 1.4 }}>
+                  7 días, domingos y festivos incluidos. Pago por horas con recargos nocturnos (HON, HOD, HCDN) según CST.
+                </div>
+              </button>
+            </div>
+            {form.modo_operacion === '24_7' && (
+              <div style={{ marginTop: '0.5rem', padding: '0.65rem 0.875rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                <strong>⚖️ Ley laboral colombiana (CST):</strong> El algoritmo aplica automáticamente recargos de HON (+35%), HOD (+80%/90%), HCDN (+115%/125%) y horas extra nocturnas dominicales según el período A/B. Límite: 42h/semana, máx. 2h extra/día y 12h extra/semana.
+              </div>
+            )}
+            {form.modo_operacion === 'OFICINA' && (
+              <div style={{ marginTop: '0.5rem', padding: '0.65rem 0.875rem', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 8, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                <strong>📋 Jornada ordinaria:</strong> El algoritmo respeta los días laborables del área y asigna turnos respetando el tope de 42h semanales (Ley 2101/2021). Las novedades (vacaciones, incapacidades) bloquean automáticamente los días afectados.
+              </div>
+            )}
+          </div>
+
           <div className="cw-form-group">
             <label className="cw-label">Color del área</label>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -132,23 +188,31 @@ function AreaModal({ area, onClose, onSave }) {
 
           <div className="cw-form-group">
             <label className="cw-label">Días de trabajo <span className="required">*</span></label>
-            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-              {DIAS_SEMANA.map(d => (
-                <button key={d.value} type="button"
-                  onClick={() => toggleDia(d.value)}
-                  style={{
-                    padding: '0.4rem 0.75rem', borderRadius: 8, fontSize: '0.82rem',
-                    fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
-                    border: `2px solid ${form.dias_trabajo.includes(d.value) ? form.color : 'var(--border-subtle)'}`,
-                    background: form.dias_trabajo.includes(d.value) ? form.color + '20' : 'var(--bg-glass)',
-                    color: form.dias_trabajo.includes(d.value) ? 'var(--text-primary)' : 'var(--text-muted)',
-                  }}>
-                  {d.label}
-                </button>
-              ))}
-            </div>
+            {form.modo_operacion === '24_7' ? (
+              <div style={{ padding: '0.5rem 0.75rem', background: 'var(--bg-glass)', borderRadius: 8, fontSize: '0.82rem', color: 'var(--text-muted)', border: '1px dashed var(--border-subtle)' }}>
+                🔄 <strong>Todos los días</strong> — En modo 24/7 el algoritmo cubre Lun–Dom incluidos festivos.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                {DIAS_SEMANA.map(d => (
+                  <button key={d.value} type="button"
+                    onClick={() => toggleDia(d.value)}
+                    style={{
+                      padding: '0.4rem 0.75rem', borderRadius: 8, fontSize: '0.82rem',
+                      fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
+                      border: `2px solid ${form.dias_trabajo.includes(d.value) ? form.color : 'var(--border-subtle)'}`,
+                      background: form.dias_trabajo.includes(d.value) ? form.color + '20' : 'var(--bg-glass)',
+                      color: form.dias_trabajo.includes(d.value) ? 'var(--text-primary)' : 'var(--text-muted)',
+                    }}>
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
-              {form.dias_trabajo.length} días seleccionados · ~{form.dias_trabajo.length * 4} días/mes
+              {form.modo_operacion === '24_7'
+                ? '7 días seleccionados · ~30-31 días/mes'
+                : `${form.dias_trabajo.length} días seleccionados · ~${form.dias_trabajo.length * 4} días/mes`}
             </div>
           </div>
 
@@ -791,12 +855,14 @@ export default function AreasPage() {
         absences: areaAbsences,
         existingShifts: areaShifts,
         year, month,
-        diasTrabajo: area.dias_trabajo || [1, 2, 3, 4, 5],
+        diasTrabajo: area.modo_operacion === '24_7' ? [1,2,3,4,5,6,7] : (area.dias_trabajo || [1, 2, 3, 4, 5]),
         strategyOptions,
         diasToProcess: processedDays,
         coberturaMinimaDiaria: area.cobertura_minima_diaria || 1,
         coberturaMaximaDiaria: area.cobertura_maxima_diaria || 10,
-        coberturaPorTurno: area.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] }
+        coberturaPorTurno: area.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] },
+        modoOperacion: area.modo_operacion || 'OFICINA',
+        areaId: area.id,
       });
       setAutoAssignResult({ ...result, areaName: area.nombre });
     } catch (err) {
@@ -895,8 +961,11 @@ export default function AreasPage() {
                     <div style={{ width: 12, height: 12, borderRadius: '50%', background: area.color, flexShrink: 0 }} />
                     <div>
                       <div style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{area.nombre}</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         {empCount} colaborador{empCount !== 1 ? 'es' : ''}
+                        {area.modo_operacion === '24_7' && (
+                          <span style={{ background: 'rgba(245,158,11,0.15)', color: '#d97706', border: '1px solid rgba(245,158,11,0.35)', borderRadius: 4, padding: '0 0.35rem', fontSize: '0.65rem', fontWeight: 700 }}>24/7</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -943,6 +1012,26 @@ export default function AreasPage() {
                     {selectedArea.descripcion}
                   </p>
                 )}
+
+                {/* Modo de operación */}
+                <div style={{
+                  marginBottom: '1.25rem', padding: '0.75rem 1rem', borderRadius: 8,
+                  background: selectedArea.modo_operacion === '24_7' ? 'rgba(245,158,11,0.08)' : 'rgba(99,102,241,0.06)',
+                  border: `1px solid ${selectedArea.modo_operacion === '24_7' ? 'rgba(245,158,11,0.3)' : 'rgba(99,102,241,0.25)'}`,
+                  display: 'flex', alignItems: 'center', gap: '0.75rem',
+                }}>
+                  <span style={{ fontSize: '1.5rem' }}>{selectedArea.modo_operacion === '24_7' ? '🔄' : '🏢'}</span>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                      {selectedArea.modo_operacion === '24_7' ? 'Operación 24/7' : 'Horario de Oficina'}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                      {selectedArea.modo_operacion === '24_7'
+                        ? 'Cobertura 7 días · Dom/Festivos incluidos · Recargos CST automáticos (HON, HOD, HCDN)'
+                        : `${(selectedArea.dias_trabajo || []).length} días laborables · Máx. 42h/semana (Ley 2101/2021)`}
+                    </div>
+                  </div>
+                </div>
 
                 {/* Empleados del área */}
                 <EmployeeAssignPanel
@@ -1004,6 +1093,7 @@ export default function AreasPage() {
       {autoAssignModalArea && (
         <AutoAssignModal
           scope={autoAssignModalArea}
+          area={areas.find(a => a.id === autoAssignModalArea)}
           onClose={() => setAutoAssignModalArea(null)}
           onConfirm={handleAutoAssign}
         />

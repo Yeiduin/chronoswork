@@ -160,7 +160,7 @@ export function useShifts(periodo = null) {
    * @returns {{ inserted: number, skipped: number, alertaDias: string[] }}
    */
   const autoAssignShifts = async (params) => {
-    const { employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess, coberturaMinimaDiaria, coberturaMaximaDiaria, areaId } = params;
+    const { employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess, coberturaMinimaDiaria, coberturaMaximaDiaria, coberturaPorTurno, areaId, modoOperacion } = params;
     if (!tenant || !employees.length || !templates.length) {
       return { inserted: 0, skipped: 0, alertaDias: [] };
     }
@@ -177,6 +177,7 @@ export function useShifts(periodo = null) {
     }
 
     const { shifts: shiftsToInsert, warnings } = generateAutomaticShifts({
+      modoOperacion: modoOperacion || 'OFICINA',
       employees,
       templates,
       absences,
@@ -186,8 +187,9 @@ export function useShifts(periodo = null) {
       diasTrabajoArea: diasTrabajo,
       coberturaMinimaDiaria,
       coberturaMaximaDiaria,
+      coberturaPorTurno: coberturaPorTurno || {},
       diasToProcess: diasToProcess || [],
-      demandSlots,   // nuevo: vacío = modo plantillas fijas (compatibilidad)
+      demandSlots,
     });
 
     let inserted = 0;
