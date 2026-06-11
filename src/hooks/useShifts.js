@@ -160,9 +160,20 @@ export function useShifts(periodo = null) {
    * @returns {{ inserted: number, skipped: number, alertaDias: string[] }}
    */
   const autoAssignShifts = async (params) => {
-    const { employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess, coberturaMinimaDiaria, coberturaMaximaDiaria } = params;
+    const { employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess, coberturaMinimaDiaria, coberturaMaximaDiaria, areaId } = params;
     if (!tenant || !employees.length || !templates.length) {
       return { inserted: 0, skipped: 0, alertaDias: [] };
+    }
+
+    // Cargar curva de demanda horaria si el área la tiene configurada
+    let demandSlots = [];
+    if (areaId) {
+      const { data } = await supabase
+        .from('area_demand_slots')
+        .select('*')
+        .eq('area_id', areaId)
+        .eq('tenant_id', tenant.id);
+      demandSlots = data || [];
     }
 
     const { shifts: shiftsToInsert, warnings } = generateAutomaticShifts({
@@ -175,7 +186,8 @@ export function useShifts(periodo = null) {
       diasTrabajoArea: diasTrabajo,
       coberturaMinimaDiaria,
       coberturaMaximaDiaria,
-      diasToProcess: diasToProcess || [] // fallback array
+      diasToProcess: diasToProcess || [],
+      demandSlots,   // nuevo: vacío = modo plantillas fijas (compatibilidad)
     });
 
     let inserted = 0;

@@ -9,8 +9,9 @@ import {
   MdAdd, MdEdit, MdDelete, MdClose, MdAccessTime,
   MdBolt, MdDomain, MdWarning
 } from 'react-icons/md';
-import { getPeriodoActual, getDiasMes } from '../core/dateUtils';
+import { getPeriodoActual, getDiasMes, getDatesByOption } from '../core/dateUtils';
 import { AutoAssignModal } from '../components/AutoAssignModal';
+import { DemandCurveConfig } from '../components/DemandCurveConfig';
 import { format } from 'date-fns';
 
 const PALETTE = [
@@ -39,9 +40,20 @@ function AreaModal({ area, onClose, onSave }) {
     valor_hora_default: area?.valor_hora_default || '',
     cobertura_minima_diaria: area?.cobertura_minima_diaria || 1,
     cobertura_maxima_diaria: area?.cobertura_maxima_diaria || 10,
+    cobertura_por_turno: area?.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] },
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [templates, setTemplates] = useState([]);
+
+  useEffect(() => {
+    async function loadTemplates() {
+      if (!isEdit) return;
+      const { data } = await supabase.from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
+      setTemplates(data || []);
+    }
+    loadTemplates();
+  }, [isEdit, area]);
 
   const toggleDia = (d) => {
     setForm(prev => ({
@@ -66,7 +78,8 @@ function AreaModal({ area, onClose, onSave }) {
         ...form,
         valor_hora_default: valorNum,
         cobertura_minima_diaria: parseInt(form.cobertura_minima_diaria) || 1,
-        cobertura_maxima_diaria: parseInt(form.cobertura_maxima_diaria) || 10
+        cobertura_maxima_diaria: parseInt(form.cobertura_maxima_diaria) || 10,
+        cobertura_por_turno: form.cobertura_por_turno
       });
       onClose();
     } catch (err) {
@@ -169,7 +182,7 @@ function AreaModal({ area, onClose, onSave }) {
                 value={form.cobertura_minima_diaria}
                 onChange={e => setForm(p => ({ ...p, cobertura_minima_diaria: e.target.value }))}
               />
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Personal requerido por día</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Personal base requerido por día</div>
             </div>
             <div className="cw-form-group">
               <label className="cw-label">Cobertura Máxima Diaria</label>
@@ -182,6 +195,66 @@ function AreaModal({ area, onClose, onSave }) {
               />
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Límite de personal por día</div>
             </div>
+          </div>
+
+          <div style={{ margin: '1rem 0', padding: '1rem', background: 'var(--bg-glass)', borderRadius: 8, border: '1px solid var(--border-color)' }}>
+            <h4 style={{ fontSize: '0.85rem', marginBottom: '0.75rem', color: 'var(--text-primary)' }}>📈 Reglas de Alta Demanda (Prioridad de Asignación)</h4>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+              El algoritmo asegura primero la Cobertura Mínima para todos los días/franjas. Si hay empleados con horas libres, se asignarán priorizando los días y franjas seleccionados aquí.
+            </div>
+            
+            <div className="cw-form-group">
+              <label className="cw-label">Días de Alta Demanda</label>
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                {form.dias_trabajo.map(d => {
+                  const dia = DIAS_SEMANA.find(x => x.value === d);
+                  const isHighDemand = (form.cobertura_por_turno?.diasAltaDemanda || []).includes(d);
+                  return (
+                    <button key={`hd-${d}`} type="button"
+                      onClick={() => {
+                        setForm(p => {
+                          const current = p.cobertura_por_turno?.diasAltaDemanda || [];
+                          const updated = current.includes(d) ? current.filter(x => x !== d) : [...current, d];
+                          return { ...p, cobertura_por_turno: { ...p.cobertura_por_turno, diasAltaDemanda: updated } };
+                        });
+                      }}
+                      className="cw-btn cw-btn--sm"
+                      style={{
+                        background: isHighDemand ? 'var(--cw-primary)' : 'var(--bg-elevated)',
+                        color: isHighDemand ? '#fff' : 'var(--text-secondary)',
+                        border: isHighDemand ? '1px solid var(--cw-primary)' : '1px solid var(--border-color)',
+                      }}>
+                      {dia?.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {isEdit && templates.length > 0 && (
+              <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                <label className="cw-label">Franjas de Alta Demanda</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  {templates.map(t => {
+                    const isHighDemand = (form.cobertura_por_turno?.franjasAltaDemanda || []).includes(t.id);
+                    return (
+                      <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={isHighDemand}
+                          onChange={(e) => {
+                            setForm(p => {
+                              const current = p.cobertura_por_turno?.franjasAltaDemanda || [];
+                              const updated = e.target.checked ? [...current, t.id] : current.filter(x => x !== t.id);
+                              return { ...p, cobertura_por_turno: { ...p.cobertura_por_turno, franjasAltaDemanda: updated } };
+                            });
+                          }}
+                        />
+                        {t.nombre} ({t.hora_inicio.slice(0,5)} - {t.hora_fin.slice(0,5)})
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="cw-modal__footer">
@@ -694,31 +767,7 @@ export default function AreasPage() {
       const areaAbsences = absences.filter(a => empIds.includes(a.employee_id));
       const areaShifts = shifts.filter(s => empIds.includes(s.employee_id));
 
-      const diasTodos = getDiasMes(year, month);
-      let processedDays = diasTodos;
-
-      if (strategyOptions.dateRangeOption === 'current_view' || strategyOptions.dateRangeOption === 'full_month') {
-        processedDays = diasTodos; // Para AreasPage la vista actual es el mes
-      } else if (strategyOptions.dateRangeOption === 'next_week') {
-        const hoy = new Date();
-        const nextMonday = new Date(hoy);
-        nextMonday.setDate(hoy.getDate() + ((1 + 7 - hoy.getDay()) % 7 || 7));
-        const nextSunday = new Date(nextMonday);
-        nextSunday.setDate(nextMonday.getDate() + 6);
-        const nwDays = [];
-        for (let d = new Date(nextMonday); d <= nextSunday; d.setDate(d.getDate() + 1)) {
-           nwDays.push(new Date(d));
-        }
-        processedDays = nwDays;
-      } else if (strategyOptions.dateRangeOption === 'custom') {
-        const dStart = new Date(strategyOptions.customStart + 'T00:00:00');
-        const dEnd = new Date(strategyOptions.customEnd + 'T00:00:00');
-        const customDays = [];
-        for (let d = new Date(dStart); d <= dEnd; d.setDate(d.getDate() + 1)) {
-           customDays.push(new Date(d));
-        }
-        processedDays = customDays;
-      }
+      const processedDays = getDatesByOption(strategyOptions.dateRangeOption, strategyOptions.customStart, strategyOptions.customEnd);
 
       if (strategyOptions.reprogramar && processedDays.length > 0) {
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
@@ -746,7 +795,8 @@ export default function AreasPage() {
         strategyOptions,
         diasToProcess: processedDays,
         coberturaMinimaDiaria: area.cobertura_minima_diaria || 1,
-        coberturaMaximaDiaria: area.cobertura_maxima_diaria || 10
+        coberturaMaximaDiaria: area.cobertura_maxima_diaria || 10,
+        coberturaPorTurno: area.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] }
       });
       setAutoAssignResult({ ...result, areaName: area.nombre });
     } catch (err) {
@@ -910,6 +960,9 @@ export default function AreasPage() {
                   onAutoAssign={(area) => setAutoAssignModalArea(area.id)}
                   autoAssignLoading={autoAssignLoading}
                 />
+
+                {/* Curvas de Demanda WFM */}
+                <DemandCurveConfig area={selectedArea} />
               </div>
             </div>
           ) : null}

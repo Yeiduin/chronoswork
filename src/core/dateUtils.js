@@ -81,6 +81,92 @@ export function getNombreDia(fecha) {
 }
 
 /**
+ * Analiza un string HH:mm y lo pasa a minutos
+ */
+export function timeToMinutes(timeStr) {
+  if (!timeStr) return 0;
+  const [h, m] = timeStr.split(':').map(Number);
+  return (h * 60) + m;
+}
+
+/**
+ * Obtiene el listado de fechas exactas basándose en la opción del modal (this_week, next_week, etc.)
+ */
+export function getDatesByOption(option, customStart, customEnd) {
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+
+  const getDays = (start, end) => {
+    const days = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      days.push(new Date(d));
+    }
+    return days;
+  };
+
+  switch (option) {
+    case 'this_week': {
+      const start = new Date(hoy);
+      const day = start.getDay() === 0 ? 7 : start.getDay();
+      start.setDate(start.getDate() - day + 1); // Monday
+      const end = new Date(start);
+      end.setDate(end.getDate() + 6); // Sunday
+      return getDays(start, end);
+    }
+    case 'rest_of_week': {
+      const end = new Date(hoy);
+      const day = end.getDay() === 0 ? 7 : end.getDay();
+      end.setDate(end.getDate() + (7 - day)); // Upcoming Sunday
+      return getDays(hoy, end);
+    }
+    case 'next_week': {
+      const start = new Date(hoy);
+      const day = start.getDay() === 0 ? 7 : start.getDay();
+      start.setDate(start.getDate() + (7 - day) + 1); // Next Monday
+      const end = new Date(start);
+      end.setDate(end.getDate() + 6); // Next Sunday
+      return getDays(start, end);
+    }
+    case 'this_biweek': {
+      const d = hoy.getDate();
+      const start = new Date(hoy.getFullYear(), hoy.getMonth(), d <= 15 ? 1 : 16);
+      const end = new Date(hoy.getFullYear(), hoy.getMonth(), d <= 15 ? 15 : new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).getDate());
+      return getDays(start, end);
+    }
+    case 'next_biweek': {
+      const d = hoy.getDate();
+      let start, end;
+      if (d <= 15) {
+        start = new Date(hoy.getFullYear(), hoy.getMonth(), 16);
+        end = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+      } else {
+        start = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1);
+        end = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 15);
+      }
+      return getDays(start, end);
+    }
+    case 'this_month': {
+      const start = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+      const end = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+      return getDays(start, end);
+    }
+    case 'next_month': {
+      const start = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 1);
+      const end = new Date(hoy.getFullYear(), hoy.getMonth() + 2, 0);
+      return getDays(start, end);
+    }
+    case 'custom': {
+      if (!customStart || !customEnd) return [];
+      const start = new Date(customStart + 'T00:00:00');
+      const end = new Date(customEnd + 'T00:00:00');
+      return getDays(start, end);
+    }
+    default:
+      return [];
+  }
+}
+
+/**
  * Genera un arreglo con los días de la semana actual
  */
 export function diasDeSemana(fechaRef = new Date()) {

@@ -6,11 +6,13 @@ export function AutoAssignModal({ scope, areas = [], onClose, onConfirm }) {
   // We'll let the parent pass the default scope or we manage it here.
   const [targetScope, setTargetScope] = useState(scope === 'area' ? 'all' : scope || 'all');
   const [strategy, setStrategy] = useState('fijo');
-  const [dateRangeOption, setDateRangeOption] = useState('current_view');
+  const [dateRangeOption, setDateRangeOption] = useState('this_week');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [reprogramar, setReprogramar] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const selectedArea = targetScope !== 'all' ? areas.find(a => a.id === targetScope) : null;
 
   const handleConfirm = async () => {
     if (dateRangeOption === 'custom' && (!customStart || !customEnd)) {
@@ -56,9 +58,13 @@ export function AutoAssignModal({ scope, areas = [], onClose, onConfirm }) {
         <div className="cw-form-group">
           <label className="cw-label">Rango de fechas</label>
           <select className="cw-select" value={dateRangeOption} onChange={e => setDateRangeOption(e.target.value)}>
-            <option value="current_view">Aplicar a la vista actual (Fondo)</option>
-            <option value="full_month">Mes completo</option>
-            <option value="next_week">Próxima semana (Lun - Dom)</option>
+            <option value="this_week">Esta semana (Lun - Dom actual)</option>
+            <option value="rest_of_week">Resto de la semana (Desde hoy hasta Dom)</option>
+            <option value="next_week">La próxima semana (Próx. Lun - Dom)</option>
+            <option value="this_biweek">Esta quincena (Día 1-15 o 16-Fin actual)</option>
+            <option value="next_biweek">La próxima quincena</option>
+            <option value="this_month">Este mes</option>
+            <option value="next_month">El próximo mes</option>
             <option value="custom">Rango personalizado...</option>
           </select>
         </div>
@@ -79,18 +85,21 @@ export function AutoAssignModal({ scope, areas = [], onClose, onConfirm }) {
         <div className="cw-form-group">
           <label className="cw-label">Estrategia de asignación</label>
           <select className="cw-select" value={strategy} onChange={e => setStrategy(e.target.value)}>
-            <option value="fijo">Mismo turno toda la semana</option>
-            <option value="intercalado_dias">Intercalado Día a Día</option>
-            <option value="intercalado_mitad">Mitad de Semana (3 días / resto)</option>
-            <option value="rotacion_semanal">Rotación Semanal (Invierte turno previo)</option>
-          </select>
-          <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.5rem', background: 'var(--bg-glass)', padding: '0.75rem', borderRadius: 8 }}>
-            {strategy === 'fijo' && 'Se asignará un turno por defecto según la rotación básica. Todos recibirán turno si hay disponibilidad.'}
-            {strategy === 'intercalado_dias' && 'Alterna el turno cada día laborable (ej. Mañana, Tarde, Mañana).'}
-            {strategy === 'intercalado_mitad' && 'Asigna un turno la primera mitad de la semana y otro diferente la segunda mitad.'}
-            {strategy === 'rotacion_semanal' && 'Revisa el historial de la semana anterior para asignar el turno opuesto esta semana.'}
+              <option value="fijo">Mismo turno toda la semana</option>
+              <option value="intercalado_dias">Intercalado Día a Día</option>
+              <option value="intercalado_mitad">Mitad de Semana (3 días / resto)</option>
+              <option value="rotacion_semanal">Rotación Semanal (Invierte turno previo)</option>
+            </select>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.5rem', background: 'var(--bg-glass)', padding: '0.75rem', borderRadius: 8 }}>
+              {strategy === 'fijo' && 'Se asignará un turno por defecto según la rotación básica. Todos recibirán turno si hay disponibilidad.'}
+              {strategy === 'intercalado_dias' && 'Alterna el turno cada día laborable (ej. Mañana, Tarde, Mañana).'}
+              {strategy === 'intercalado_mitad' && 'Asigna un turno la primera mitad de la semana y otro diferente la segunda mitad.'}
+              {strategy === 'rotacion_semanal' && 'Revisa el historial de la semana anterior para asignar el turno opuesto esta semana.'}
+              <div style={{ marginTop: '0.5rem', color: 'var(--cw-accent)' }}>
+                <em>Nota: Si esta área tiene Curvas de Demanda (WFM) configuradas, la estrategia seleccionada será ignorada y el algoritmo se adaptará a la demanda horaria.</em>
+              </div>
+            </div>
           </div>
-        </div>
 
         <div className="cw-form-group" style={{ flexDirection: 'row', alignItems: 'flex-start', gap: '0.5rem', background: reprogramar ? 'rgba(239, 68, 68, 0.1)' : 'var(--bg-glass)', padding: '1rem', borderRadius: 8, border: reprogramar ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid var(--border-subtle)', transition: 'all 0.2s' }}>
           <input type="checkbox" id="reprogramar" checked={reprogramar} onChange={e => setReprogramar(e.target.checked)} style={{ width: 18, height: 18, cursor: 'pointer', marginTop: 2 }} />

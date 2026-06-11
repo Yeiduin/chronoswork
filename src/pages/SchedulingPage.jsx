@@ -693,8 +693,9 @@ export default function SchedulingPage() {
           existingShifts: shifts.filter(s => empIds.includes(s.employee_id)),
           year: anio, month: mes,
           diasTrabajo: area.dias_trabajo || [1, 2, 3, 4, 5],
-          strategyOptions, // Pasa las opciones (tipo estrategia, días procesables)
-          diasToProcess: processedDays // Pasamos processedDays, que incluye custom ranges
+          strategyOptions,
+          diasToProcess: processedDays,
+          areaId: area.id,  // nuevo: para cargar curva de demanda horaria si existe
         });
         
         if (result.error) {
