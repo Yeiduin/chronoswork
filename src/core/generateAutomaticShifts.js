@@ -107,13 +107,23 @@ export function generateAutomaticShifts({
   });
 
   const rests = {}; // { empId_dateStr: true }
+  const restsPerDay = {}; // { dateStr: number }
 
   empPorHoras.forEach(emp => {
     const requiredRests = emp.dias_descanso_semana || 1;
     
     Object.values(weeks).forEach(weekDays => {
-      // Ordenar los días de la semana por mayor cobertura actual (superávit) para colocar el descanso
-      const sortedDays = [...weekDays].sort((a, b) => getCoverage(b.dateStr) - getCoverage(a.dateStr));
+      // Ordenar los días de la semana por:
+      // 1. Mayor cobertura actual (superávit de fijos)
+      // 2. Menor cantidad de descansos ya asignados a ese día (para no juntar descansos)
+      const sortedDays = [...weekDays].sort((a, b) => {
+        const covDiff = getCoverage(b.dateStr) - getCoverage(a.dateStr);
+        if (covDiff !== 0) return covDiff;
+        const restsA = restsPerDay[a.dateStr] || 0;
+        const restsB = restsPerDay[b.dateStr] || 0;
+        return restsA - restsB;
+      });
+      
       let assignedRests = 0;
 
       for (const day of sortedDays) {
@@ -123,6 +133,7 @@ export function generateAutomaticShifts({
         // Asignar descanso si no rompe la cobertura mínima drásticamente,
         // aunque si todos necesitan descanso, alguien tiene que descansar.
         rests[`${emp.id}_${day.dateStr}`] = true;
+        restsPerDay[day.dateStr] = (restsPerDay[day.dateStr] || 0) + 1;
         assignedRests++;
       }
     });
