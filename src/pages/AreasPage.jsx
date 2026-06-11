@@ -37,6 +37,8 @@ function AreaModal({ area, onClose, onSave }) {
     color: area?.color || '#6366f1',
     dias_trabajo: area?.dias_trabajo || [1, 2, 3, 4, 5],
     valor_hora_default: area?.valor_hora_default || '',
+    cobertura_minima_diaria: area?.cobertura_minima_diaria || 1,
+    cobertura_maxima_diaria: area?.cobertura_maxima_diaria || 10,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -60,7 +62,12 @@ function AreaModal({ area, onClose, onSave }) {
     }
     setLoading(true);
     try {
-      await onSave({ ...form, valor_hora_default: valorNum });
+      await onSave({
+        ...form,
+        valor_hora_default: valorNum,
+        cobertura_minima_diaria: parseInt(form.cobertura_minima_diaria) || 1,
+        cobertura_maxima_diaria: parseInt(form.cobertura_maxima_diaria) || 10
+      });
       onClose();
     } catch (err) {
       setError(err.message);
@@ -150,6 +157,31 @@ function AreaModal({ area, onClose, onSave }) {
                 = {new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(parseFloat(form.valor_hora_default))} / hora · Aplica a todos los empleados del área
               </span>
             )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+            <div className="cw-form-group">
+              <label className="cw-label">Cobertura Mínima Diaria</label>
+              <input
+                type="number"
+                min="0"
+                className="cw-input"
+                value={form.cobertura_minima_diaria}
+                onChange={e => setForm(p => ({ ...p, cobertura_minima_diaria: e.target.value }))}
+              />
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Personal requerido por día</div>
+            </div>
+            <div className="cw-form-group">
+              <label className="cw-label">Cobertura Máxima Diaria</label>
+              <input
+                type="number"
+                min="1"
+                className="cw-input"
+                value={form.cobertura_maxima_diaria}
+                onChange={e => setForm(p => ({ ...p, cobertura_maxima_diaria: e.target.value }))}
+              />
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Límite de personal por día</div>
+            </div>
           </div>
 
           <div className="cw-modal__footer">
@@ -712,7 +744,9 @@ export default function AreasPage() {
         year, month,
         diasTrabajo: area.dias_trabajo || [1, 2, 3, 4, 5],
         strategyOptions,
-        diasToProcess: processedDays
+        diasToProcess: processedDays,
+        coberturaMinimaDiaria: area.cobertura_minima_diaria || 1,
+        coberturaMaximaDiaria: area.cobertura_maxima_diaria || 10
       });
       setAutoAssignResult({ ...result, areaName: area.nombre });
     } catch (err) {

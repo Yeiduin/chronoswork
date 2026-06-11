@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import { generateAutomaticShifts } from '../core/generateAutomaticShifts';
 
 export function useShifts(periodo = null) {
   const { tenant } = useAuth();
@@ -158,181 +159,31 @@ export function useShifts(periodo = null) {
    * @param {Array}  params.diasTrabajo   - Días laborables del área [1-7], 1=Lun,7=Dom
    * @returns {{ inserted: number, skipped: number, alertaDias: string[] }}
    */
-  const autoAssignShifts = async ({ employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess }) => {
+  const autoAssignShifts = async (params) => {
+    const { employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess, coberturaMinimaDiaria, coberturaMaximaDiaria } = params;
     if (!tenant || !employees.length || !templates.length) {
       return { inserted: 0, skipped: 0, alertaDias: [] };
     }
 
-    const MAX_HORAS_SEMANA = 42; 
-    const shiftsToInsert = [];
-    const alertaDias = []; 
-
-    const getLocalYYYYMMDD = (dateObj) => {
-      const y = dateObj.getFullYear();
-      const m = String(dateObj.getMonth() + 1).padStart(2, '0');
-      const d = String(dateObj.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    };
-
-    // Usar diasToProcess si se provee (vista actual), sino todo el mes
-    const allDays = diasToProcess ? diasToProcess.map(d => ({
-      date: d,
-      dateStr: getLocalYYYYMMDD(d),
-      dow: d.getDay() === 0 ? 7 : d.getDay()
-    })).filter(d => diasTrabajo.includes(d.dow)) : [];
-
-    if (allDays.length === 0) return { inserted: 0, skipped: 0, alertaDias: [] };
-
-    const getWeekKey = (dateObj) => {
-      const d = new Date(dateObj);
-      const dow = d.getDay() === 0 ? 7 : d.getDay();
-      const startOfWeek = new Date(d);
-      startOfWeek.setDate(d.getDate() - (dow - 1));
-      return getLocalYYYYMMDD(startOfWeek);
-    };
-
-    const strategy = strategyOptions?.strategy || 'fijo';
-
-    // Cargar historial de turnos (hasta 14 días atrás) para la rotación semanal
-    const firstDateStr = allDays[0].dateStr;
-    const startHistory = new Date(allDays[0].date);
-    startHistory.setDate(startHistory.getDate() - 14);
-    const startHistoryStr = getLocalYYYYMMDD(startHistory);
-
-    const { data: historyShifts } = await supabase
-      .from('shifts')
-      .select('employee_id, start_time, template_id')
-      .eq('tenant_id', tenant.id)
-      .in('employee_id', employees.map(e => e.id))
-      .gte('start_time', startHistoryStr + 'T00:00:00')
-      .lt('start_time', firstDateStr + 'T00:00:00');
-
-    // Determinar plantilla dominante de la semana anterior para cada empleado
-    const lastWeekTemplateByEmp = {};
-    employees.forEach(emp => {
-      const empShifts = (historyShifts || []).filter(s => s.employee_id === emp.id && s.template_id);
-      if (empShifts.length > 0) {
-        // Encontrar el template_id más frecuente
-        const counts = {};
-        empShifts.forEach(s => { counts[s.template_id] = (counts[s.template_id] || 0) + 1; });
-        const dominant = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
-        lastWeekTemplateByEmp[emp.id] = dominant;
-      }
+    const { shifts: shiftsToInsert, warnings } = generateAutomaticShifts({
+      employees,
+      templates,
+      absences,
+      existingShifts,
+      year,
+      month,
+      diasTrabajoArea: diasTrabajo,
+      coberturaMinimaDiaria,
+      coberturaMaximaDiaria,
+      diasToProcess: diasToProcess || [] // fallback array
     });
-
-    const horasSemana = {}; 
-    employees.forEach(e => { horasSemana[e.id] = {}; });
-
-    existingShifts.forEach(s => {
-      const d = new Date(s.start_time);
-      const weekKey = getWeekKey(d);
-      const horas = (new Date(s.end_time) - d) / 3600000;
-      if (!horasSemana[s.employee_id]) horasSemana[s.employee_id] = {};
-      horasSemana[s.employee_id][weekKey] = (horasSemana[s.employee_id][weekKey] || 0) + horas;
-    });
-
-    const calcHorasTemplate = (t) => {
-      const [h1, m1] = t.hora_inicio.split(':').map(Number);
-      const [h2, m2] = t.hora_fin.split(':').map(Number);
-      let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
-      if (mins <= 0) mins += 24 * 60;
-      return mins / 60;
-    };
-
-    const tieneNovedad = (empId, dateStr) =>
-      absences.some(a => a.employee_id === empId && dateStr >= a.fecha_inicio && dateStr <= a.fecha_fin);
-
-    const tieneTurno = (empId, dateStr) =>
-      existingShifts.some(s => s.employee_id === empId && getLocalYYYYMMDD(new Date(s.start_time)) === dateStr) ||
-      shiftsToInsert.some(s => s.employee_id === empId && getLocalYYYYMMDD(new Date(s.start_time)) === dateStr);
-
-    const isTemplateCovered = (templateId, dateStr) =>
-      existingShifts.some(s => s.template_id === templateId && getLocalYYYYMMDD(new Date(s.start_time)) === dateStr) ||
-      shiftsToInsert.some(s => s.template_id === templateId && getLocalYYYYMMDD(new Date(s.start_time)) === dateStr);
-
-    // Determinar la plantilla esperada para un empleado en un día específico según la estrategia
-    const getExpectedTemplateId = (emp, dateObj) => {
-      const empIdx = employees.findIndex(e => e.id === emp.id);
-      let baseIdx = empIdx % templates.length;
-      
-      const dow = dateObj.getDay() === 0 ? 7 : dateObj.getDay();
-      const dayIndexInWeek = dow - 1; // 0 para Lunes, 6 para Domingo
-
-      if (strategy === 'rotacion_semanal') {
-        const lastTplId = lastWeekTemplateByEmp[emp.id];
-        if (lastTplId) {
-          const oldIdx = templates.findIndex(t => t.id === lastTplId);
-          if (oldIdx !== -1) {
-            baseIdx = (oldIdx + 1) % templates.length;
-          }
-        }
-      }
-
-      let tplIdx = baseIdx;
-      if (strategy === 'intercalado_dias') {
-        tplIdx = (baseIdx + dayIndexInWeek) % templates.length;
-      } else if (strategy === 'intercalado_mitad') {
-        tplIdx = dayIndexInWeek < 3 ? baseIdx : (baseIdx + 1) % templates.length;
-      }
-
-      return templates[tplIdx]?.id;
-    };
-
-    for (const { date, dateStr } of allDays) {
-      const weekKey = getWeekKey(date);
-
-      for (const emp of employees) {
-        if (tieneNovedad(emp.id, dateStr)) continue;
-        if (tieneTurno(emp.id, dateStr)) continue; 
-
-        const expectedTemplateId = getExpectedTemplateId(emp, date);
-        const template = templates.find(t => t.id === expectedTemplateId);
-        if (!template) continue;
-
-        const horas = calcHorasTemplate(template);
-        const horasAcum = horasSemana[emp.id]?.[weekKey] || 0;
-        if (horasAcum + horas > MAX_HORAS_SEMANA) continue;
-
-        let startISO, endISO;
-        const tInicio = template.hora_inicio.slice(0, 5) + ':00';
-        const tFin = template.hora_fin.slice(0, 5) + ':00';
-
-        if (template.cruza_medianoche) {
-          const nextDay = new Date(date);
-          nextDay.setDate(date.getDate() + 1);
-          startISO = `${dateStr}T${tInicio}`;
-          endISO = `${getLocalYYYYMMDD(nextDay)}T${tFin}`;
-        } else {
-          startISO = `${dateStr}T${tInicio}`;
-          endISO = `${dateStr}T${tFin}`;
-        }
-
-        shiftsToInsert.push({
-          employee_id: emp.id,
-          tenant_id: tenant.id,
-          start_time: startISO,
-          end_time: endISO,
-          shift_type: 'custom',
-          periodo: `${year}-${String(month).padStart(2, '0')}`,
-          template_id: template.id,
-        });
-
-        horasSemana[emp.id][weekKey] = (horasSemana[emp.id][weekKey] || 0) + horas;
-      }
-
-      // Check for missing coverage
-      for (const template of templates) {
-        if (!isTemplateCovered(template.id, dateStr)) {
-          if (!alertaDias.includes(dateStr)) alertaDias.push(dateStr);
-        }
-      }
-    }
 
     let inserted = 0;
     if (shiftsToInsert.length > 0) {
+      const shiftsWithTenant = shiftsToInsert.map(s => ({ ...s, tenant_id: tenant.id }));
       const BATCH = 500;
-      for (let i = 0; i < shiftsToInsert.length; i += BATCH) {
-        const chunk = shiftsToInsert.slice(i, i + BATCH);
+      for (let i = 0; i < shiftsWithTenant.length; i += BATCH) {
+        const chunk = shiftsWithTenant.slice(i, i + BATCH);
         const { error } = await supabase.from('shifts').insert(chunk);
         if (error) return { error: error.message };
         inserted += chunk.length;
@@ -340,7 +191,7 @@ export function useShifts(periodo = null) {
     }
 
     await fetchShifts();
-    return { inserted, skipped: shiftsToInsert.length - inserted, alertaDias };
+    return { inserted, skipped: 0, alertaDias: warnings };
   };
 
   return {

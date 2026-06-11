@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useEmployees } from '../hooks/useEmployees';
 import { useAreas } from '../hooks/useAreas';
+import { supabase } from '../config/supabaseClient';
 import { validarCedula, validarValorHora, formatCOP } from '../core/validators';
 import {
   MdAdd, MdEdit, MdDelete, MdClose, MdPeople, MdSearch,
@@ -22,6 +23,9 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
     nombre: employee?.nombre || '',
     cargo: employee?.cargo || '',
     valor_hora: employee?.valor_hora?.toString() || '',
+    tipo_contrato: employee?.tipo_contrato || 'POR_HORAS',
+    dias_descanso_semana: employee?.dias_descanso_semana || 1,
+    turno_predeterminado_id: employee?.turno_predeterminado_id || '',
   });
   const [selectedAreaId, setSelectedAreaId] = useState(() => {
     if (!isEdit) return '';
@@ -44,6 +48,24 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
       }
     }
   }, [selectedAreaId, esEspecial, areas]);
+
+  const [templates, setTemplates] = useState([]);
+
+  useEffect(() => {
+    async function loadTemplates() {
+      if (!selectedAreaId) {
+        setTemplates([]);
+        return;
+      }
+      const { data } = await supabase
+        .from('shift_templates')
+        .select('*')
+        .eq('area_id', selectedAreaId)
+        .eq('activo', true);
+      setTemplates(data || []);
+    }
+    loadTemplates();
+  }, [selectedAreaId]);
 
   // Al marcar especial, limpiar el salario para que lo ingrese manualmente
   const handleToggleEspecial = (checked) => {
@@ -81,8 +103,13 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
     if (!validate()) return;
     setLoading(true);
     try {
+      const dataToSave = { ...form, valor_hora: parseFloat(form.valor_hora) };
+      if (dataToSave.tipo_contrato !== 'SALARIO_FIJO' || !dataToSave.turno_predeterminado_id) {
+        dataToSave.turno_predeterminado_id = null;
+      }
+
       await onSave({
-        employeeData: { ...form, valor_hora: parseFloat(form.valor_hora) },
+        employeeData: dataToSave,
         areaId: selectedAreaId,
         esEspecial,
       });
@@ -180,6 +207,53 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
               </select>
             )}
             {errors.area && <span className="cw-input-error">⚠ {errors.area}</span>}
+
+            {/* Selector de Contrato y Descansos */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1rem' }}>
+              <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                <label className="cw-label">Tipo de Contrato</label>
+                <select
+                  className="cw-input"
+                  value={form.tipo_contrato}
+                  onChange={e => {
+                    setForm(p => ({ ...p, tipo_contrato: e.target.value }));
+                  }}
+                >
+                  <option value="POR_HORAS">Por Horas (Dom a Dom)</option>
+                  <option value="SALARIO_FIJO">Salario Fijo</option>
+                </select>
+              </div>
+              <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                <label className="cw-label">Días de Descanso</label>
+                <select
+                  className="cw-input"
+                  value={form.dias_descanso_semana}
+                  onChange={e => setForm(p => ({ ...p, dias_descanso_semana: parseInt(e.target.value) }))}
+                >
+                  <option value={1}>1 Día</option>
+                  <option value={2}>2 Días</option>
+                </select>
+              </div>
+            </div>
+
+            {form.tipo_contrato === 'SALARIO_FIJO' && (
+              <div className="cw-form-group" style={{ marginTop: '1rem', marginBottom: 0 }}>
+                <label className="cw-label">Turno Predeterminado</label>
+                <select
+                  className="cw-input"
+                  value={form.turno_predeterminado_id || ''}
+                  onChange={e => setForm(p => ({ ...p, turno_predeterminado_id: e.target.value || null }))}
+                >
+                  <option value="">— Ninguno —</option>
+                  {templates.map(t => (
+                    <option key={t.id} value={t.id}>{t.nombre} ({t.hora_inicio.slice(0,5)} - {t.hora_fin.slice(0,5)})</option>
+                  ))}
+                </select>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  Solo aplicable si el área tiene franjas horarias configuradas.
+                </div>
+              </div>
+            )}
 
             {/* Info del área seleccionada */}
             {selectedArea && (
