@@ -330,7 +330,7 @@ export function useShifts(periodo = null) {
 
     let inserted = 0;
     if (shiftsToInsert.length > 0) {
-      const BATCH = 50;
+      const BATCH = 500;
       for (let i = 0; i < shiftsToInsert.length; i += BATCH) {
         const chunk = shiftsToInsert.slice(i, i + BATCH);
         const { error } = await supabase.from('shifts').insert(chunk);

@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   end_time      TIMESTAMPTZ NOT NULL,
   shift_type    VARCHAR(20) CHECK (shift_type IN ('morning', 'afternoon', 'night', 'custom')),
   periodo       VARCHAR(7) NOT NULL,  -- formato YYYY-MM
+  break_minutes INT DEFAULT 0,
   created_at    TIMESTAMPTZ DEFAULT NOW(),
   CONSTRAINT check_shift_times CHECK (end_time > start_time)
 );
@@ -129,19 +130,23 @@ DECLARE
   v_semana_inicio DATE;
   v_semana_fin DATE;
 BEGIN
-  v_horas_turno := EXTRACT(EPOCH FROM (NEW.end_time - NEW.start_time)) / 3600;
+  v_horas_turno := (EXTRACT(EPOCH FROM (NEW.end_time - NEW.start_time)) / 3600) - (COALESCE(NEW.break_minutes, 0) / 60.0);
+  IF v_horas_turno < 0 THEN
+    v_horas_turno := 0;
+  END IF;
+
   v_fecha := DATE(NEW.start_time AT TIME ZONE 'America/Bogota');
   v_semana_inicio := DATE_TRUNC('week', v_fecha)::DATE;
   v_semana_fin := v_semana_inicio + INTERVAL '6 days';
 
-  SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 3600), 0)
+  SELECT COALESCE(SUM((EXTRACT(EPOCH FROM (end_time - start_time)) / 3600) - (COALESCE(break_minutes, 0) / 60.0)), 0)
   INTO v_dia_horas
   FROM shifts
   WHERE employee_id = NEW.employee_id
     AND DATE(start_time AT TIME ZONE 'America/Bogota') = v_fecha
     AND id != COALESCE(NEW.id, uuid_generate_v4());
 
-  SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (end_time - start_time)) / 3600), 0)
+  SELECT COALESCE(SUM((EXTRACT(EPOCH FROM (end_time - start_time)) / 3600) - (COALESCE(break_minutes, 0) / 60.0)), 0)
   INTO v_semana_horas
   FROM shifts
   WHERE employee_id = NEW.employee_id
