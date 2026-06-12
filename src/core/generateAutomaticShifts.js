@@ -164,6 +164,41 @@ export function generateAutomaticShifts({
     return slot >= nightStartSlot && slot < nightEndSlot;
   };
 
+  // Determina si un slot de inicio es válido para turno nocturno/diurno y devuelve su tope
+  const getShiftBounds = (startSlot) => {
+    const minS = limits.minHorasTurno * 4;
+    if (!nightConfig) {
+      return { isNightShift: false, maxEndSlot: startSlot + limits.maxHorasTurno * 4, isValid: true };
+    }
+
+    let nightWindowEnd = -1;
+    if (nightCrosses) {
+      if (startSlot >= nightStartSlot) nightWindowEnd = nightEndRaw + SLOTS_PER_DAY;
+      else if (startSlot < nightEndRaw) nightWindowEnd = nightEndRaw;
+    } else {
+      if (startSlot >= nightStartSlot && startSlot < nightEndSlot) nightWindowEnd = nightEndSlot;
+    }
+
+    if (nightWindowEnd !== -1 && startSlot + minS <= nightWindowEnd) {
+      return { isNightShift: true, maxEndSlot: nightWindowEnd, isValid: true };
+    }
+
+    let dayWindowStart, dayWindowEnd;
+    if (nightCrosses) {
+      dayWindowStart = Math.max(0, nightEndRaw - 8); // e.g. 04:00 si fin noche es 06:00
+      dayWindowEnd = nightStartSlot + 4; // e.g. 23:00 si inicio noche es 22:00
+    } else {
+      dayWindowStart = 0;
+      dayWindowEnd = SLOTS_PER_DAY;
+    }
+
+    if (startSlot >= dayWindowStart && startSlot + minS <= dayWindowEnd) {
+      return { isNightShift: false, maxEndSlot: dayWindowEnd, isValid: true };
+    }
+
+    return { isValid: false };
+  };
+
   // ── Helpers ────────────────────────────────────────────────────────────
   const isBlocked = (empId, dateStr) =>
     absences.some(a =>
@@ -331,6 +366,15 @@ export function generateAutomaticShifts({
       const totalDeficit = defVec.reduce((s, v) => s + v, 0);
       if (totalDeficit === 0) continue;
 
+      // Calcular vectores del día siguiente para turnos que cruzan la medianoche
+      const nextDate = addDays(day.date, 1);
+      const nextDayStr = format(nextDate, 'yyyy-MM-dd');
+      const nextDayOfWeek = nextDate.getDay() === 0 ? 7 : nextDate.getDay();
+      const nextIsWeekend = nextDate.getDay() === 0 || nextDate.getDay() === 6;
+      const nextDemVec = buildDemandVector(nextDayOfWeek, demandSlots, employees.length, nextIsWeekend);
+      const nextCovVec = getCoverageVector(nextDayStr);
+      const nextDefVec = nextDemVec.map((d, i) => Math.max(0, d - nextCovVec[i]));
+
       const minSlots = limits.minHorasTurno * 4;
       const maxSlots = limits.maxHorasTurno * 4;
 
@@ -338,9 +382,7 @@ export function generateAutomaticShifts({
       let bestStartSlot = -1;
       let bestScore = -1;
 
-      // Si hay config nocturna, restringir la búsqueda según disponibilidad
-      // de empleados: si quedan nocturnos libres, buscar en ventana nocturna;
-      // si no quedan, solo ventana diurna.
+      // Si hay config nocturna, restringir la búsqueda según disponibilidad de empleados
       const nightFreeThisDay = nightConfig
         ? [...empNocturnosIds].some(id =>
             !restDays.has(`${id}_${day.dateStr}`) &&
@@ -352,19 +394,29 @@ export function generateAutomaticShifts({
       // Construir rango de slots permitidos para esta iteración
       const allowedSlots = [];
       for (let s = 0; s < SLOTS_PER_DAY; s++) {
-        const sIsNight = isNightSlot(s);
+        const bounds = getShiftBounds(s);
+        if (!bounds.isValid) continue;
+
         if (nightConfig) {
-          if (sIsNight && !nightFreeThisDay) continue;   // no hay nocturnos → skip noche
-          if (!sIsNight && nightFreeThisDay && defVec[s] === 0) continue; // priorizar noche si hay déficit nocturno
+          if (bounds.isNightShift && !nightFreeThisDay) continue;   // no hay nocturnos → skip noche
         }
         allowedSlots.push(s);
       }
 
-      for (const start of allowedSlots.filter(s => s <= SLOTS_PER_DAY - minSlots)) {
+      for (const start of allowedSlots) {
         let score = 0;
-        for (let s = start; s < Math.min(start + maxSlots, SLOTS_PER_DAY); s++) {
-          score += defVec[s];
-          if (covVec[s] >= demVec[s]) score -= 0.5; // penalizar sobertura
+        const bounds = getShiftBounds(start);
+        const limitEnd = Math.min(start + maxSlots, bounds.maxEndSlot);
+        
+        for (let s = start; s < limitEnd; s++) {
+          if (s < SLOTS_PER_DAY) {
+            score += defVec[s];
+            if (covVec[s] >= demVec[s]) score -= 0.5; // penalizar cobertura
+          } else {
+            const nextS = s - SLOTS_PER_DAY;
+            score += nextDefVec[nextS];
+            if (nextCovVec[nextS] >= nextDemVec[nextS]) score -= 0.5;
+          }
         }
         if (score > bestScore) {
           bestScore = score;
@@ -376,21 +428,27 @@ export function generateAutomaticShifts({
 
       // Calcular duración óptima: extender mientras hay déficit
       let duration = minSlots;
-      for (let s = bestStartSlot + minSlots; s < Math.min(bestStartSlot + maxSlots, SLOTS_PER_DAY); s++) {
-        if (defVec[s] > 0) duration = s - bestStartSlot + 1;
+      const bounds = getShiftBounds(bestStartSlot);
+      const limitEnd = Math.min(bestStartSlot + maxSlots, bounds.maxEndSlot);
+      
+      for (let s = bestStartSlot + minSlots; s < limitEnd; s++) {
+        let def = s < SLOTS_PER_DAY ? defVec[s] : nextDefVec[s - SLOTS_PER_DAY];
+        if (def > 0) duration = s - bestStartSlot + 1;
       }
+      
       // Redondear a múltiplo de 4 slots = 1 hora (para horas limpias)
       duration = Math.max(minSlots, Math.ceil(duration / 4) * 4);
-      duration = Math.min(duration, maxSlots);
+      // Asegurar que no sobrepase el límite máximo permitido
+      duration = Math.min(duration, limitEnd - bestStartSlot);
 
-      const shiftEndSlot = Math.min(bestStartSlot + duration, SLOTS_PER_DAY);
-      const shiftHours   = (shiftEndSlot - bestStartSlot) / 4;
+      const shiftEndSlot = bestStartSlot + duration;
+      const shiftHours   = duration / 4;
       const startTimeStr = slotToTime(bestStartSlot);
       const endTimeStr   = slotToTime(shiftEndSlot % SLOTS_PER_DAY);
       const crossesMidnight = shiftEndSlot >= SLOTS_PER_DAY;
 
-      // Determinar si el turno calculado es nocturno
-      const shiftIsNight = nightConfig && isNightSlot(bestStartSlot);
+      // Determinar si el turno calculado es nocturno basándose en los límites
+      const shiftIsNight = bounds.isNightShift;
 
       // Buscar empleado compatible: nocturno si el turno es nocturno, diurno si no
       const candidatePool = empPorHoras.filter(emp => {
@@ -420,7 +478,6 @@ export function generateAutomaticShifts({
 
       if (!candidate) continue;
 
-      const nextDayStr = format(addDays(day.date, 1), 'yyyy-MM-dd');
       generatedShifts.push({
         employee_id:  candidate.id,
         template_id:  null,
