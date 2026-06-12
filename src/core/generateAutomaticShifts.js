@@ -87,6 +87,13 @@ export function generateAutomaticShifts({
   demandSlots = [],
   modoOperacion = 'OFICINA',
   laborLimits = {},
+  nightShiftConfig = null,
+  // nightShiftConfig = {
+  //   enabled: boolean,
+  //   start: '22:00',   // hora inicio jornada nocturna
+  //   end:   '06:00',   // hora fin (puede cruzar medianoche)
+  //   employeeIds: []   // vacío = el sistema los elige automáticamente
+  // }
 }) {
   const generatedShifts = [];
   const warnings = [];
@@ -113,6 +120,49 @@ export function generateAutomaticShifts({
 
   const empFijos    = employees.filter(e => e.tipo_contrato === 'SALARIO_FIJO');
   const empPorHoras = employees.filter(e => e.tipo_contrato !== 'SALARIO_FIJO');
+
+  // ── Configuración de Jornada Nocturna (solo modo 24_7) ─────────────────
+  const nightConfig = modoOperacion === '24_7' && nightShiftConfig?.enabled
+    ? nightShiftConfig
+    : null;
+
+  // Convertir hora nocturna a slots
+  const nightStartSlot = nightConfig ? timeToSlot(nightConfig.start) : null;
+  const nightEndRaw    = nightConfig ? timeToSlot(nightConfig.end)    : null;
+  // Si cruza medianoche (end < start), el "end real" en slots es end + 96
+  const nightCrosses   = nightConfig ? (nightEndRaw <= nightStartSlot) : false;
+  const nightEndSlot   = nightConfig
+    ? (nightCrosses ? nightEndRaw + SLOTS_PER_DAY : nightEndRaw)
+    : null;
+
+  // Empleados nocturnos: los designados manualmente, o los que el sistema elige
+  let nightEmployeeIds = new Set();
+  if (nightConfig) {
+    if (nightConfig.employeeIds && nightConfig.employeeIds.length > 0) {
+      // Fueron elegidos manualmente
+      nightEmployeeIds = new Set(nightConfig.employeeIds);
+    } else {
+      // El sistema elige automáticamente: ~33% de los empleados por horas
+      // (aprox. 1 de cada 3 turnos es nocturno en 24/7)
+      const sortedByHrs = [...empPorHoras].sort((a, b) => a.id.localeCompare(b.id));
+      const countNight  = Math.max(1, Math.ceil(sortedByHrs.length / 3));
+      sortedByHrs.slice(0, countNight).forEach(e => nightEmployeeIds.add(e.id));
+    }
+  }
+
+  // Separar empleados en: nocturnos (solo noche) y diurnos (resto del día)
+  const empNocturnosIds = nightEmployeeIds;
+  // Un empleado nocturno NO puede recibir turno fuera de la ventana nocturna
+  const isNightEmployee = (empId) => nightConfig && empNocturnosIds.has(empId);
+
+  // Función que verifica si un slot cae dentro de la jornada nocturna
+  const isNightSlot = (slot) => {
+    if (!nightConfig) return false;
+    if (nightCrosses) {
+      return slot >= nightStartSlot || slot < nightEndRaw;
+    }
+    return slot >= nightStartSlot && slot < nightEndSlot;
+  };
 
   // ── Helpers ────────────────────────────────────────────────────────────
   const isBlocked = (empId, dateStr) =>
@@ -288,7 +338,29 @@ export function generateAutomaticShifts({
       let bestStartSlot = -1;
       let bestScore = -1;
 
-      for (let start = 0; start <= SLOTS_PER_DAY - minSlots; start++) {
+      // Si hay config nocturna, restringir la búsqueda según disponibilidad
+      // de empleados: si quedan nocturnos libres, buscar en ventana nocturna;
+      // si no quedan, solo ventana diurna.
+      const nightFreeThisDay = nightConfig
+        ? [...empNocturnosIds].some(id =>
+            !restDays.has(`${id}_${day.dateStr}`) &&
+            !hasShiftOnDay(id, day.dateStr) &&
+            !isBlocked(id, day.dateStr)
+          )
+        : false;
+
+      // Construir rango de slots permitidos para esta iteración
+      const allowedSlots = [];
+      for (let s = 0; s < SLOTS_PER_DAY; s++) {
+        const sIsNight = isNightSlot(s);
+        if (nightConfig) {
+          if (sIsNight && !nightFreeThisDay) continue;   // no hay nocturnos → skip noche
+          if (!sIsNight && nightFreeThisDay && defVec[s] === 0) continue; // priorizar noche si hay déficit nocturno
+        }
+        allowedSlots.push(s);
+      }
+
+      for (const start of allowedSlots.filter(s => s <= SLOTS_PER_DAY - minSlots)) {
         let score = 0;
         for (let s = start; s < Math.min(start + maxSlots, SLOTS_PER_DAY); s++) {
           score += defVec[s];
@@ -317,8 +389,19 @@ export function generateAutomaticShifts({
       const endTimeStr   = slotToTime(shiftEndSlot % SLOTS_PER_DAY);
       const crossesMidnight = shiftEndSlot >= SLOTS_PER_DAY;
 
-      // Buscar empleado con menos horas semanales que cumpla todos los requisitos
-      const candidate = [...empPorHoras]
+      // Determinar si el turno calculado es nocturno
+      const shiftIsNight = nightConfig && isNightSlot(bestStartSlot);
+
+      // Buscar empleado compatible: nocturno si el turno es nocturno, diurno si no
+      const candidatePool = empPorHoras.filter(emp => {
+        if (nightConfig) {
+          if (shiftIsNight && !isNightEmployee(emp.id)) return false;   // turno nocturno → solo nocturnos
+          if (!shiftIsNight && isNightEmployee(emp.id)) return false;   // turno diurno → no nocturnos
+        }
+        return true;
+      });
+
+      const candidate = [...candidatePool]
         .filter(emp => {
           if (isBlocked(emp.id, day.dateStr)) return false;
           if (restDays.has(`${emp.id}_${day.dateStr}`)) return false;

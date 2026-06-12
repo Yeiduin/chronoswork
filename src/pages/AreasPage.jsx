@@ -33,15 +33,20 @@ const DIAS_SEMANA = [
 // ─── Modal crear/editar Área ────────────────────────────────────────────────
 function AreaModal({ area, onClose, onSave }) {
   const isEdit = !!area;
+  const areaEmps = area?.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
   const [form, setForm] = useState({
     nombre: area?.nombre || '',
     descripcion: area?.descripcion || '',
     color: area?.color || '#6366f1',
     dias_trabajo: area?.dias_trabajo || [1, 2, 3, 4, 5],
     valor_hora_default: area?.valor_hora_default || '',
-    modo_operacion: area?.modo_operacion || 'OFICINA',
+    modo_operacion:             area?.modo_operacion             || 'OFICINA',
     tipo_contrato_default: area?.tipo_contrato_default || 'POR_HORAS',
     dias_descanso_default: area?.dias_descanso_default || 1,
+    night_shift_enabled:        area?.night_shift_enabled        || false,
+    night_shift_start:          area?.night_shift_start          || '22:00',
+    night_shift_end:            area?.night_shift_end            || '06:00',
+    night_shift_employee_ids:   area?.night_shift_employee_ids   || [],
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -149,6 +154,84 @@ function AreaModal({ area, onClose, onSave }) {
             {form.modo_operacion === '24_7' && (
               <div style={{ marginTop: '0.5rem', padding: '0.65rem 0.875rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
                 <strong>⚖️ Ley laboral colombiana (CST):</strong> El algoritmo aplica automáticamente recargos de HON (+35%), HOD (+80%/90%), HCDN (+115%/125%) y horas extra nocturnas dominicales según el período A/B. Límite: 42h/semana, máx. 2h extra/día y 12h extra/semana.
+              </div>
+            )}
+            {form.modo_operacion === '24_7' && (
+              <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 10 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={form.night_shift_enabled}
+                    onChange={e => setForm(p => ({ ...p, night_shift_enabled: e.target.checked }))}
+                  />
+                  🌙 Activar Jornada Nocturna Dedicada
+                </label>
+
+                {form.night_shift_enabled && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                      Los trabajadores asignados a esta jornada <strong>solo recibirán turnos dentro del horario nocturno</strong> y no serán asignados en horario diurno durante el período.
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '1rem' }}>
+                      <div className="cw-form-group" style={{ flex: 1, marginBottom: 0 }}>
+                        <label className="cw-label">Inicio jornada nocturna</label>
+                        <input
+                          type="time"
+                          className="cw-input"
+                          value={form.night_shift_start}
+                          onChange={e => setForm(p => ({ ...p, night_shift_start: e.target.value }))}
+                        />
+                      </div>
+                      <div className="cw-form-group" style={{ flex: 1, marginBottom: 0 }}>
+                        <label className="cw-label">Fin jornada nocturna</label>
+                        <input
+                          type="time"
+                          className="cw-input"
+                          value={form.night_shift_end}
+                          onChange={e => setForm(p => ({ ...p, night_shift_end: e.target.value }))}
+                        />
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          Puede cruzar medianoche (ej: 22:00 → 06:00)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                      <label className="cw-label">
+                        Trabajadores nocturnos
+                        <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: '0.4rem' }}>
+                          (si no seleccionas ninguno, el sistema los elige automáticamente)
+                        </span>
+                      </label>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: 160, overflowY: 'auto', padding: '0.5rem', background: 'var(--bg-glass)', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
+                        {areaEmps.map(emp => (
+                          <label key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.8rem' }}>
+                            <input
+                              type="checkbox"
+                              checked={(form.night_shift_employee_ids || []).includes(emp.id)}
+                              onChange={e => {
+                                const ids = form.night_shift_employee_ids || [];
+                                setForm(p => ({
+                                  ...p,
+                                  night_shift_employee_ids: e.target.checked
+                                    ? [...ids, emp.id]
+                                    : ids.filter(id => id !== emp.id)
+                                }));
+                              }}
+                            />
+                            {emp.nombre}
+                          </label>
+                        ))}
+                        {areaEmps.length === 0 && (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            Primero guarda el área y agrega colaboradores para seleccionarlos aquí.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {form.modo_operacion === 'OFICINA' && (
@@ -825,6 +908,16 @@ export default function AreasPage() {
         }
       }
 
+      // Construir config nocturna desde los datos del área
+      const nightShiftConfig = (area.modo_operacion === '24_7' && area.night_shift_enabled)
+        ? {
+            enabled:     true,
+            start:       area.night_shift_start  || '22:00',
+            end:         area.night_shift_end    || '06:00',
+            employeeIds: area.night_shift_employee_ids || [],
+          }
+        : null;
+
       const result = await autoAssignShifts({
         employees: finalEmployees,
         templates: templates || [],
@@ -837,6 +930,7 @@ export default function AreasPage() {
         modoOperacion: area.modo_operacion || 'OFICINA',
         laborLimits: area.labor_limits || null,
         areaId: area.id,
+        nightShiftConfig,
       });
       setAutoAssignResult({ ...result, areaName: area.nombre });
     } catch (err) {

@@ -711,6 +711,16 @@ export default function SchedulingPage() {
           }
         }
 
+        // Construir config nocturna desde los datos del área
+        const nightShiftConfig = (area.modo_operacion === '24_7' && area.night_shift_enabled)
+          ? {
+              enabled:     true,
+              start:       area.night_shift_start  || '22:00',
+              end:         area.night_shift_end    || '06:00',
+              employeeIds: area.night_shift_employee_ids || [],
+            }
+          : null;
+
         const result = await autoAssignShifts({
           employees: finalEmployees,
           templates,
@@ -722,6 +732,7 @@ export default function SchedulingPage() {
           diasToProcess: processedDays,
           areaId: area.id,
           modoOperacion: area.modo_operacion,
+          nightShiftConfig,
         });
         
         if (result.error) {

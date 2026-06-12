@@ -160,7 +160,7 @@ export function useShifts(periodo = null) {
    * @returns {{ inserted: number, skipped: number, alertaDias: string[] }}
    */
   const autoAssignShifts = async (params) => {
-    const { employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess, areaId, modoOperacion, laborLimits } = params;
+    const { employees, templates, absences, existingShifts, year, month, diasTrabajo, strategyOptions, diasToProcess, areaId, modoOperacion, laborLimits, nightShiftConfig } = params;
     if (!tenant || !employees.length) {
       return { inserted: 0, skipped: 0, alertaDias: [] };
     }
@@ -188,6 +188,7 @@ export function useShifts(periodo = null) {
       diasToProcess: diasToProcess || [],
       demandSlots,
       laborLimits: laborLimits || {},
+      nightShiftConfig: nightShiftConfig || null,
     });
 
     let inserted = 0;
