@@ -10,9 +10,10 @@ import {
   MdBolt, MdDomain, MdWarning
 } from 'react-icons/md';
 import { getPeriodoActual, getDiasMes, getDatesByOption } from '../core/dateUtils';
-import { AutoAssignModal } from '../components/AutoAssignModal';
-import { DemandCurveConfig } from '../components/DemandCurveConfig';
 import { format } from 'date-fns';
+import { AutoAssignModal } from '../components/AutoAssignModal';
+import { DemandCurveEditor } from '../components/DemandCurveEditor';
+import { LaborLimitsConfig } from '../components/LaborLimitsConfig';
 
 const PALETTE = [
   '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b',
@@ -504,6 +505,22 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
   const [showModal, setShowModal] = useState(false);
   const [editTemplate, setEditTemplate] = useState(null);
   const [showImport, setShowImport] = useState(false);
+  const [hasDemandSlots, setHasDemandSlots] = useState(false);
+
+  useEffect(() => {
+    if (area?.id) {
+      supabase
+        .from('area_demand_slots')
+        .select('id')
+        .eq('area_id', area.id)
+        .limit(1)
+        .then(({ data }) => {
+          setHasDemandSlots(!!data?.length);
+        });
+    } else {
+      setHasDemandSlots(false);
+    }
+  }, [area.id, shifts]);
 
   const handleImport = async (globalTpl) => {
     await createTemplate({
@@ -679,8 +696,8 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
         className="cw-btn cw-btn--primary"
         style={{ width: '100%', marginTop: '1rem', justifyContent: 'center' }}
         onClick={() => onAutoAssign(area)}
-        disabled={autoAssignLoading || templates.length === 0 || !area.area_employees?.length}
-        title={templates.length === 0 ? 'Agrega franjas horarias primero' : !area.area_employees?.length ? 'Asigna empleados primero' : ''}
+        disabled={autoAssignLoading || (!templates.length && !hasDemandSlots) || !area.area_employees?.length}
+        title={(!templates.length && !hasDemandSlots) ? 'Agrega franjas horarias o una curva de demanda primero' : !area.area_employees?.length ? 'Asigna empleados primero' : ''}
       >
         {autoAssignLoading ? (
           <><span className="cw-spinner cw-spinner--sm"></span> Asignando...</>
@@ -833,6 +850,26 @@ export default function AreasPage() {
 
       const processedDays = getDatesByOption(strategyOptions.dateRangeOption, strategyOptions.customStart, strategyOptions.customEnd);
 
+      let finalEmployees = [...areaEmps];
+      if (strategyOptions.onlyNewEmployees && processedDays.length > 0) {
+        const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
+        const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
+        
+        const { data: existing } = await supabase
+          .from('shifts')
+          .select('employee_id')
+          .in('employee_id', empIds)
+          .gte('start_time', `${dStartStr}T00:00:00`)
+          .lte('start_time', `${dEndStr}T23:59:59`);
+        
+        const empIdsWithShifts = new Set(existing?.map(s => s.employee_id) || []);
+        finalEmployees = finalEmployees.filter(emp => !empIdsWithShifts.has(emp.id));
+
+        if (finalEmployees.length === 0) {
+          throw new Error('Todos los colaboradores ya tienen turnos programados en este período.');
+        }
+      }
+
       if (strategyOptions.reprogramar && processedDays.length > 0) {
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
@@ -850,7 +887,7 @@ export default function AreasPage() {
       }
 
       const result = await autoAssignShifts({
-        employees: areaEmps,
+        employees: finalEmployees,
         templates: templates || [],
         absences: areaAbsences,
         existingShifts: areaShifts,
@@ -862,6 +899,7 @@ export default function AreasPage() {
         coberturaMaximaDiaria: area.cobertura_maxima_diaria || 10,
         coberturaPorTurno: area.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] },
         modoOperacion: area.modo_operacion || 'OFICINA',
+        laborLimits: area.labor_limits || null,
         areaId: area.id,
       });
       setAutoAssignResult({ ...result, areaName: area.nombre });
@@ -1050,8 +1088,16 @@ export default function AreasPage() {
                   autoAssignLoading={autoAssignLoading}
                 />
 
+                {/* Límites de jornada laboral */}
+                <LaborLimitsConfig
+                  value={selectedArea.labor_limits}
+                  onChange={async (newLimits) => {
+                    await updateArea(selectedArea.id, { labor_limits: newLimits });
+                  }}
+                />
+
                 {/* Curvas de Demanda WFM */}
-                <DemandCurveConfig area={selectedArea} />
+                <DemandCurveEditor area={selectedArea} />
               </div>
             </div>
           ) : null}

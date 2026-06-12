@@ -680,14 +680,39 @@ export default function SchedulingPage() {
         const { data: templates } = await supabase
           .from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
 
-        if (!templates?.length) {
-          erroresValidacion.push(`${area.nombre}: No tiene plantillas de turno configuradas.`);
+        const { data: demandSlots } = await supabase
+          .from('area_demand_slots').select('id').eq('area_id', area.id).limit(1);
+
+        if (!templates?.length && !demandSlots?.length) {
+          erroresValidacion.push(`${area.nombre}: No tiene plantillas de turno ni curva de demanda configuradas.`);
           continue;
         }
 
         const empIds = areaEmps.map(e => e.id);
+        let finalEmployees = [...areaEmps];
+        
+        if (strategyOptions.onlyNewEmployees && processedDays.length > 0) {
+          const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
+          const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
+          
+          const { data: existing } = await supabase
+            .from('shifts')
+            .select('employee_id')
+            .in('employee_id', empIds)
+            .gte('start_time', `${dStartStr}T00:00:00`)
+            .lte('start_time', `${dEndStr}T23:59:59`);
+          
+          const empIdsWithShifts = new Set(existing?.map(s => s.employee_id) || []);
+          finalEmployees = finalEmployees.filter(emp => !empIdsWithShifts.has(emp.id));
+          
+          if (!finalEmployees.length) {
+            erroresValidacion.push(`${area.nombre}: Todos los colaboradores ya tienen turnos programados en este período.`);
+            continue;
+          }
+        }
+
         const result = await autoAssignShifts({
-          employees: areaEmps,
+          employees: finalEmployees,
           templates,
           absences: absences.filter(a => empIds.includes(a.employee_id)),
           existingShifts: shifts.filter(s => empIds.includes(s.employee_id)),

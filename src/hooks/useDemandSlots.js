@@ -118,8 +118,62 @@ export function useDemandSlots(areaId) {
     }
   };
 
+  /**
+   * Reemplaza TODOS los slots de los días indicados en una sola operación atómica:
+   * 1) Borra todos los slots de esos días (una sola query DELETE con IN)
+   * 2) Inserta todos los segmentos en un solo INSERT batch
+   * 3) Hace UN SOLO fetchDemandSlots al final
+   *
+   * Esto evita los N fetches intermedios que causaban N scrolls.
+   *
+   * @param {number[]} days      - Array de day_of_week (1-7)
+   * @param {{ start_hour, end_hour, required_staff }[]} segments
+   */
+  const bulkReplaceDaySlots = async (days, segments) => {
+    if (!tenant || !areaId || !days.length) return;
+    setLoading(true);
+    try {
+      // 1. Borrar todos los slots de esos días en una query
+      const { error: delErr } = await supabase
+        .from('area_demand_slots')
+        .delete()
+        .eq('tenant_id', tenant.id)
+        .eq('area_id', areaId)
+        .in('day_of_week', days);
+      if (delErr) throw delErr;
+
+      // 2. Insertar todos los segmentos × días en un solo batch
+      if (segments.length > 0) {
+        const inserts = segments.flatMap(seg => {
+          const groupId = crypto.randomUUID(); // un group_id por segmento
+          return days.map(d => ({
+            tenant_id:      tenant.id,
+            area_id:        areaId,
+            group_id:       groupId,
+            day_of_week:    d,
+            start_hour:     seg.start_hour,
+            end_hour:       seg.end_hour,
+            required_staff: seg.required_staff,
+          }));
+        });
+        const { error: insErr } = await supabase
+          .from('area_demand_slots')
+          .insert(inserts);
+        if (insErr) throw insErr;
+      }
+
+      // 3. UN SOLO fetch — los datos ya son correctos, el draft no colapsa
+      await fetchDemandSlots();
+    } catch (err) {
+      setLoading(false);
+      setError(err.message);
+      throw err;
+    }
+  };
+
   return {
     demandSlots, loading, error, fetchDemandSlots,
-    createDemandSlotGroup, updateDemandSlotGroup, deleteDemandSlotGroup
+    createDemandSlotGroup, updateDemandSlotGroup, deleteDemandSlotGroup,
+    bulkReplaceDaySlots,
   };
 }
