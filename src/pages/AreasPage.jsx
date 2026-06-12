@@ -40,6 +40,8 @@ function AreaModal({ area, onClose, onSave }) {
     dias_trabajo: area?.dias_trabajo || [1, 2, 3, 4, 5],
     valor_hora_default: area?.valor_hora_default || '',
     modo_operacion: area?.modo_operacion || 'OFICINA',
+    tipo_contrato_default: area?.tipo_contrato_default || 'POR_HORAS',
+    dias_descanso_default: area?.dias_descanso_default || 1,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -219,6 +221,44 @@ function AreaModal({ area, onClose, onSave }) {
                 = {new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(parseFloat(form.valor_hora_default))} / hora · Aplica a todos los empleados del área
               </span>
             )}
+          </div>
+
+          {/* Defaults de contrato para nuevos empleados */}
+          <div className="cw-form-group">
+            <label className="cw-label">
+              Configuración predeterminada para nuevos colaboradores
+            </label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+              <div>
+                <label className="cw-label" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  Tipo de Contrato
+                </label>
+                <select
+                  className="cw-input"
+                  value={form.tipo_contrato_default}
+                  onChange={e => setForm(p => ({ ...p, tipo_contrato_default: e.target.value }))}
+                >
+                  <option value="POR_HORAS">Por Horas (Dom a Dom)</option>
+                  <option value="SALARIO_FIJO">Salario Fijo</option>
+                </select>
+              </div>
+              <div>
+                <label className="cw-label" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  Días de Descanso / Semana
+                </label>
+                <select
+                  className="cw-input"
+                  value={form.dias_descanso_default}
+                  onChange={e => setForm(p => ({ ...p, dias_descanso_default: parseInt(e.target.value) }))}
+                >
+                  <option value={1}>1 Día</option>
+                  <option value={2}>2 Días</option>
+                </select>
+              </div>
+            </div>
+            <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+              Estos valores se arrastran automáticamente al asignar esta área a un colaborador.
+            </div>
           </div>
 
           <div className="cw-modal__footer">

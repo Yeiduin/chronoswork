@@ -34,20 +34,49 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
     );
     return areaEmp?.id || '';
   });
+  const [initialAreaId] = useState(selectedAreaId);
   const [esEspecial, setEsEspecial] = useState(detectaEspecial);
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // Auto-llenar salario al seleccionar área (si no es especial)
+  // Auto-llenar campos al seleccionar área (si no es especial)
   useEffect(() => {
-    if (!esEspecial && selectedAreaId) {
-      const area = areas.find(a => a.id === selectedAreaId);
-      if (area?.valor_hora_default) {
-        setForm(prev => ({ ...prev, valor_hora: area.valor_hora_default.toString() }));
-        setErrors(prev => ({ ...prev, valor_hora: '' }));
+    if (!selectedAreaId) return;
+    const area = areas.find(a => a.id === selectedAreaId);
+    if (!area) return;
+
+    // Si estamos editando y el área seleccionada es la inicial, NO sobrescribir los valores propios del empleado
+    const isInitialAreaInEdit = isEdit && selectedAreaId === initialAreaId;
+
+    setForm(prev => {
+      const updates = {};
+
+      // Salario: solo si no es especial y no es el área inicial al editar
+      if (!esEspecial && !isInitialAreaInEdit && area.valor_hora_default) {
+        updates.valor_hora = area.valor_hora_default.toString();
       }
+
+      // Tipo de contrato y días de descanso: solo si no es el área inicial al editar
+      if (!isInitialAreaInEdit) {
+        if (area.tipo_contrato_default) {
+          updates.tipo_contrato = area.tipo_contrato_default;
+          // Si el tipo de contrato cambia, limpiar turno predeterminado
+          if (area.tipo_contrato_default !== prev.tipo_contrato) {
+            updates.turno_predeterminado_id = '';
+          }
+        }
+        if (area.dias_descanso_default !== undefined && area.dias_descanso_default !== null) {
+          updates.dias_descanso_semana = area.dias_descanso_default;
+        }
+      }
+
+      return { ...prev, ...updates };
+    });
+
+    if (!isInitialAreaInEdit) {
+      setErrors(prev => ({ ...prev, valor_hora: '' }));
     }
-  }, [selectedAreaId, esEspecial, areas]);
+  }, [selectedAreaId, esEspecial, areas, isEdit, initialAreaId]);
 
   const [templates, setTemplates] = useState([]);
 
@@ -74,8 +103,20 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
       setForm(prev => ({ ...prev, valor_hora: '' }));
     } else if (selectedAreaId) {
       const area = areas.find(a => a.id === selectedAreaId);
-      if (area?.valor_hora_default) {
-        setForm(prev => ({ ...prev, valor_hora: area.valor_hora_default.toString() }));
+      if (area) {
+        const isInitialAreaInEdit = isEdit && selectedAreaId === initialAreaId;
+        const targetValorHora = isInitialAreaInEdit
+          ? (employee?.valor_hora?.toString() || '')
+          : (area.valor_hora_default ? area.valor_hora_default.toString() : '');
+
+        setForm(prev => ({
+          ...prev,
+          valor_hora: targetValorHora,
+          ...(!isInitialAreaInEdit ? {
+            ...(area.tipo_contrato_default ? { tipo_contrato: area.tipo_contrato_default } : {}),
+            ...(area.dias_descanso_default != null ? { dias_descanso_semana: area.dias_descanso_default } : {}),
+          } : {})
+        }));
       }
     }
   };
@@ -267,10 +308,20 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: selectedArea.color, flexShrink: 0 }} />
                 <span style={{ color: 'var(--text-secondary)' }}>
                   {selectedArea.nombre} · {selectedArea.area_employees?.length || 0} colaboradores ·{' '}
-                  Salario base:{' '}
+                  Salario:{' '}
                   <strong style={{ color: 'var(--cw-success)' }}>
                     {selectedArea.valor_hora_default ? formatCOP(selectedArea.valor_hora_default) + '/h' : 'No definido'}
                   </strong>
+                  {selectedArea.tipo_contrato_default && (
+                    <> · Contrato: <strong style={{ color: 'var(--text-primary)' }}>
+                      {selectedArea.tipo_contrato_default === 'SALARIO_FIJO' ? 'Salario Fijo' : 'Por Horas'}
+                    </strong></>
+                  )}
+                  {selectedArea.dias_descanso_default != null && (
+                    <> · Descanso: <strong style={{ color: 'var(--text-primary)' }}>
+                      {selectedArea.dias_descanso_default} día{selectedArea.dias_descanso_default !== 1 ? 's' : ''}
+                    </strong></>
+                  )}
                 </span>
               </div>
             )}
