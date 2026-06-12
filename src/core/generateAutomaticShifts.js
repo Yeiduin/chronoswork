@@ -86,8 +86,6 @@ export function generateAutomaticShifts({
   diasToProcess = [],
   demandSlots = [],
   modoOperacion = 'OFICINA',
-  coberturaMinimaDiaria = 1,
-  coberturaMaximaDiaria = 99,
   laborLimits = {},
 }) {
   const generatedShifts = [];

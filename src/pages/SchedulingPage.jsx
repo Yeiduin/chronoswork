@@ -720,11 +720,8 @@ export default function SchedulingPage() {
           diasTrabajo: area.dias_trabajo || [1, 2, 3, 4, 5],
           strategyOptions,
           diasToProcess: processedDays,
-          areaId: area.id,  // nuevo: para cargar curva de demanda horaria si existe
+          areaId: area.id,
           modoOperacion: area.modo_operacion,
-          coberturaMinimaDiaria: area.cobertura_minima_diaria,
-          coberturaMaximaDiaria: area.cobertura_maxima_diaria,
-          coberturaPorTurno: area.cobertura_por_turno,
         });
         
         if (result.error) {

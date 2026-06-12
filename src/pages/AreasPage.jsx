@@ -39,23 +39,10 @@ function AreaModal({ area, onClose, onSave }) {
     color: area?.color || '#6366f1',
     dias_trabajo: area?.dias_trabajo || [1, 2, 3, 4, 5],
     valor_hora_default: area?.valor_hora_default || '',
-    cobertura_minima_diaria: area?.cobertura_minima_diaria || 1,
-    cobertura_maxima_diaria: area?.cobertura_maxima_diaria || 10,
-    cobertura_por_turno: area?.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] },
     modo_operacion: area?.modo_operacion || 'OFICINA',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [templates, setTemplates] = useState([]);
-
-  useEffect(() => {
-    async function loadTemplates() {
-      if (!isEdit) return;
-      const { data } = await supabase.from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
-      setTemplates(data || []);
-    }
-    loadTemplates();
-  }, [isEdit, area]);
 
   const toggleDia = (d) => {
     setForm(prev => ({
@@ -79,9 +66,6 @@ function AreaModal({ area, onClose, onSave }) {
       await onSave({
         ...form,
         valor_hora_default: valorNum,
-        cobertura_minima_diaria: parseInt(form.cobertura_minima_diaria) || 1,
-        cobertura_maxima_diaria: parseInt(form.cobertura_maxima_diaria) || 10,
-        cobertura_por_turno: form.cobertura_por_turno
       });
       onClose();
     } catch (err) {
@@ -234,91 +218,6 @@ function AreaModal({ area, onClose, onSave }) {
               <span style={{ fontSize: '0.78rem', color: 'var(--cw-success)' }}>
                 = {new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(parseFloat(form.valor_hora_default))} / hora · Aplica a todos los empleados del área
               </span>
-            )}
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <div className="cw-form-group">
-              <label className="cw-label">Cobertura Mínima Diaria</label>
-              <input
-                type="number"
-                min="0"
-                className="cw-input"
-                value={form.cobertura_minima_diaria}
-                onChange={e => setForm(p => ({ ...p, cobertura_minima_diaria: e.target.value }))}
-              />
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Personal base requerido por día</div>
-            </div>
-            <div className="cw-form-group">
-              <label className="cw-label">Cobertura Máxima Diaria</label>
-              <input
-                type="number"
-                min="1"
-                className="cw-input"
-                value={form.cobertura_maxima_diaria}
-                onChange={e => setForm(p => ({ ...p, cobertura_maxima_diaria: e.target.value }))}
-              />
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>Límite de personal por día</div>
-            </div>
-          </div>
-
-          <div style={{ margin: '1rem 0', padding: '1rem', background: 'var(--bg-glass)', borderRadius: 8, border: '1px solid var(--border-color)' }}>
-            <h4 style={{ fontSize: '0.85rem', marginBottom: '0.75rem', color: 'var(--text-primary)' }}>📈 Reglas de Alta Demanda (Prioridad de Asignación)</h4>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
-              El algoritmo asegura primero la Cobertura Mínima para todos los días/franjas. Si hay empleados con horas libres, se asignarán priorizando los días y franjas seleccionados aquí.
-            </div>
-            
-            <div className="cw-form-group">
-              <label className="cw-label">Días de Alta Demanda</label>
-              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                {form.dias_trabajo.map(d => {
-                  const dia = DIAS_SEMANA.find(x => x.value === d);
-                  const isHighDemand = (form.cobertura_por_turno?.diasAltaDemanda || []).includes(d);
-                  return (
-                    <button key={`hd-${d}`} type="button"
-                      onClick={() => {
-                        setForm(p => {
-                          const current = p.cobertura_por_turno?.diasAltaDemanda || [];
-                          const updated = current.includes(d) ? current.filter(x => x !== d) : [...current, d];
-                          return { ...p, cobertura_por_turno: { ...p.cobertura_por_turno, diasAltaDemanda: updated } };
-                        });
-                      }}
-                      className="cw-btn cw-btn--sm"
-                      style={{
-                        background: isHighDemand ? 'var(--cw-primary)' : 'var(--bg-elevated)',
-                        color: isHighDemand ? '#fff' : 'var(--text-secondary)',
-                        border: isHighDemand ? '1px solid var(--cw-primary)' : '1px solid var(--border-color)',
-                      }}>
-                      {dia?.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {isEdit && templates.length > 0 && (
-              <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                <label className="cw-label">Franjas de Alta Demanda</label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                  {templates.map(t => {
-                    const isHighDemand = (form.cobertura_por_turno?.franjasAltaDemanda || []).includes(t.id);
-                    return (
-                      <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={isHighDemand}
-                          onChange={(e) => {
-                            setForm(p => {
-                              const current = p.cobertura_por_turno?.franjasAltaDemanda || [];
-                              const updated = e.target.checked ? [...current, t.id] : current.filter(x => x !== t.id);
-                              return { ...p, cobertura_por_turno: { ...p.cobertura_por_turno, franjasAltaDemanda: updated } };
-                            });
-                          }}
-                        />
-                        {t.nombre} ({t.hora_inicio.slice(0,5)} - {t.hora_fin.slice(0,5)})
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
             )}
           </div>
 
@@ -895,9 +794,6 @@ export default function AreasPage() {
         diasTrabajo: area.modo_operacion === '24_7' ? [1,2,3,4,5,6,7] : (area.dias_trabajo || [1, 2, 3, 4, 5]),
         strategyOptions,
         diasToProcess: processedDays,
-        coberturaMinimaDiaria: area.cobertura_minima_diaria || 1,
-        coberturaMaximaDiaria: area.cobertura_maxima_diaria || 10,
-        coberturaPorTurno: area.cobertura_por_turno || { diasAltaDemanda: [], franjasAltaDemanda: [] },
         modoOperacion: area.modo_operacion || 'OFICINA',
         laborLimits: area.labor_limits || null,
         areaId: area.id,
