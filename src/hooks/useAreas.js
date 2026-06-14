@@ -109,6 +109,16 @@ export function useAreas() {
     await fetchAreas();
   };
 
+  const deleteAllAreas = async () => {
+    const { error } = await supabase
+      .from('areas')
+      .update({ activo: false })
+      .eq('tenant_id', tenant.id)
+      .eq('activo', true);
+    if (error) throw error;
+    await fetchAreas();
+  };
+
   /** Asigna un empleado a un área (remueve de la anterior si tenía) */
   const assignEmployee = async (areaId, employeeId) => {
     // Eliminar asignación previa del empleado (solo puede estar en 1 área)
@@ -151,7 +161,7 @@ export function useAreas() {
 
   return {
     areas, loading, error, fetchAreas,
-    createArea, updateArea, deleteArea,
+    createArea, updateArea, deleteArea, deleteAllAreas,
     assignEmployee, removeEmployee,
     getAreaEmployees, getEmployeeArea,
   };

@@ -3,9 +3,10 @@ import { useEmployees } from '../hooks/useEmployees';
 import { useAreas } from '../hooks/useAreas';
 import { supabase } from '../config/supabaseClient';
 import { validarCedula, validarValorHora, formatCOP } from '../core/validators';
+import BulkImportModal from '../components/BulkImportModal';
 import {
   MdAdd, MdEdit, MdDelete, MdClose, MdPeople, MdSearch,
-  MdStar, MdDomain, MdInfo,
+  MdStar, MdDomain, MdInfo, MdUpload,
 } from 'react-icons/md';
 
 // ─── Modal crear/editar Empleado ─────────────────────────────────────────────
@@ -419,12 +420,14 @@ function EmployeeModal({ employee, areas, onClose, onSave }) {
 
 // ─── Página principal ─────────────────────────────────────────────────────────
 export default function EmployeesPage() {
-  const { employees, loading, error, createEmployee, updateEmployee, deleteEmployee } = useEmployees();
-  const { areas, assignEmployee } = useAreas();
+  const { employees, loading, error, createEmployee, updateEmployee, deleteEmployee, deleteAllEmployees } = useEmployees();
+  const { areas, assignEmployee, fetchAreas } = useAreas();
   const [showModal, setShowModal] = useState(false);
+  const [showBulkModal, setShowBulkModal] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [search, setSearch] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteAllConfirm, setDeleteAllConfirm] = useState(false);
 
   const filtered = employees.filter(e =>
     e.nombre.toLowerCase().includes(search.toLowerCase()) ||
@@ -460,9 +463,24 @@ export default function EmployeesPage() {
     }
   };
 
+  // Importación masiva: reutiliza el mismo flujo de createEmployee + assignEmployee
+  const handleBulkSave = async ({ employeeData, areaId, esEspecial }) => {
+    const dataToSave = { ...employeeData, es_especial: esEspecial };
+    const savedEmp = await createEmployee(dataToSave);
+    if (areaId && savedEmp?.id) {
+      await assignEmployee(areaId, savedEmp.id);
+    }
+    return savedEmp;
+  };
+
   const handleDelete = async (id) => {
     await deleteEmployee(id);
     setDeleteConfirm(null);
+  };
+
+  const handleDeleteAll = async () => {
+    await deleteAllEmployees();
+    setDeleteAllConfirm(false);
   };
 
   return (
@@ -473,6 +491,22 @@ export default function EmployeesPage() {
           <p className="page-subtitle">Administre colaboradores, áreas y valores hora</p>
         </div>
         <div className="page-header__actions">
+          <button
+            className="cw-btn cw-btn--danger"
+            onClick={() => setDeleteAllConfirm(true)}
+            title="Eliminar todos los empleados"
+            disabled={employees.length === 0}
+          >
+            <MdDelete /> Eliminar Todos
+          </button>
+          <button
+            id="btn-bulk-import"
+            className="cw-btn cw-btn--secondary"
+            onClick={() => setShowBulkModal(true)}
+            title="Importar empleados desde archivo Excel o CSV"
+          >
+            <MdUpload /> Importar desde Excel
+          </button>
           <button id="btn-new-employee" className="cw-btn cw-btn--primary" onClick={handleNew}>
             <MdAdd /> Nuevo Colaborador
           </button>
@@ -614,6 +648,15 @@ export default function EmployeesPage() {
         />
       )}
 
+      {/* Bulk Import Modal */}
+      {showBulkModal && (
+        <BulkImportModal
+          areas={areas}
+          onClose={() => setShowBulkModal(false)}
+          onBulkSave={handleBulkSave}
+        />
+      )}
+
       {/* Delete Confirm Modal */}
       {deleteConfirm && (
         <div className="cw-modal-overlay">
@@ -631,6 +674,28 @@ export default function EmployeesPage() {
               <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
               <button className="cw-btn cw-btn--danger" onClick={() => handleDelete(deleteConfirm.id)}>
                 <MdDelete /> Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete All Confirm Modal */}
+      {deleteAllConfirm && (
+        <div className="cw-modal-overlay">
+          <div className="cw-modal animate-slide-up" style={{ maxWidth: 400 }}>
+            <div className="cw-modal__header">
+              <h3 className="cw-modal__title">⚠️ Eliminar TODOS los colaboradores</h3>
+              <button className="cw-modal__close" onClick={() => setDeleteAllConfirm(false)}><MdClose /></button>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0 0.25rem' }}>
+              ¿Está seguro que desea eliminar <strong>a todos los colaboradores</strong> registrados?
+              Esta acción es destructiva y no se puede deshacer.
+            </p>
+            <div className="cw-modal__footer">
+              <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteAllConfirm(false)}>Cancelar</button>
+              <button className="cw-btn cw-btn--danger" onClick={handleDeleteAll}>
+                <MdDelete /> Sí, eliminar a todos
               </button>
             </div>
           </div>

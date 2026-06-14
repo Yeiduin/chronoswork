@@ -67,5 +67,15 @@ export function useEmployees() {
     await fetchEmployees();
   };
 
-  return { employees, loading, error, fetchEmployees, createEmployee, updateEmployee, deleteEmployee };
+  const deleteAllEmployees = async () => {
+    const { error } = await supabase
+      .from('employees')
+      .update({ activo: false })
+      .eq('tenant_id', tenant.id)
+      .eq('activo', true);
+    if (error) throw error;
+    await fetchEmployees();
+  };
+
+  return { employees, loading, error, fetchEmployees, createEmployee, updateEmployee, deleteEmployee, deleteAllEmployees };
 }

@@ -7,8 +7,9 @@ import { useShifts } from '../hooks/useShifts';
 import { useAbsences } from '../hooks/useAbsences';
 import {
   MdAdd, MdEdit, MdDelete, MdClose, MdAccessTime,
-  MdBolt, MdDomain, MdWarning
+  MdBolt, MdDomain, MdWarning, MdUpload,
 } from 'react-icons/md';
+import BulkImportAreasModal from '../components/BulkImportAreasModal';
 import { getPeriodoActual, getDiasMes, getDatesByOption } from '../core/dateUtils';
 import { format } from 'date-fns';
 import { AutoAssignModal } from '../components/AutoAssignModal';
@@ -820,7 +821,7 @@ function GlobalTemplatesPanel() {
 
 // ─── Página principal ───────────────────────────────────────────────────────
 export default function AreasPage() {
-  const { areas, loading, createArea, updateArea, deleteArea, assignEmployee, removeEmployee } = useAreas();
+  const { areas, loading, createArea, updateArea, deleteArea, deleteAllAreas, assignEmployee, removeEmployee } = useAreas();
   const { employees } = useEmployees();
   const { absences } = useAbsences();
   const periodoActual = getPeriodoActual();
@@ -828,11 +829,13 @@ export default function AreasPage() {
 
   const [selectedArea, setSelectedArea] = useState(null);
   const [showAreaModal, setShowAreaModal] = useState(false);
+  const [showBulkModal, setShowBulkModal] = useState(false);
   const [editArea, setEditArea] = useState(null);
   const [autoAssignModalArea, setAutoAssignModalArea] = useState(null);
   const [autoAssignLoading, setAutoAssignLoading] = useState(false);
   const [autoAssignResult, setAutoAssignResult] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleteAllConfirm, setDeleteAllConfirm] = useState(false);
 
   // Seleccionar primera área por defecto
   useEffect(() => {
@@ -942,6 +945,16 @@ export default function AreasPage() {
 
   return (
     <div className="page-wrapper animate-fade-in">
+      {/* Bulk Import Modal */}
+      {showBulkModal && (
+        <BulkImportAreasModal
+          onClose={() => setShowBulkModal(false)}
+          onBulkSave={async (areaData) => {
+            await createArea(areaData);
+          }}
+        />
+      )}
+
       {/* Header */}
       <div className="page-header">
         <div className="page-header__info">
@@ -949,6 +962,22 @@ export default function AreasPage() {
           <p className="page-subtitle">Defina departamentos, franjas horarias y asigne colaboradores por área</p>
         </div>
         <div className="page-header__actions">
+          <button
+            className="cw-btn cw-btn--danger"
+            onClick={() => setDeleteAllConfirm(true)}
+            title="Eliminar todas las áreas"
+            disabled={areas.length === 0}
+          >
+            <MdDelete /> Eliminar Todas
+          </button>
+          <button
+            id="btn-bulk-import-areas"
+            className="cw-btn cw-btn--secondary"
+            onClick={() => setShowBulkModal(true)}
+            title="Importar áreas desde archivo Excel o CSV"
+          >
+            <MdUpload /> Importar desde Excel
+          </button>
           <button className="cw-btn cw-btn--primary" onClick={() => { setEditArea(null); setShowAreaModal(true); }}>
             <MdAdd /> Nueva Área
           </button>
@@ -1153,12 +1182,34 @@ export default function AreasPage() {
             </div>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0 1.25rem' }}>
               ¿Eliminar el área <strong style={{ color: 'var(--text-primary)' }}>{deleteConfirm.nombre}</strong>?
-              Los empleados quedarán sin área asignada. Los turnos existentes no se eliminarán.
+              Los empleados quedarán sin área asignada. Los turnos existentes no se eliminan.
             </p>
             <div className="cw-modal__footer">
               <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
               <button className="cw-btn cw-btn--danger" onClick={async () => { await deleteArea(deleteConfirm.id); setDeleteConfirm(null); if (selectedArea?.id === deleteConfirm.id) setSelectedArea(null); }}>
                 <MdDelete /> Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmar eliminar TODAS */}
+      {deleteAllConfirm && (
+        <div className="cw-modal-overlay">
+          <div className="cw-modal animate-slide-up" style={{ maxWidth: 400 }}>
+            <div className="cw-modal__header">
+              <h3 className="cw-modal__title">⚠️ Eliminar TODAS las Áreas</h3>
+              <button className="cw-modal__close" onClick={() => setDeleteAllConfirm(false)}><MdClose /></button>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0 1.25rem' }}>
+              ¿Está seguro que desea eliminar <strong>todas las áreas</strong>?
+              Los empleados quedarán sin área asignada. Esta acción no se puede deshacer.
+            </p>
+            <div className="cw-modal__footer">
+              <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteAllConfirm(false)}>Cancelar</button>
+              <button className="cw-btn cw-btn--danger" onClick={async () => { await deleteAllAreas(); setDeleteAllConfirm(false); setSelectedArea(null); }}>
+                <MdDelete /> Sí, eliminar todas
               </button>
             </div>
           </div>
