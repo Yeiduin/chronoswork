@@ -1,292 +1,348 @@
 // ============================================================
-// ChronosWork — Página de Gestión de Empleados
-// Con EmployeeForm v3 (wizard 8 pasos) + Bulk Import
+// ChronosWork — Página de Empleados
+// Lista todos los empleados con JOIN a area_employees y areas
+// para mostrar el nombre del área en la columna "ÁREA".
 // ============================================================
 
-import { useState, useMemo } from 'react';
-import { useEmployees } from '../hooks/useEmployees';
+import { useState, useEffect, useMemo } from 'react';
+import { supabase } from '../config/supabaseClient';
+import { useAuth } from '../context/AuthContext';
 import { useAreas } from '../hooks/useAreas';
-import {
-  MdAdd, MdEdit, MdDelete, MdClose, MdPeople, MdSearch,
-  MdStar, MdDomain, MdInfo, MdUpload, MdFileDownload, MdWarning,
-} from 'react-icons/md';
-import { formatCOP } from '../core/validators';
 import EmployeeForm from '../components/EmployeeForm';
 import BulkImportModal from '../components/BulkImportModal';
+import {
+  MdAdd, MdUpload, MdEdit, MdDelete, MdSearch,
+  MdRefresh, MdPeople,
+} from 'react-icons/md';
 
-// ─── Página principal ─────────────────────────────────────────────────────────
 export default function EmployeesPage() {
-  const { employees, loading, error, createEmployee, updateEmployee, deleteEmployee, fetchEmployees } = useEmployees();
-  const { areas, assignEmployee } = useAreas();
-  const [showModal, setShowModal] = useState(false);
-  const [showBulkModal, setShowBulkModal] = useState(false);
-  const [selectedEmployee, setSelectedEmployee] = useState(null);
-  const [search, setSearch] = useState('');
-  const [filterArea, setFilterArea] = useState('all');
-  const [filterContrato, setFilterContrato] = useState('all');
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const { tenant } = useAuth();
+  const { areas, assignEmployee, removeEmployee } = useAreas();
 
-  const filtered = useMemo(() => {
-    let result = employees;
-    if (search.trim()) {
-      const term = search.toLowerCase();
-      result = result.filter(e =>
-        e.nombre?.toLowerCase().includes(term) ||
-        e.cedula?.includes(term) ||
-        e.cargo?.toLowerCase().includes(term)
-      );
-    }
-    if (filterArea !== 'all') {
-      const area = areas.find(a => a.id === filterArea);
-      if (area) {
-        const empIds = new Set(area.area_employees?.map(ae => ae.employee_id) || []);
-        result = result.filter(e => empIds.has(e.id));
-      }
-    }
-    if (filterContrato !== 'all') {
-      result = result.filter(e => e.tipo_contrato === filterContrato);
-    }
-    return result;
-  }, [employees, search, filterArea, filterContrato, areas]);
+  const [employees, setEmployees] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterArea, setFilterArea] = useState('');
+  const [filterEstado, setFilterEstado] = useState('activos');
 
-  const getEmployeeArea = (empId) =>
-    areas.find(a => a.area_employees?.some(ae => ae.employee_id === empId));
+  const [showForm, setShowForm] = useState(false);
+  const [editingEmployee, setEditingEmployee] = useState(null);
+  const [showImport, setShowImport] = useState(false);
 
-  const handleEdit = (emp) => {
-    setSelectedEmployee(emp);
-    setShowModal(true);
+  // ─── Cargar empleados con su área asignada (vía JOIN) ─────────────────
+  const fetchEmployees = async () => {
+    if (!tenant) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const { data, error } = await supabase
+        .from('employees')
+        .select(`
+          *,
+          area_employees!left(
+            id,
+            area_id,
+            areas!left(id, nombre, color, sector)
+          )
+        `)
+        .eq('tenant_id', tenant.id)
+        .order('nombre');
+      if (error) throw error;
+      setEmployees(data || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleNew = () => {
-    setSelectedEmployee(null);
-    setShowModal(true);
-  };
+  useEffect(() => {
+    fetchEmployees();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenant]);
 
-  // El EmployeeForm v3 espera (employeeData, areaId)
-  // y maneja internamente la asignación al área
-  const handleSave = async (employeeData, areaId) => {
-    let savedEmp;
-    if (selectedEmployee) {
-      savedEmp = await updateEmployee(selectedEmployee.id, employeeData);
+  // ─── Guardar (crear o actualizar) empleado ─────────────────────────────
+  const handleSave = async (formData, selectedAreaId) => {
+    let savedEmployee;
+    if (editingEmployee) {
+      // Actualizar
+      const { data, error } = await supabase
+        .from('employees')
+        .update({ ...formData, tenant_id: tenant.id })
+        .eq('id', editingEmployee.id)
+        .select()
+        .single();
+      if (error) throw error;
+      savedEmployee = data;
     } else {
-      savedEmp = await createEmployee(employeeData);
+      // Crear
+      const { data, error } = await supabase
+        .from('employees')
+        .insert([{ ...formData, tenant_id: tenant.id }])
+        .select()
+        .single();
+      if (error) throw error;
+      savedEmployee = data;
     }
-    if (areaId && savedEmp?.id) {
-      await assignEmployee(areaId, savedEmp.id);
+
+    // Asignar al área (tabla pivote)
+    if (selectedAreaId && savedEmployee?.id) {
+      await assignEmployee(selectedAreaId, savedEmployee.id);
     }
-    return savedEmp;
+
+    await fetchEmployees();
+    setShowForm(false);
+    setEditingEmployee(null);
+    return savedEmployee;
   };
 
+  // ─── Eliminar empleado (soft delete) ──────────────────────────────────
   const handleDelete = async (id) => {
-    await deleteEmployee(id);
-    setDeleteConfirm(null);
+    if (!confirm('¿Eliminar este empleado?')) return;
+    const { error } = await supabase
+      .from('employees')
+      .update({ activo: false })
+      .eq('id', id);
+    if (error) {
+      alert('Error al eliminar: ' + error.message);
+      return;
+    }
+    await fetchEmployees();
   };
 
-  // ── Estadísticas rápidas ──────────────────────────────────────────────
-  const stats = useMemo(() => {
-    return {
-      total: employees.length,
-      conArea: employees.filter(e => areas.some(a => a.area_employees?.some(ae => ae.employee_id === e.id))).length,
-      sinArea: employees.filter(e => !areas.some(a => a.area_employees?.some(ae => ae.employee_id === e.id))).length,
-      indefinidos: employees.filter(e => e.tipo_contrato === 'INDEFINIDO').length,
-      porHoras: employees.filter(e => e.tipo_contrato === 'POR_HORAS').length,
-      temporales: employees.filter(e => ['TERMINO_FIJO', 'OBRA_LABOR', 'TEMPORAL', 'APRENDIZAJE'].includes(e.tipo_contrato)).length,
-    };
-  }, [employees, areas]);
+  // ─── Helpers para UI ──────────────────────────────────────────────────
+  const formatMoney = (n) =>
+    n ? `$${Number(n).toLocaleString('es-CO')}` : '—';
+
+  const formatDate = (d) => {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('es-CO', {
+      day: '2-digit', month: '2-digit', year: '2-digit',
+    });
+  };
+
+  // El JOIN puede traer varios registros en area_employees; nos quedamos
+  // con el primero que tenga un área válida.
+  const getArea = (emp) => {
+    const rels = emp.area_employees;
+    if (!rels) return null;
+    if (Array.isArray(rels)) {
+      for (const r of rels) {
+        if (r.areas) return r.areas;
+      }
+      return null;
+    }
+    return rels.areas || null;
+  };
+
+  // ─── Filtrado ──────────────────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    return employees.filter(emp => {
+      if (filterEstado === 'activos' && !emp.activo) return false;
+      if (filterEstado === 'inactivos' && emp.activo) return false;
+
+      if (filterArea) {
+        const a = getArea(emp);
+        if (!a || a.id !== filterArea) return false;
+      }
+
+      if (searchTerm) {
+        const s = searchTerm.toLowerCase();
+        const hay = (
+          String(emp.nombre || '').toLowerCase().includes(s) ||
+          String(emp.cedula || '').toLowerCase().includes(s) ||
+          String(emp.cargo || '').toLowerCase().includes(s)
+        );
+        if (!hay) return false;
+      }
+      return true;
+    });
+  }, [employees, searchTerm, filterArea, filterEstado]);
 
   return (
-    <div className="page-wrapper animate-fade-in">
-      <div className="page-header">
-        <div className="page-header__info">
-          <h1 className="page-title">👥 Gestión de Personal</h1>
-          <p className="page-subtitle">
-            Colaboradores, áreas, contratos y seguridad social · CST Colombia 2026
+    <div className="cw-page">
+      {/* Header */}
+      <div className="cw-page__header">
+        <div>
+          <h2 className="cw-page__title">
+            <MdPeople style={{ marginRight: 8, color: '#10b981' }} />
+            Colaboradores registrados
+          </h2>
+          <p className="cw-page__subtitle">
+            Gestión de personal, contratos y seguridad social
           </p>
         </div>
-        <div className="page-header__actions">
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button
-            id="btn-bulk-import-employees"
             className="cw-btn cw-btn--secondary"
-            onClick={() => setShowBulkModal(true)}
-            title="Importar empleados desde Excel/CSV"
+            onClick={fetchEmployees}
+            disabled={loading}
+            title="Refrescar lista"
+          >
+            <MdRefresh /> {loading ? 'Cargando...' : 'Refrescar'}
+          </button>
+          <button
+            className="cw-btn cw-btn--secondary"
+            onClick={() => setShowImport(true)}
+            disabled={areas.length === 0}
+            title={areas.length === 0 ? 'Crea áreas primero' : 'Importar empleados desde Excel'}
           >
             <MdUpload /> Importar Excel
           </button>
           <button
-            id="btn-new-employee"
             className="cw-btn cw-btn--primary"
-            onClick={handleNew}
+            onClick={() => { setEditingEmployee(null); setShowForm(true); }}
+            disabled={areas.length === 0}
+            title={areas.length === 0 ? 'Crea áreas primero' : 'Crear nuevo empleado'}
           >
-            <MdAdd /> Nuevo Colaborador
+            <MdAdd /> Nuevo empleado
           </button>
         </div>
       </div>
 
-      {/* Estadísticas rápidas */}
-      {employees.length > 0 && (
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-          <StatCard label="Total" value={stats.total} color="#6366f1" />
-          <StatCard label="Con área" value={stats.conArea} color="#10b981" />
-          {stats.sinArea > 0 && <StatCard label="Sin área" value={stats.sinArea} color="#f59e0b" />}
-          <StatCard label="Indefinidos" value={stats.indefinidos} color="#3b82f6" />
-          <StatCard label="Por horas" value={stats.porHoras} color="#8b5cf6" />
-          {stats.temporales > 0 && <StatCard label="Temporales/Fijos" value={stats.temporales} color="#ec4899" />}
-        </div>
-      )}
-
       {/* Filtros */}
-      <div className="cw-card mb-3">
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '0.5rem', alignItems: 'center' }}>
+      <div className="cw-card" style={{ marginBottom: '1rem', padding: '0.75rem 1rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: '0.5rem', alignItems: 'center' }}>
           <div style={{ position: 'relative' }}>
             <MdSearch style={{
-              position: 'absolute', left: '0.875rem', top: '50%',
-              transform: 'translateY(-50%)', color: 'var(--text-muted)', fontSize: '1.2rem',
+              position: 'absolute', left: 10, top: '50%',
+              transform: 'translateY(-50%)', color: 'var(--text-muted)',
             }} />
             <input
               type="text"
               className="cw-input"
               placeholder="Buscar por nombre, cédula o cargo..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{ paddingLeft: '2.75rem' }}
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              style={{ paddingLeft: 36, width: '100%' }}
             />
           </div>
-          <select className="cw-input" value={filterArea} onChange={e => setFilterArea(e.target.value)}>
-            <option value="all">🏢 Todas las áreas</option>
+          <select
+            className="cw-input"
+            value={filterArea}
+            onChange={e => setFilterArea(e.target.value)}
+          >
+            <option value="">Todas las áreas</option>
             {areas.map(a => (
-              <option key={a.id} value={a.id}>● {a.nombre}</option>
+              <option key={a.id} value={a.id}>{a.nombre}</option>
             ))}
           </select>
-          <select className="cw-input" value={filterContrato} onChange={e => setFilterContrato(e.target.value)}>
-            <option value="all">📋 Todos los contratos</option>
-            <option value="INDEFINIDO">♾️ Indefinido</option>
-            <option value="TERMINO_FIJO">📅 Término fijo</option>
-            <option value="OBRA_LABOR">🔨 Obra o labor</option>
-            <option value="POR_HORAS">⏰ Por horas</option>
-            <option value="SALARIO_FIJO">💵 Salario fijo</option>
-            <option value="PRESTACION_SERVICIOS">🤝 Prestación servicios</option>
-            <option value="APRENDIZAJE">🎓 Aprendiz SENA</option>
-            <option value="OCASIONAL">⚡ Ocasional</option>
-            <option value="TEMPORAL">🔁 Temporal</option>
+          <select
+            className="cw-input"
+            value={filterEstado}
+            onChange={e => setFilterEstado(e.target.value)}
+          >
+            <option value="activos">Solo activos</option>
+            <option value="inactivos">Solo inactivos</option>
+            <option value="todos">Todos</option>
           </select>
+          <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+            <strong style={{ color: 'var(--cw-accent)' }}>{filtered.length}</strong> de {employees.length}
+          </div>
         </div>
       </div>
 
-      {/* Tabla */}
-      <div className="cw-card">
-        <div className="cw-card__header">
-          <h3 className="cw-card__title">
-            <MdPeople style={{ marginRight: '0.5rem' }} />
-            Colaboradores registrados
-          </h3>
-          <span className="cw-badge cw-badge--blue">{filtered.length} de {employees.length}</span>
-        </div>
+      {/* Error */}
+      {error && <div className="cw-alert cw-alert--error" style={{ marginBottom: '1rem' }}>🚫 {error}</div>}
 
-        {loading ? (
-          <div className="loading-overlay"><div className="cw-spinner"></div><span>Cargando...</span></div>
+      {/* Tabla */}
+      <div className="cw-card" style={{ padding: 0, overflow: 'hidden' }}>
+        {loading && employees.length === 0 ? (
+          <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+            <div className="cw-spinner" style={{ margin: '0 auto 0.75rem' }}></div>
+            Cargando empleados...
+          </div>
         ) : filtered.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state__icon">👥</div>
-            <div className="empty-state__title">
-              {search || filterArea !== 'all' || filterContrato !== 'all' ? 'Sin resultados' : 'No hay empleados registrados'}
-            </div>
-            <div className="empty-state__desc">
-              {search || filterArea !== 'all' || filterContrato !== 'all'
-                ? 'Intente con otros filtros.'
-                : 'Registra el primer colaborador de tu empresa. Solo necesitas cédula, nombre y área.'}
-            </div>
-            {!search && filterArea === 'all' && filterContrato === 'all' && (
-              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-                <button className="cw-btn cw-btn--secondary" onClick={() => setShowBulkModal(true)}>
-                  <MdUpload /> Importar desde Excel
-                </button>
-                <button className="cw-btn cw-btn--primary" onClick={handleNew}>
-                  <MdAdd /> Registrar primer colaborador
-                </button>
-              </div>
-            )}
+          <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+            {employees.length === 0
+              ? '👤 No hay empleados registrados. Crea el primero con "Nuevo empleado".'
+              : '🔍 Ningún empleado coincide con los filtros.'}
           </div>
         ) : (
-          <div className="cw-table-wrapper">
-            <table className="cw-table">
+          <div style={{ overflowX: 'auto' }}>
+            <table className="cw-table" style={{ width: '100%' }}>
               <thead>
                 <tr>
-                  <th>Cédula</th>
-                  <th>Nombre Completo</th>
-                  <th>Cargo</th>
-                  <th>Área</th>
-                  <th>Tipo Contrato</th>
-                  <th>Valor / Hora</th>
-                  <th>Ingreso</th>
-                  <th>Estado</th>
-                  <th>Acciones</th>
+                  <th style={{ minWidth: 90 }}>CÉDULA</th>
+                  <th>NOMBRE COMPLETO</th>
+                  <th>CARGO</th>
+                  <th>ÁREA</th>
+                  <th>TIPO CONTRATO</th>
+                  <th style={{ textAlign: 'right' }}>VALOR / HORA</th>
+                  <th>INGRESO</th>
+                  <th>ESTADO</th>
+                  <th style={{ width: 100 }}>ACCIONES</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(emp => {
-                  const empArea = getEmployeeArea(emp.id);
-                  const esEspecial = empArea && parseFloat(empArea.valor_hora_default) !== parseFloat(emp.valor_hora);
-                  const contrato = getContratoLabel(emp.tipo_contrato);
+                  const area = getArea(emp);
                   return (
                     <tr key={emp.id}>
-                      <td>
-                        <code className="mono" style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                          {emp.tipo_documento && emp.tipo_documento !== 'CC' ? emp.tipo_documento + ' ' : ''}
-                          {emp.cedula}
-                        </code>
+                      <td style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                        {emp.cedula}
                       </td>
-                      <td style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{emp.nombre}</td>
-                      <td>{emp.cargo}</td>
+                      <td style={{ fontWeight: 600 }}>{emp.nombre}</td>
+                      <td>{emp.cargo || '—'}</td>
                       <td>
-                        {empArea ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                            <div style={{ width: 8, height: 8, borderRadius: '50%', background: empArea.color, flexShrink: 0 }} />
-                            <span style={{ fontSize: '0.82rem', color: 'var(--text-primary)' }}>{empArea.nombre}</span>
-                          </div>
+                        {area ? (
+                          <span
+                            style={{
+                              background: (area.color || '#6366f1') + '20',
+                              color: area.color || '#6366f1',
+                              padding: '0.15rem 0.5rem',
+                              borderRadius: 4,
+                              fontSize: '0.78rem',
+                              fontWeight: 600,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            ● {area.nombre}
+                          </span>
                         ) : (
-                          <span className="cw-badge cw-badge--gray">Sin área</span>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                            Sin área
+                          </span>
                         )}
                       </td>
                       <td>
-                        <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                          {contrato.icono} {contrato.label}
+                        <span style={{ fontSize: '0.78rem' }}>
+                          {emp.tipo_contrato === 'INDEFINIDO' && '♾️ '}
+                          {emp.tipo_contrato === 'TERMINO_FIJO' && '📅 '}
+                          {emp.tipo_contrato === 'OBRA_LABOR' && '🔨 '}
+                          {emp.tipo_contrato === 'POR_HORAS' && '⏰ '}
+                          {emp.tipo_contrato === 'PRESTACION_SERVICIOS' && '📄 '}
+                          {emp.tipo_contrato || '—'}
                         </span>
                       </td>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                          <span style={{
-                            fontWeight: 600, color: 'var(--cw-success)',
-                            fontFamily: 'var(--font-mono)', fontSize: '0.82rem',
-                          }}>
-                            {formatCOP(emp.valor_hora)}
-                          </span>
-                          {esEspecial && (
-                            <span title="Salario personalizado" style={{
-                              fontSize: '0.68rem', color: '#fcd34d',
-                              background: 'rgba(245,158,11,0.12)', padding: '0.1rem 0.4rem',
-                              borderRadius: 100, border: '1px solid rgba(245,158,11,0.25)',
-                            }}>
-                              ★ Especial
-                            </span>
-                          )}
-                        </div>
+                      <td style={{ textAlign: 'right', color: '#10b981', fontWeight: 600 }}>
+                        {formatMoney(emp.valor_hora)}
+                      </td>
+                      <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        {formatDate(emp.fecha_ingreso)}
                       </td>
                       <td>
-                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                          {emp.fecha_ingreso ? formatFechaCorta(emp.fecha_ingreso) : '—'}
-                        </span>
+                        {emp.activo ? (
+                          <span className="cw-badge cw-badge--success">● Activo</span>
+                        ) : (
+                          <span className="cw-badge cw-badge--muted">Inactivo</span>
+                        )}
                       </td>
                       <td>
-                        <span className="cw-badge cw-badge--green">● Activo</span>
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '0.375rem' }}>
-                          <button className="cw-btn cw-btn--secondary cw-btn--sm cw-btn--icon"
-                            onClick={() => handleEdit(emp)} title="Editar">
+                        <div style={{ display: 'flex', gap: '0.25rem' }}>
+                          <button
+                            className="cw-btn cw-btn--icon"
+                            onClick={() => { setEditingEmployee(emp); setShowForm(true); }}
+                            title="Editar"
+                          >
                             <MdEdit />
                           </button>
-                          <button className="cw-btn cw-btn--danger cw-btn--sm cw-btn--icon"
-                            onClick={() => setDeleteConfirm(emp)} title="Eliminar">
+                          <button
+                            className="cw-btn cw-btn--icon cw-btn--danger"
+                            onClick={() => handleDelete(emp.id)}
+                            title="Eliminar"
+                          >
                             <MdDelete />
                           </button>
                         </div>
@@ -300,90 +356,36 @@ export default function EmployeesPage() {
         )}
       </div>
 
-      {/* Employee Modal con el NUEVO wizard */}
-      {showModal && (
+      {/* Modales */}
+      {showForm && (
         <EmployeeForm
-          employee={selectedEmployee}
+          employee={editingEmployee}
           areas={areas}
-          onClose={async (refresh) => {
-            setShowModal(false);
-            setSelectedEmployee(null);
-            if (refresh) await fetchEmployees();
-          }}
+          onClose={() => { setShowForm(false); setEditingEmployee(null); }}
           onSave={handleSave}
         />
       )}
 
-      {/* Bulk Import Modal */}
-      {showBulkModal && (
+      {showImport && (
         <BulkImportModal
           areas={areas}
-          onBulkSave={async (employeeData) => await createEmployee(employeeData)}
-          onClose={async (refresh) => {
-            setShowBulkModal(false);
-            if (refresh) await fetchEmployees();
+          onClose={(refresh) => {
+            setShowImport(false);
+            if (refresh) fetchEmployees();
+          }}
+          onBulkSave={async (employeeData) => {
+            const { data, error } = await supabase
+              .from('employees')
+              .insert([{ ...employeeData, tenant_id: tenant.id }])
+              .select()
+              .single();
+            if (error) throw error;
+            return data;
           }}
         />
       )}
-
-      {/* Delete Confirm Modal */}
-      {deleteConfirm && (
-        <div className="cw-modal-overlay">
-          <div className="cw-modal animate-slide-up" style={{ maxWidth: 400 }}>
-            <div className="cw-modal__header">
-              <h3 className="cw-modal__title">⚠️ Confirmar eliminación</h3>
-              <button className="cw-modal__close" onClick={() => setDeleteConfirm(null)}><MdClose /></button>
-            </div>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0 0.25rem' }}>
-              ¿Está seguro que desea eliminar al colaborador{' '}
-              <strong style={{ color: 'var(--text-primary)' }}>{deleteConfirm.nombre}</strong>?
-              Esta acción no se puede deshacer.
-            </p>
-            <div className="cw-modal__footer">
-              <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
-              <button className="cw-btn cw-btn--danger" onClick={() => handleDelete(deleteConfirm.id)}>
-                <MdDelete /> Eliminar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-// ── StatCard auxiliar ───────────────────────────────────────────────────────
-function StatCard({ label, value, color }) {
-  return (
-    <div style={{
-      background: 'var(--bg-glass)', border: `1px solid ${color}30`,
-      borderRadius: 10, padding: '0.4rem 0.75rem', minWidth: 110,
-      display: 'flex', flexDirection: 'column',
-    }}>
-      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</span>
-      <span style={{ fontSize: '1.1rem', fontWeight: 700, color }}>{value}</span>
-    </div>
-  );
-}
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-function getContratoLabel(value) {
-  const map = {
-    INDEFINIDO: { icono: '♾️', label: 'Indefinido' },
-    TERMINO_FIJO: { icono: '📅', label: 'Término fijo' },
-    OBRA_LABOR: { icono: '🔨', label: 'Obra/Labor' },
-    POR_HORAS: { icono: '⏰', label: 'Por horas' },
-    SALARIO_FIJO: { icono: '💵', label: 'Salario fijo' },
-    PRESTACION_SERVICIOS: { icono: '🤝', label: 'Prestación' },
-    APRENDIZAJE: { icono: '🎓', label: 'Aprendiz' },
-    OCASIONAL: { icono: '⚡', label: 'Ocasional' },
-    TEMPORAL: { icono: '🔁', label: 'Temporal' },
-  };
-  return map[value] || { icono: '📄', label: value };
-}
-
-function formatFechaCorta(dateStr) {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: '2-digit' });
-}
