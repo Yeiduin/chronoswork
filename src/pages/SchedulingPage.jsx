@@ -633,9 +633,14 @@ export default function SchedulingPage() {
         ? areas
         : areas.filter(a => a.id === scope);
 
+      if (!areasToProcess.length) {
+        throw new Error('No hay áreas para procesar.');
+      }
+
       let totalInserted = 0;
-      let allAlertaDias = [];
-      let erroresValidacion = [];
+      const allAlertaDias = [];
+      const erroresValidacion = [];
+      const areasProcesadas = [];
 
       let processedDays = diasTodos;
       if (strategyOptions.dateRangeOption === 'current_view') {
@@ -652,13 +657,23 @@ export default function SchedulingPage() {
         }
         processedDays = nwDays;
       } else if (strategyOptions.dateRangeOption === 'custom') {
+        if (!strategyOptions.customStart || !strategyOptions.customEnd) {
+          throw new Error('Selecciona el rango de fechas personalizado (desde y hasta).');
+        }
         const dStart = new Date(strategyOptions.customStart + 'T00:00:00');
         const dEnd = new Date(strategyOptions.customEnd + 'T00:00:00');
+        if (dEnd < dStart) {
+          throw new Error('La fecha "Hasta" debe ser posterior a "Desde".');
+        }
         const customDays = [];
         for (let d = new Date(dStart); d <= dEnd; d.setDate(d.getDate() + 1)) {
            customDays.push(new Date(d));
         }
         processedDays = customDays;
+      }
+
+      if (processedDays.length === 0) {
+        throw new Error('El rango seleccionado no tiene días. Ajusta los días laborables del área o cambia el rango.');
       }
 
       if (strategyOptions.reprogramar && processedDays.length > 0) {
@@ -671,42 +686,47 @@ export default function SchedulingPage() {
       }
 
       for (const area of areasToProcess) {
-        const areaEmps = area.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
+        // Filtrar empleados activos asignados al área
+        const areaEmpsRaw = area.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
+        const areaEmps = areaEmpsRaw.filter(e => e.activo !== false);
         if (!areaEmps.length) {
-          erroresValidacion.push(`${area.nombre}: Sin empleados asignados.`);
+          erroresValidacion.push(`${area.nombre}: sin empleados activos asignados.`);
           continue;
         }
 
-        const { data: templates } = await supabase
+        // Cargar plantillas del área
+        const { data: templates, error: tplErr } = await supabase
           .from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
 
-        const { data: demandSlots } = await supabase
-          .from('area_demand_slots').select('id').eq('area_id', area.id).limit(1);
+        if (tplErr) {
+          erroresValidacion.push(`${area.nombre}: error al cargar franjas — ${tplErr.message}`);
+          continue;
+        }
 
-        if (!templates?.length && !demandSlots?.length) {
-          erroresValidacion.push(`${area.nombre}: No tiene plantillas de turno ni curva de demanda configuradas.`);
+        if (!templates || templates.length === 0) {
+          erroresValidacion.push(`${area.nombre}: sin franjas horarias. Agrega al menos una en Áreas → Franjas.`);
           continue;
         }
 
         const empIds = areaEmps.map(e => e.id);
         let finalEmployees = [...areaEmps];
-        
+
         if (strategyOptions.onlyNewEmployees && processedDays.length > 0) {
           const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
           const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
-          
+
           const { data: existing } = await supabase
             .from('shifts')
             .select('employee_id')
             .in('employee_id', empIds)
             .gte('start_time', `${dStartStr}T00:00:00`)
             .lte('start_time', `${dEndStr}T23:59:59`);
-          
+
           const empIdsWithShifts = new Set(existing?.map(s => s.employee_id) || []);
           finalEmployees = finalEmployees.filter(emp => !empIdsWithShifts.has(emp.id));
-          
+
           if (!finalEmployees.length) {
-            erroresValidacion.push(`${area.nombre}: Todos los colaboradores ya tienen turnos programados en este período.`);
+            erroresValidacion.push(`${area.nombre}: todos los colaboradores ya tienen turnos en este período.`);
             continue;
           }
         }
@@ -721,29 +741,56 @@ export default function SchedulingPage() {
             }
           : null;
 
-        const result = await autoAssignShifts({
-          employees: finalEmployees,
-          templates,
-          absences: absences.filter(a => empIds.includes(a.employee_id)),
-          existingShifts: shifts.filter(s => empIds.includes(s.employee_id)),
-          year: anio, month: mes,
-          diasTrabajo: area.dias_trabajo || [1, 2, 3, 4, 5],
-          strategyOptions,
-          diasToProcess: processedDays,
-          areaId: area.id,
-          modoOperacion: area.modo_operacion,
-          nightShiftConfig,
-        });
-        
-        if (result.error) {
-          throw new Error(`Error en base de datos: ${result.error}`);
+        let result;
+        try {
+          result = await autoAssignShifts({
+            employees: finalEmployees,
+            templates,
+            absences: absences.filter(a => empIds.includes(a.employee_id)),
+            existingShifts: shifts.filter(s => empIds.includes(s.employee_id)),
+            year: anio, month: mes,
+            diasTrabajo: area.modo_operacion === '24_7'
+              ? [1, 2, 3, 4, 5, 6, 7]
+              : (area.dias_trabajo || [1, 2, 3, 4, 5]),
+            strategyOptions,
+            diasToProcess: processedDays,
+            areaId: area.id,
+            modoOperacion: area.modo_operacion,
+            nightShiftConfig,
+            patronRotativo: area.patron_rotativo || null,
+          });
+        } catch (innerErr) {
+          erroresValidacion.push(`${area.nombre}: ${innerErr.message || 'error desconocido'}`);
+          continue;
         }
 
-        totalInserted += result.inserted;
-        allAlertaDias = [...new Set([...allAlertaDias, ...result.alertaDias])];
+        if (result?.error) {
+          // Si es error de schema cache, abortamos todo y avisamos claro
+          if (result.error.includes('schema cache') || result.error.includes('column')) {
+            throw new Error(
+              `La tabla 'shifts' no tiene las columnas requeridas. ` +
+              `Aplica la migración supabase/fix_shifts_shift_kind.sql en el SQL Editor de Supabase. ` +
+              `Detalle: ${result.error}`
+            );
+          }
+          erroresValidacion.push(`${area.nombre}: ${result.error}`);
+          continue;
+        }
+
+        totalInserted += result.inserted || 0;
+        areasProcesadas.push(area.nombre);
+        if (Array.isArray(result.alertaDias)) {
+          allAlertaDias.push(...result.alertaDias);
+        }
       }
 
-      setAutoResult({ inserted: totalInserted, alertaDias: allAlertaDias, scope, warn: erroresValidacion.join(' | ') });
+      setAutoResult({
+        inserted: totalInserted,
+        alertaDias: [...new Set(allAlertaDias)],
+        scope,
+        areasProcesadas,
+        warn: erroresValidacion.join(' | '),
+      });
     } catch (err) {
       setAutoResult({ error: err.message });
     } finally {
@@ -1015,19 +1062,38 @@ export default function SchedulingPage() {
       {/* ── Resultado auto-asignación ───────────────────────────────────────── */}
       {autoResult && (
         <div className={`cw-alert ${autoResult.error ? 'cw-alert--error' : autoResult.alertaDias?.length ? 'cw-alert--warning' : 'cw-alert--success'}`}
-          style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', flex: 1 }}>
             {autoResult.error ? (
-              <><MdWarning /> <span>🚫 {autoResult.error}</span></>
+              <><MdWarning style={{ marginTop: 2, flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>🚫 Error en la auto-asignación</div>
+                  <div style={{ fontSize: '0.85rem' }}>{autoResult.error}</div>
+                </div>
+              </>
             ) : (
               <>
-                {autoResult.alertaDias?.length ? <MdWarning style={{ color: '#fbbf24' }} /> : <MdCheckCircle style={{ color: '#10b981' }} />}
-                <span>
-                  <strong>{autoResult.inserted}</strong> turnos asignados para {getNombreMes(mes)} {anio}.
+                {autoResult.alertaDias?.length
+                  ? <MdWarning style={{ color: '#fbbf24', marginTop: 2, flexShrink: 0 }} />
+                  : <MdCheckCircle style={{ color: '#10b981', marginTop: 2, flexShrink: 0 }} />}
+                <div style={{ flex: 1 }}>
+                  <div>
+                    <strong>{autoResult.inserted}</strong> turnos asignados para {getNombreMes(mes)} {anio}.
+                    {autoResult.areasProcesadas?.length > 0 && (
+                      <> <span style={{ color: 'var(--text-muted)' }}>· Áreas: {autoResult.areasProcesadas.join(', ')}</span></>
+                    )}
+                  </div>
                   {autoResult.alertaDias?.length > 0 && (
-                    <> &nbsp;⚠️ <strong style={{ color: '#fcd34d' }}>{autoResult.alertaDias.length} días sin cobertura completa</strong> — considera contratar más personal.</>
+                    <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: '#fcd34d' }}>
+                      ⚠️ {autoResult.alertaDias.length} advertencia{autoResult.alertaDias.length !== 1 ? 's' : ''}: {autoResult.alertaDias.slice(0, 3).join(' · ')}{autoResult.alertaDias.length > 3 ? ` … (+${autoResult.alertaDias.length - 3} más)` : ''}
+                    </div>
                   )}
-                </span>
+                  {autoResult.warn && (
+                    <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: '#fca5a5' }}>
+                      ❗ {autoResult.warn}
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
