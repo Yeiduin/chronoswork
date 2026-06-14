@@ -20,7 +20,7 @@ export function useAreas() {
           area_employees(
             id,
             employee_id,
-            employees(id, nombre, cedula, cargo)
+            employees(id, nombre, cedula, cargo, valor_hora, tipo_contrato, es_especial)
           )
         `)
         .eq('tenant_id', tenant.id)
@@ -37,46 +37,67 @@ export function useAreas() {
 
   useEffect(() => { fetchAreas(); }, [fetchAreas]);
 
+  // ─── Crear área con TODOS los campos laborales ──────────────────────────
   const createArea = async (areaData) => {
+    const { franjas_iniciales, ...dataToInsert } = areaData;
+    // 1. Insertar el área
     const { data, error } = await supabase
       .from('areas')
-      .insert([{ ...areaData, tenant_id: tenant.id }])
+      .insert([{ ...dataToInsert, tenant_id: tenant.id }])
       .select()
       .single();
     if (error) throw error;
 
-    // Fetch global templates and copy them to the new area
-    const { data: globalTemplates } = await supabase
-      .from('shift_templates')
-      .select('nombre, hora_inicio, hora_fin, cruza_medianoche, color, activo')
-      .eq('tenant_id', tenant.id)
-      .is('area_id', null)
-      .eq('activo', true);
-
-    if (globalTemplates && globalTemplates.length > 0) {
-      const templatesToInsert = globalTemplates.map(t => ({
-        ...t,
+    // 2. Si se pidió franjas típicas del sector, las creamos automáticamente
+    if (franjas_iniciales?.length) {
+      const templatesToInsert = franjas_iniciales.map(t => ({
+        tenant_id: tenant.id,
         area_id: data.id,
-        tenant_id: tenant.id
+        nombre: t.nombre,
+        hora_inicio: t.hora_inicio,
+        hora_fin: t.hora_fin,
+        cruza_medianoche: t.cruza_medianoche || false,
+        color: t.color || '#3b82f6',
+        shift_kind: t.shift_kind || 'STANDARD',
+        activo: true,
       }));
       await supabase.from('shift_templates').insert(templatesToInsert);
+    } else {
+      // Si no, copiamos las globales como respaldo
+      const { data: globalTemplates } = await supabase
+        .from('shift_templates')
+        .select('nombre, hora_inicio, hora_fin, cruza_medianoche, color, shift_kind, activo')
+        .eq('tenant_id', tenant.id)
+        .is('area_id', null)
+        .eq('activo', true);
+
+      if (globalTemplates && globalTemplates.length > 0) {
+        const templatesToInsert = globalTemplates.map(t => ({
+          ...t,
+          area_id: data.id,
+          tenant_id: tenant.id
+        }));
+        await supabase.from('shift_templates').insert(templatesToInsert);
+      }
     }
 
     await fetchAreas();
     return data;
   };
 
+  // ─── Actualizar área ─────────────────────────────────────────────────────
   const updateArea = async (id, updates) => {
+    const { franjas_iniciales, ...dataToUpdate } = updates;
     const { data, error } = await supabase
       .from('areas')
-      .update(updates)
+      .update(dataToUpdate)
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .select()
       .single();
     if (error) throw error;
 
-    // Si se actualizó el valor_hora_default, propagar a empleados no especiales
+    // Si se actualizó valor_hora_default, propagar a empleados no especiales
     if (updates.valor_hora_default !== undefined) {
       const { data: areaEmps } = await supabase
         .from('area_employees')
@@ -121,7 +142,6 @@ export function useAreas() {
 
   /** Asigna un empleado a un área (remueve de la anterior si tenía) */
   const assignEmployee = async (areaId, employeeId) => {
-    // Eliminar asignación previa del empleado (solo puede estar en 1 área)
     await supabase
       .from('area_employees')
       .delete()
@@ -146,13 +166,11 @@ export function useAreas() {
     await fetchAreas();
   };
 
-  /** Obtiene los empleados de un área específica */
   const getAreaEmployees = (areaId) => {
     const area = areas.find(a => a.id === areaId);
     return area?.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
   };
 
-  /** Obtiene el área de un empleado */
   const getEmployeeArea = (employeeId) => {
     return areas.find(a =>
       a.area_employees?.some(ae => ae.employee_id === employeeId)

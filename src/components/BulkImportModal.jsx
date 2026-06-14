@@ -1,454 +1,521 @@
+// ============================================================
+// ChronosWork — Importación Masiva de Empleados v3
+// Soporta todos los tipos de contrato, seguridad social, etc.
+// ============================================================
+
 import { useState, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
-import { MdClose, MdUpload, MdDownload, MdCheckCircle, MdError, MdWarning, MdInfo, MdTableChart } from 'react-icons/md';
+import {
+  MdClose, MdUpload, MdDownload, MdCheckCircle, MdError, MdWarning,
+  MdInfo, MdTableChart, MdPeople,
+} from 'react-icons/md';
+import { TIPOS_CONTRATO, SMLV_2025, SMLV_HORA_2025, AUX_TRANSPORTE_2025 } from '../config/laborCatalog';
 
-// ─── Constantes de valores fijos ──────────────────────────────────────────────
-const TIPOS_CONTRATO = ['POR_HORAS', 'SALARIO_FIJO'];
-const DIAS_DESCANSO  = ['1', '2'];
-const ES_ESPECIAL    = ['No', 'Si'];
+const TIPOS_CONTRATO_VALUES = TIPOS_CONTRATO.map(t => t.value);
+const TIPOS_DOC = ['CC', 'CE', 'TI', 'PA', 'PPT', 'NIT'];
+const GENEROS = ['M', 'F', 'OTRO', 'PREFIERO_NO_DECIR'];
+const ESTADOS_CIVIL = ['SOLTERO', 'CASADO', 'UNION_LIBRE', 'DIVORCIADO', 'VIUDO', 'SEPARADO'];
+const NIVELES_EDUCATIVOS = ['PRIMARIA', 'BACHILLERATO', 'TECNICO', 'TECNOLOGO', 'PREGRADO', 'ESPECIALIZACION', 'MAESTRIA', 'DOCTORADO'];
+const NIVELES_ARL = [1, 2, 3, 4, 5];
 
-const TIPO_CONTRATO_MAP = {
-  'por horas': 'POR_HORAS', 'horas': 'POR_HORAS',
-  'por_horas': 'POR_HORAS', 'hora': 'POR_HORAS',
-  'salario fijo': 'SALARIO_FIJO', 'fijo': 'SALARIO_FIJO',
-  'salario_fijo': 'SALARIO_FIJO', 'mensual': 'SALARIO_FIJO',
-  'mes': 'SALARIO_FIJO',
+// ─── Mapeo de columnas (tolerante a variaciones) ────────────────────────────
+const COLUMN_ALIASES = {
+  // Identidad
+  cedula:                   ['cedula', 'cédula', 'documento', 'cc', 'identificacion', 'identificación', 'dni'],
+  tipo_documento:           ['tipo_documento', 'tipo documento', 'tipo doc', 'tipo_id'],
+  nombre:                   ['nombre', 'nombre completo', 'nombres', 'name', 'empleado', 'colaborador'],
+  lugar_expedicion:         ['lugar_expedicion', 'lugar expedicion', 'expedida en'],
+  fecha_nacimiento:         ['fecha_nacimiento', 'nacimiento', 'f. nacimiento', 'fecha nac'],
+  genero:                   ['genero', 'género', 'sexo'],
+  estado_civil:             ['estado_civil', 'estado civil'],
+  numero_hijos:             ['numero_hijos', 'hijos', 'n° hijos', 'cantidad hijos'],
+  // Contacto
+  telefono_contacto:        ['telefono', 'teléfono', 'celular', 'movil', 'móvil', 'phone'],
+  email_personal:           ['email', 'correo', 'correo personal', 'mail'],
+  direccion:                ['direccion', 'dirección', 'address'],
+  ciudad:                   ['ciudad', 'city'],
+  departamento:             ['departamento', 'state', 'provincia'],
+  // Contrato
+  cargo:                    ['cargo', 'puesto', 'position', 'rol', 'job', 'ocupacion', 'ocupación'],
+  nivel_cargo:              ['nivel_cargo', 'nivel', 'nivel cargo'],
+  area:                     ['area', 'área', 'departamento', 'department', 'seccion', 'sección'],
+  tipo_contrato:            ['tipo_contrato', 'tipo contrato', 'contrato', 'contract_type', 'modalidad'],
+  fecha_ingreso:            ['fecha_ingreso', 'ingreso', 'fecha ingreso', 'f. ingreso'],
+  fecha_fin_contrato:       ['fecha_fin', 'fin contrato', 'fecha terminacion', 'fecha_fin_contrato'],
+  horas_semanales_contrato: ['horas_semanales', 'horas semana', 'hrs_semana', 'horas_semanales_contrato'],
+  dias_descanso_semana:     ['dias_descanso', 'dias descanso', 'días descanso', 'dias_descanso_semana', 'descansos', 'dias libres'],
+  // Salario
+  valor_hora:               ['valor_hora', 'valor hora', 'salario hora', 'hourly_rate', 'tarifa hora', 'valor/hora'],
+  salario_mensual:          ['salario_mensual', 'salario', 'sueldo', 'salario base', 'sueldo mensual'],
+  es_especial:              ['es_especial', 'especial', 'salario especial', 'personalizado'],
+  recibe_auxilio_transporte:['recibe_auxilio', 'auxilio transporte', 'aux_transporte'],
+  // Seguridad social
+  eps_nombre:               ['eps', 'eps_nombre', 'salud'],
+  afp_nombre:               ['afp', 'afp_nombre', 'pension', 'pensiones'],
+  arl_nombre:               ['arl', 'arl_nombre', 'riesgos laborales'],
+  nivel_riesgo_arl:         ['nivel_arl', 'nivel riesgo', 'nivel_riesgo_arl'],
+  caja_compensacion:        ['caja', 'caja_compensacion', 'caja de compensacion'],
+  fondo_cesantias:          ['fondo_cesantias', 'cesantias'],
+  // Banco
+  banco_nombre:             ['banco', 'banco_nombre', 'entidad bancaria'],
+  tipo_cuenta:              ['tipo_cuenta', 'tipo cuenta'],
+  numero_cuenta:            ['numero_cuenta', 'n° cuenta', 'cuenta'],
+  // Académico
+  nivel_educacion:          ['nivel_educacion', 'nivel educativo', 'educacion', 'estudios'],
+  // Fiscales
+  responsable_iva:          ['responsable_iva', 'iva'],
+  declarante_renta:         ['declarante_renta', 'renta'],
 };
 
-// ─── Mapeo de nombres de columnas aceptadas ───────────────────────────────────
-const COLUMN_MAP = {
-  cedula:               ['cedula', 'cédula', 'documento', 'cc', 'identificacion', 'identificación', 'dni'],
-  nombre:               ['nombre', 'nombre completo', 'nombres', 'name', 'empleado', 'colaborador'],
-  cargo:                ['cargo', 'puesto', 'position', 'rol', 'job'],
-  area:                 ['area', 'área', 'departamento', 'department', 'seccion', 'sección'],
-  valor_hora:           ['valor_hora', 'valor hora', 'salario hora', 'hourly_rate', 'tarifa hora', 'valor/hora'],
-  tipo_contrato:        ['tipo_contrato', 'tipo contrato', 'contrato', 'contract_type', 'modalidad'],
-  dias_descanso_semana: ['dias_descanso', 'dias descanso', 'días descanso', 'dias_descanso_semana', 'descansos', 'dias libres'],
-  es_especial:          ['es_especial', 'especial', 'salario especial', 'personalizado'],
-};
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-function normalizeHeader(h) {
-  return String(h || '').toLowerCase().trim().replace(/\s+/g, ' ');
-}
+function normalizeHeader(h) { return String(h || '').toLowerCase().trim().replace(/\s+/g, ' '); }
 function findColumn(headers, aliases) {
-  for (const alias of aliases) {
-    const idx = headers.findIndex(h => normalizeHeader(h) === alias);
+  for (const a of aliases) {
+    const idx = headers.findIndex(h => normalizeHeader(h) === a);
     if (idx !== -1) return idx;
   }
   return -1;
 }
 function buildColumnIndexes(headers) {
   const map = {};
-  for (const [field, aliases] of Object.entries(COLUMN_MAP)) {
+  for (const [field, aliases] of Object.entries(COLUMN_ALIASES)) {
     map[field] = findColumn(headers, aliases);
   }
   return map;
 }
 function parseBoolean(val) {
   if (typeof val === 'boolean') return val;
-  return ['si', 'sí', 'yes', 'true', '1', 'x'].includes(String(val || '').toLowerCase().trim());
+  return ['si', 'sí', 'yes', 'true', '1', 'x', '✓'].includes(String(val || '').toLowerCase().trim());
 }
-function parseTipoContrato(val) {
-  const s = String(val || '').toLowerCase().trim();
-  return TIPO_CONTRATO_MAP[s] || null;
+function parseNumero(val) {
+  if (val === null || val === undefined || val === '') return null;
+  const v = String(val).replace(/[^0-9.-]/g, '');
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+function parseEntero(val) {
+  const n = parseNumero(val);
+  return n === null ? null : Math.round(n);
 }
 
-// ─── Validación estricta por fila ─────────────────────────────────────────────
-function validateRow(row, areas, rowNum) {
+// ─── Validación ─────────────────────────────────────────────────────────────
+function validateRow(row, areas) {
   const errors = [];
 
-  // Cédula
-  const ced = String(row.cedula || '').trim();
-  if (!ced) {
+  if (!String(row.cedula || '').trim()) {
     errors.push({ campo: 'cedula', msg: 'La cédula es obligatoria' });
-  } else if (!/^\d{5,12}$/.test(ced)) {
-    errors.push({ campo: 'cedula', msg: `Cédula inválida "${ced}": debe tener entre 5 y 12 dígitos numéricos` });
+  } else if (!/^\d{5,12}$/.test(String(row.cedula).replace(/\D/g, ''))) {
+    errors.push({ campo: 'cedula', msg: `Cédula "${row.cedula}" inválida (5-12 dígitos)` });
   }
 
-  // Nombre
   if (!String(row.nombre || '').trim()) {
     errors.push({ campo: 'nombre', msg: 'El nombre es obligatorio' });
   }
-
-  // Cargo
   if (!String(row.cargo || '').trim()) {
     errors.push({ campo: 'cargo', msg: 'El cargo es obligatorio' });
   }
 
-  // Área
   const areaNombre = String(row.area || '').trim();
   if (!areaNombre) {
     errors.push({ campo: 'area', msg: 'El área es obligatoria' });
   } else {
     const areaMatch = areas.find(a => a.nombre.toLowerCase() === areaNombre.toLowerCase());
     if (!areaMatch) {
-      const disponibles = areas.map(a => `"${a.nombre}"`).join(', ');
-      errors.push({ campo: 'area', msg: `Área "${areaNombre}" no existe. Disponibles: ${disponibles}` });
+      const disponibles = areas.map(a => `"${a.nombre}"`).slice(0, 5).join(', ');
+      errors.push({ campo: 'area', msg: `Área "${areaNombre}" no existe${areas.length > 5 ? ` (${disponibles}...)` : `: ${disponibles}`}` });
     }
   }
 
-  // Tipo contrato (si se especificó)
-  if (row.tipo_contrato !== undefined && row.tipo_contrato !== '') {
-    const tc = parseTipoContrato(row.tipo_contrato);
-    if (!tc) {
-      errors.push({ campo: 'tipo_contrato', msg: `Tipo de contrato inválido "${row.tipo_contrato}". Use: POR_HORAS o SALARIO_FIJO` });
+  if (row.tipo_contrato) {
+    const tc = String(row.tipo_contrato).trim().toUpperCase();
+    if (!TIPOS_CONTRATO_VALUES.includes(tc)) {
+      errors.push({ campo: 'tipo_contrato', msg: `Tipo contrato "${row.tipo_contrato}" inválido. Válidos: ${TIPOS_CONTRATO_VALUES.join(', ')}` });
     }
   }
 
-  // Días de descanso (si se especificó)
-  if (row.dias_descanso_semana !== undefined && row.dias_descanso_semana !== '') {
-    const d = parseInt(row.dias_descanso_semana);
-    if (![1, 2].includes(d)) {
-      errors.push({ campo: 'dias_descanso_semana', msg: `Días de descanso inválido "${row.dias_descanso_semana}". Use: 1 o 2` });
+  if (row.tipo_documento) {
+    const td = String(row.tipo_documento).trim().toUpperCase();
+    if (!TIPOS_DOC.includes(td)) {
+      errors.push({ campo: 'tipo_documento', msg: `Tipo doc "${row.tipo_documento}" inválido. Válidos: ${TIPOS_DOC.join(', ')}` });
     }
   }
 
-  // Valor hora (si se especificó)
-  if (row.valor_hora !== undefined && row.valor_hora !== '' && row.valor_hora !== null) {
-    const v = parseFloat(String(row.valor_hora).replace(/[^0-9.]/g, ''));
-    if (isNaN(v) || v <= 0) {
-      errors.push({ campo: 'valor_hora', msg: `Valor hora inválido "${row.valor_hora}": debe ser un número mayor a 0` });
+  if (row.dias_descanso_semana) {
+    const d = parseEntero(row.dias_descanso_semana);
+    if (d === null || (d !== 1 && d !== 2)) {
+      errors.push({ campo: 'dias_descanso_semana', msg: 'Debe ser 1 o 2' });
     }
+  }
+
+  if (row.nivel_riesgo_arl) {
+    const n = parseEntero(row.nivel_riesgo_arl);
+    if (n === null || n < 1 || n > 5) {
+      errors.push({ campo: 'nivel_riesgo_arl', msg: 'Debe ser 1-5' });
+    }
+  }
+
+  if (row.valor_hora !== undefined && row.valor_hora !== '') {
+    const v = parseNumero(row.valor_hora);
+    if (v === null || v <= 0) errors.push({ campo: 'valor_hora', msg: 'Debe ser número > 0' });
+  }
+
+  if (row.salario_mensual !== undefined && row.salario_mensual !== '') {
+    const s = parseNumero(row.salario_mensual);
+    if (s === null || s <= 0) errors.push({ campo: 'salario_mensual', msg: 'Debe ser número > 0' });
   }
 
   return errors;
 }
 
-// ─── Genera plantilla Excel con dropdowns (ExcelJS) ───────────────────────────
+// ─── Genera plantilla Excel ─────────────────────────────────────────────────
 async function generateTemplate(areas) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'ChronosWork';
   wb.created = new Date();
 
-  // ── Hoja oculta con listas de validación ──
-  const wsListas = wb.addWorksheet('__listas__');
-  wsListas.state = 'veryHidden';
+  // Listas
+  const wsL = wb.addWorksheet('__listas__');
+  wsL.state = 'veryHidden';
+  wsL.getColumn(1).values = ['TipoContrato', ...TIPOS_CONTRATO_VALUES];
+  wsL.getColumn(2).values = ['TipoDocumento', ...TIPOS_DOC];
+  wsL.getColumn(3).values = ['Genero', ...GENEROS];
+  wsL.getColumn(4).values = ['EstadoCivil', ...ESTADOS_CIVIL];
+  wsL.getColumn(5).values = ['DiasDescanso', '1', '2'];
+  wsL.getColumn(6).values = ['NivelARL', '1', '2', '3', '4', '5'];
+  wsL.getColumn(7).values = ['TipoCuenta', 'AHORROS', 'CORRIENTE'];
+  wsL.getColumn(8).values = ['NivelEducacion', ...NIVELES_EDUCATIVOS];
+  wsL.getColumn(9).values = ['SiNo', 'Si', 'No'];
+  wsL.getColumn(10).values = ['Area', ...(areas || []).map(a => a.nombre)];
 
-  const areaNames = areas.map(a => a.nombre);
-  // Col A: áreas
-  wsListas.getColumn(1).values = ['Area', ...areaNames];
-  // Col B: tipos de contrato
-  wsListas.getColumn(2).values = ['TipoContrato', ...TIPOS_CONTRATO];
-  // Col C: días descanso
-  wsListas.getColumn(3).values = ['DiasDescanso', ...DIAS_DESCANSO];
-  // Col D: es_especial
-  wsListas.getColumn(4).values = ['EsEspecial', ...ES_ESPECIAL];
+  // Hoja principal
+  const ws = wb.addWorksheet('Empleados', { views: [{ state: 'frozen', ySplit: 1 }] });
 
-  // ── Hoja principal de empleados ──
-  const ws = wb.addWorksheet('Empleados', {
-    views: [{ state: 'frozen', ySplit: 1 }],
-  });
-
-  // Definir columnas
-  ws.columns = [
-    { header: 'cedula',               key: 'cedula',               width: 16 },
-    { header: 'nombre',               key: 'nombre',               width: 34 },
-    { header: 'cargo',                key: 'cargo',                width: 30 },
-    { header: 'area',                 key: 'area',                 width: 22 },
-    { header: 'valor_hora',           key: 'valor_hora',           width: 16 },
-    { header: 'tipo_contrato',        key: 'tipo_contrato',        width: 20 },
-    { header: 'dias_descanso_semana', key: 'dias_descanso_semana', width: 26 },
-    { header: 'es_especial',          key: 'es_especial',          width: 16 },
+  const columns = [
+    // Identidad
+    { k: 'cedula',                 w: 14, req: true,  l: 'cedula' },
+    { k: 'tipo_documento',         w: 12, req: false, l: 'tipo_doc' },
+    { k: 'nombre',                 w: 32, req: true,  l: 'nombre' },
+    { k: 'lugar_expedicion',       w: 20, req: false, l: 'lugar_expedicion' },
+    { k: 'fecha_nacimiento',       w: 14, req: false, l: 'fecha_nacimiento' },
+    { k: 'genero',                 w: 10, req: false, l: 'genero' },
+    { k: 'estado_civil',           w: 14, req: false, l: 'estado_civil' },
+    { k: 'numero_hijos',           w: 10, req: false, l: 'n°_hijos' },
+    // Contacto
+    { k: 'telefono_contacto',      w: 18, req: false, l: 'telefono' },
+    { k: 'email_personal',         w: 24, req: false, l: 'email' },
+    { k: 'direccion',              w: 26, req: false, l: 'direccion' },
+    { k: 'ciudad',                 w: 16, req: false, l: 'ciudad' },
+    { k: 'departamento',           w: 16, req: false, l: 'departamento' },
+    // Contrato
+    { k: 'cargo',                  w: 24, req: true,  l: 'cargo' },
+    { k: 'nivel_cargo',            w: 14, req: false, l: 'nivel_cargo' },
+    { k: 'area',                   w: 20, req: true,  l: 'area' },
+    { k: 'tipo_contrato',          w: 22, req: false, l: 'tipo_contrato' },
+    { k: 'fecha_ingreso',          w: 14, req: false, l: 'fecha_ingreso' },
+    { k: 'fecha_fin_contrato',     w: 14, req: false, l: 'fecha_fin_contrato' },
+    { k: 'horas_semanales_contrato',w: 12, req: false, l: 'horas_semana' },
+    { k: 'dias_descanso_semana',   w: 12, req: false, l: 'dias_descanso' },
+    // Salario
+    { k: 'valor_hora',             w: 14, req: false, l: 'valor_hora' },
+    { k: 'salario_mensual',        w: 16, req: false, l: 'salario_mensual' },
+    { k: 'es_especial',            w: 12, req: false, l: 'es_especial' },
+    { k: 'recibe_auxilio_transporte',w: 14, req: false, l: 'auxilio_transporte' },
+    // Seguridad social
+    { k: 'eps_nombre',             w: 18, req: false, l: 'eps' },
+    { k: 'afp_nombre',             w: 18, req: false, l: 'afp' },
+    { k: 'arl_nombre',             w: 18, req: false, l: 'arl' },
+    { k: 'nivel_riesgo_arl',       w: 12, req: false, l: 'nivel_arl' },
+    { k: 'caja_compensacion',      w: 18, req: false, l: 'caja' },
+    { k: 'fondo_cesantias',        w: 18, req: false, l: 'cesantias' },
+    // Banco
+    { k: 'banco_nombre',           w: 16, req: false, l: 'banco' },
+    { k: 'tipo_cuenta',            w: 12, req: false, l: 'tipo_cuenta' },
+    { k: 'numero_cuenta',          w: 18, req: false, l: 'n°_cuenta' },
+    // Académico
+    { k: 'nivel_educacion',        w: 18, req: false, l: 'nivel_educacion' },
   ];
 
-  // Estilo de encabezado
-  const headerRow = ws.getRow(1);
-  headerRow.eachCell(cell => {
-    cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
-    cell.font   = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-    cell.alignment = { vertical: 'middle', horizontal: 'center' };
-    cell.border = {
-      bottom: { style: 'medium', color: { argb: 'FF6366F1' } },
-    };
-  });
-  headerRow.height = 22;
-  // Sin datos de ejemplo — la plantilla queda vacía lista para llenar
+  ws.columns = columns.map(c => ({ header: c.l, key: c.k, width: c.w }));
 
-  // ── Aplicar validaciones de datos (filas 2–1002) ──
-  const maxRow = 1002;
-
-  // Área — dropdown dinámico desde hoja oculta
-  if (areaNames.length > 0) {
-    const areaRef = `__listas__!$A$2:$A$${areaNames.length + 1}`;
-    for (let r = 2; r <= maxRow; r++) {
-      ws.getCell(`D${r}`).dataValidation = {
-        type: 'list',
-        allowBlank: true,
-        formulae: [`${areaRef}`],
-        showErrorMessage: true,
-        errorStyle: 'stop',
-        errorTitle: '⛔ Área inválida',
-        error: `Seleccione un área de la lista. Las áreas disponibles son: ${areaNames.join(', ')}`,
-        showInputMessage: true,
-        promptTitle: '📌 Área de trabajo',
-        prompt: 'Seleccione el área a la que pertenece este empleado.',
-      };
+  // Estilo encabezados
+  const hRow = ws.getRow(1);
+  columns.forEach((c, i) => {
+    const cell = ws.getCell(1, i + 1);
+    if (c.req) {
+      cell.value = c.l + ' *';
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
+      cell.font = { bold: true, color: { argb: 'FFFBBF24' }, size: 11 };
+    } else {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      cell.font = { bold: true, color: { argb: 'FFD1D5DB' }, size: 11 };
     }
-  }
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = { bottom: { style: 'medium', color: { argb: 'FF10B981' } } };
+  });
+  hRow.height = 30;
 
-  // Tipo de contrato — dropdown fijo
+  // Data validations
+  const maxRow = 502;
+  const refContrato = `__listas__!$A$2:$A$${TIPOS_CONTRATO_VALUES.length + 1}`;
+  const refTipoDoc = `__listas__!$B$2:$B$${TIPOS_DOC.length + 1}`;
+  const refGenero = `__listas__!$C$2:$C$${GENEROS.length + 1}`;
+  const refEstadoC = `__listas__!$D$2:$D$${ESTADOS_CIVIL.length + 1}`;
+  const refDias = `__listas__!$E$2:$E$3`;
+  const refARL = `__listas__!$F$2:$F$6`;
+  const refCta = `__listas__!$G$2:$G$3`;
+  const refEduc = `__listas__!$H$2:$H$${NIVELES_EDUCATIVOS.length + 1}`;
+  const refSiNo = `__listas__!$I$2:$I$3`;
+  const areaList = (areas || []).map(a => a.nombre);
+  const refAreas = areaList.length > 0 ? `__listas__!$J$2:$J$${areaList.length + 1}` : `__listas__!$J$2:$J$2`;
+
   for (let r = 2; r <= maxRow; r++) {
-    ws.getCell(`F${r}`).dataValidation = {
-      type: 'list',
-      allowBlank: true,
-      formulae: ['"POR_HORAS,SALARIO_FIJO"'],
-      showErrorMessage: true,
-      errorStyle: 'stop',
-      errorTitle: '⛔ Tipo de contrato inválido',
-      error: 'Seleccione "POR_HORAS" o "SALARIO_FIJO".',
-      showInputMessage: true,
-      promptTitle: '📋 Tipo de contrato',
-      prompt: 'POR_HORAS: pago según horas trabajadas.\nSALARIO_FIJO: salario mensual fijo.',
-    };
+    ws.getCell(`B${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refTipoDoc], showErrorMessage: true, errorStyle: 'stop', errorTitle: 'Tipo doc inválido', error: `Use: ${TIPOS_DOC.join(', ')}`, showInputMessage: true, promptTitle: 'Tipo doc', prompt: `CC, CE, TI, PA, PPT, NIT` };
+    ws.getCell(`F${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refGenero], showErrorMessage: true, errorTitle: 'Género inválido', error: `Use: ${GENEROS.join(', ')}` };
+    ws.getCell(`G${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refEstadoC], showErrorMessage: true, errorTitle: 'Estado civil inválido', error: `Use: ${ESTADOS_CIVIL.join(', ')}` };
+    ws.getCell(`H${r}`).dataValidation = { type: 'whole', operator: 'greaterThanOrEqual', allowBlank: true, formulae: [0], errorTitle: 'Inválido', error: 'Debe ser 0 o más' };
+    ws.getCell(`O${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refAreas], errorTitle: 'Área no existe', error: 'El área debe existir. Créala primero en la app.' };
+    ws.getCell(`P${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refContrato], errorTitle: 'Contrato inválido', error: `Use: ${TIPOS_CONTRATO_VALUES.join(', ')}` };
+    ws.getCell(`T${r}`).dataValidation = { type: 'decimal', operator: 'greaterThan', allowBlank: true, formulae: [0], errorTitle: 'Inválido', error: 'Número > 0' };
+    ws.getCell(`U${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refDias], errorTitle: 'Inválido', error: '1 o 2' };
+    ws.getCell(`V${r}`).dataValidation = { type: 'decimal', operator: 'greaterThan', allowBlank: true, formulae: [0], errorTitle: 'Inválido', error: 'Número > 0' };
+    ws.getCell(`W${r}`).dataValidation = { type: 'decimal', operator: 'greaterThan', allowBlank: true, formulae: [0], errorTitle: 'Inválido', error: 'Número > 0' };
+    ws.getCell(`X${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refSiNo], errorTitle: 'Inválido', error: 'Si o No' };
+    ws.getCell(`Y${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refSiNo], errorTitle: 'Inválido', error: 'Si o No' };
+    ws.getCell(`AC${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refARL], errorTitle: 'Inválido', error: '1 a 5' };
+    ws.getCell(`AG${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refCta], errorTitle: 'Inválido', error: 'AHORROS o CORRIENTE' };
+    ws.getCell(`AJ${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refEduc], errorTitle: 'Inválido', error: `Use: ${NIVELES_EDUCATIVOS.join(', ')}` };
   }
 
-  // Días de descanso — dropdown 1 o 2
-  for (let r = 2; r <= maxRow; r++) {
-    ws.getCell(`G${r}`).dataValidation = {
-      type: 'list',
-      allowBlank: true,
-      formulae: ['"1,2"'],
-      showErrorMessage: true,
-      errorStyle: 'stop',
-      errorTitle: '⛔ Días de descanso inválido',
-      error: 'Solo se permite 1 o 2 días de descanso por semana.',
-      showInputMessage: true,
-      promptTitle: '📅 Días de descanso',
-      prompt: 'Ingrese 1 o 2 días de descanso por semana.',
-    };
-  }
+  ws.autoFilter = { from: 'A1', to: `${String.fromCharCode(64 + columns.length)}1` };
 
-  // Es especial — Si / No
-  for (let r = 2; r <= maxRow; r++) {
-    ws.getCell(`H${r}`).dataValidation = {
-      type: 'list',
-      allowBlank: true,
-      formulae: ['"No,Si"'],
-      showErrorMessage: true,
-      errorStyle: 'stop',
-      errorTitle: '⛔ Valor inválido',
-      error: 'Seleccione "Si" o "No".',
-      showInputMessage: true,
-      promptTitle: '⭐ Empleado especial',
-      prompt: '"Si" = salario personalizado (no se toma del área).\n"No" = salario estándar del área.',
-    };
-  }
+  // Hoja instrucciones
+  const wsInfo = wb.addWorksheet('📋 Guía de uso');
+  wsInfo.getColumn(1).width = 35;
+  wsInfo.getColumn(2).width = 75;
 
-  // Valor hora — solo números positivos
-  for (let r = 2; r <= maxRow; r++) {
-    ws.getCell(`E${r}`).dataValidation = {
-      type: 'decimal',
-      operator: 'greaterThan',
-      allowBlank: true,
-      formulae: [0],
-      showErrorMessage: true,
-      errorStyle: 'stop',
-      errorTitle: '⛔ Valor hora inválido',
-      error: 'Ingrese un número mayor a 0. Ej: 12500. Puede dejarlo vacío si el área ya tiene un salario definido.',
-      showInputMessage: true,
-      promptTitle: '💰 Valor por hora',
-      prompt: 'Ingrese el valor en COP por hora ordinaria. Si lo deja vacío, se usará el salario del área.',
-    };
-  }
+  const guia = [
+    ['CHRONOSWORK — Importación Masiva de Empleados v3', ''],
+    ['', ''],
+    ['⚠️ COLUMNAS OBLIGATORIAS', 'cedula, nombre, cargo, area'],
+    ['', ''],
+    ['COLUMNA', 'DESCRIPCIÓN'],
+    ['cedula *', 'Cédula de ciudadanía. Solo números, 5-12 dígitos.'],
+    ['tipo_doc', `Tipo de documento. Opciones: ${TIPOS_DOC.join(', ')}. Default: CC.`],
+    ['nombre *', 'Nombre completo.'],
+    ['lugar_expedicion', 'Ciudad donde se expidió la cédula.'],
+    ['fecha_nacimiento', 'YYYY-MM-DD. Ej: 1990-05-15.'],
+    ['genero', `${GENEROS.join(', ')}`],
+    ['estado_civil', `${ESTADOS_CIVIL.join(', ')}`],
+    ['n°_hijos', 'Cantidad de hijos. Número entero.'],
+    ['telefono', 'Celular o fijo.'],
+    ['email', 'Correo personal.'],
+    ['direccion', 'Dirección de residencia.'],
+    ['ciudad', 'Ciudad de residencia.'],
+    ['departamento', 'Departamento de residencia.'],
+    ['cargo *', 'Cargo u ocupación. Ej: Cajero, Vigilante, Operario.'],
+    ['nivel_cargo', 'JUNIOR, SENIOR, COORDINADOR, SUPERVISOR, JEFE, GERENTE, DIRECTOR.'],
+    ['area *', `Nombre EXACTO del área. Debe existir. Disponibles: ${areaList.slice(0, 8).join(', ')}${areaList.length > 8 ? '...' : ''}`],
+    ['tipo_contrato', `${TIPOS_CONTRATO_VALUES.join(', ')}. Si vacío, usa el del área.`],
+    ['fecha_ingreso', 'YYYY-MM-DD. Fecha de inicio del contrato.'],
+    ['fecha_fin_contrato', 'YYYY-MM-DD. Solo para TERMINO_FIJO u OBRA_LABOR.'],
+    ['horas_semana', 'Horas semanales. Default 42 (Ley 2101/2021).'],
+    ['dias_descanso', '1 o 2. Días libres por semana.'],
+    ['valor_hora', 'Salario por hora en COP. Si vacío, usa el del área.'],
+    ['salario_mensual', 'Salario mensual en COP. Si vacío, se calcula (valor_hora × 240).'],
+    ['es_especial', 'Si/No. Si=Sí, el salario NO se arrastra del área.'],
+    ['auxilio_transporte', 'Si/No. Aplica para sueldos ≤ 2 SMLV ($200.000 en 2025).'],
+    ['eps', 'Nombre de la EPS. Sanitas, Sura, Nueva EPS, etc.'],
+    ['afp', 'Nombre de la AFP. Porvenir, Protección, Colfondos, etc.'],
+    ['arl', 'Nombre de la ARL. Sura, Positiva, Bolívar, etc.'],
+    ['nivel_arl', '1 a 5. Nivel de riesgo ARL del cargo.'],
+    ['caja', 'Caja de compensación. Compensar, Comfama, etc.'],
+    ['cesantias', 'Fondo de cesantías. Porvenir, Protección, etc.'],
+    ['banco', 'Banco donde se deposita la nómina.'],
+    ['tipo_cuenta', 'AHORROS o CORRIENTE.'],
+    ['n°_cuenta', 'Número de cuenta bancaria.'],
+    ['nivel_educacion', `${NIVELES_EDUCATIVOS.join(', ')}.`],
+    ['', ''],
+    ['💡 EJEMPLO RÁPIDO', ''],
+    ['cedula', 'nombre', 'cargo', 'area', 'valor_hora', 'tipo_contrato'],
+    ['1234567890', 'Juan Pérez García', 'Cajero', 'Cajas', '12500', 'INDEFINIDO'],
+    ['9876543210', 'María López Ruiz', 'Vigilante', 'Vigilancia', '12000', 'INDEFINIDO'],
+    ['', ''],
+    ['INSTRUCCIONES', ''],
+    ['1.', 'Llene la hoja "Empleados" con sus datos. Solo use esa hoja.'],
+    ['2.', 'Las columnas con dropdown muestran opciones al hacer clic.'],
+    ['3.', 'Solo cedula, nombre, cargo y area son obligatorias.'],
+    ['4.', 'El área debe existir. Si no existe, créela primero en la app.'],
+    ['5.', 'Guarde el archivo (.xlsx) y súbala en la aplicación.'],
+  ];
 
-  // Cédula — solo números
-  for (let r = 2; r <= maxRow; r++) {
-    ws.getCell(`A${r}`).dataValidation = {
-      type: 'whole',
-      operator: 'between',
-      allowBlank: false,
-      formulae: [10000, 999999999999],
-      showErrorMessage: true,
-      errorStyle: 'stop',
-      errorTitle: '⛔ Cédula inválida',
-      error: 'La cédula debe ser un número entre 5 y 12 dígitos.',
-      showInputMessage: true,
-      promptTitle: '🪪 Cédula',
-      prompt: 'Ingrese el número de cédula sin puntos ni espacios.',
-    };
-  }
+  guia.forEach((row, i) => {
+    const r = wsInfo.addRow(row);
+    if (i === 0) {
+      r.getCell(1).font = { bold: true, size: 14, color: { argb: 'FF10B981' } };
+      r.height = 26;
+    } else if ([2, 4, 'INSTRUCCIONES', '💡 EJEMPLO RÁPIDO'].includes(row[0])) {
+      r.getCell(1).font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      r.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF065F46' } };
+      r.height = 20;
+    } else if (row[0] && row[0].includes('*')) {
+      r.getCell(1).font = { color: { argb: 'FFFBBF24' }, bold: true };
+    } else if (i >= guia.length - 5) {
+      r.getCell(1).font = { color: { argb: 'FF94a3b8' } };
+    }
+  });
 
-  // Ancho fijo de fila 1
-  ws.autoFilter = { from: 'A1', to: 'H1' };
-
-  // Generar buffer y descargar
   const buffer = await wb.xlsx.writeBuffer();
-  const blob   = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url    = URL.createObjectURL(blob);
-  const a      = document.createElement('a');
-  a.href       = url;
-  a.download   = 'plantilla_empleados_chronoswork.xlsx';
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'plantilla_empleados_chronoswork_v3.xlsx';
   a.click();
   URL.revokeObjectURL(url);
 }
 
-// ─── Componente principal ─────────────────────────────────────────────────────
-export default function BulkImportModal({ areas, onClose, onBulkSave }) {
-  const [step, setStep]             = useState('upload');
-  const [rows, setRows]             = useState([]);
-  const [fileName, setFileName]     = useState('');
-  const [dragOver, setDragOver]     = useState(false);
+// ─── Componente principal ──────────────────────────────────────────────────
+export default function BulkImportModal({ areas = [], onClose, onBulkSave }) {
+  const [step, setStep] = useState('upload');
+  const [fileName, setFileName] = useState('');
+  const [parsedRows, setParsedRows] = useState([]);
   const [parseError, setParseError] = useState('');
-  const [progress, setProgress]     = useState(0);
-  const [results, setResults]       = useState({ success: 0, errors: [] });
-  const [downloading, setDownloading] = useState(false);
-  const fileInputRef                = useRef();
+  const [dragOver, setDragOver] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [results, setResults] = useState(null);
+  const [useAreaDefaultSalario, setUseAreaDefaultSalario] = useState(true);
+  const fileInputRef = useRef(null);
 
-  // ─── Parse del archivo ─────────────────────────────────────────────────────
-  const parseFile = useCallback((file) => {
+  const handleFile = useCallback((file) => {
+    if (!file) return;
     setParseError('');
+    setFileName(file.name);
+
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target.result);
-        const wb   = XLSX.read(data, { type: 'array' });
-        const wsName = wb.SheetNames.find(n => !n.startsWith('__')) || wb.SheetNames[0];
-        const ws   = wb.Sheets[wsName];
-        const raw  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-
-        if (raw.length < 2) {
-          setParseError('El archivo está vacío o solo tiene encabezados sin datos.');
+        const wb = XLSX.read(data, { type: 'array' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        if (!json.length) {
+          setParseError('El archivo no contiene filas con datos.');
           return;
         }
 
-        const headers = raw[0].map(String);
-        const colIdx  = buildColumnIndexes(headers);
+        const headers = Object.keys(json[0]);
+        const idxMap = buildColumnIndexes(headers);
 
-        const required = ['cedula', 'nombre', 'cargo', 'area'];
-        const missing  = required.filter(f => colIdx[f] === -1);
-        if (missing.length > 0) {
-          setParseError(`Columnas obligatorias no encontradas: ${missing.map(m => `"${m}"`).join(', ')}. Descargue la plantilla oficial para ver el formato correcto.`);
-          return;
-        }
+        const rows = json.map((row, i) => {
+          const r = { _row: i + 2 };
+          Object.keys(COLUMN_ALIASES).forEach(field => {
+            const colIdx = idxMap[field];
+            if (colIdx === -1) return;
+            const headerName = Object.keys(row)[colIdx];
+            r[field] = headerName != null ? row[headerName] : '';
+          });
+          r._errors = validateRow(r, areas);
+          return r;
+        });
 
-        const parsed = raw.slice(1)
-          .map((row, i) => {
-            const get = (field) => {
-              const idx = colIdx[field];
-              return idx !== -1 ? row[idx] : undefined;
-            };
-            const cedula     = String(get('cedula') || '').trim();
-            const nombre     = String(get('nombre') || '').trim();
-            const cargo      = String(get('cargo') || '').trim();
-            const area       = String(get('area') || '').trim();
-            const valorRaw   = get('valor_hora');
-            const valor_hora = valorRaw !== undefined && valorRaw !== ''
-              ? String(valorRaw).replace(/[^0-9.]/g, '')
-              : '';
-            const tipoRaw         = get('tipo_contrato');
-            const tipo_contrato   = tipoRaw !== undefined && tipoRaw !== ''
-              ? (parseTipoContrato(tipoRaw) || String(tipoRaw)) // si es inválido, pasa el string crudo para que la validación lo marque
-              : 'POR_HORAS';
-            const diasRaw              = get('dias_descanso_semana');
-            const dias_descanso_semana = diasRaw !== undefined && diasRaw !== ''
-              ? String(diasRaw).trim()
-              : '1';
-            const esEspRaw  = get('es_especial');
-            const es_especial = esEspRaw !== undefined ? parseBoolean(esEspRaw) : false;
-
-            return {
-              _row: i + 2,
-              cedula, nombre, cargo, area, valor_hora,
-              tipo_contrato, dias_descanso_semana, es_especial,
-              // Guardamos el raw de tipo_contrato para validación de display
-              _tipo_raw: tipoRaw,
-              _errors: validateRow({ cedula, nombre, cargo, area, valor_hora, tipo_contrato: tipoRaw, dias_descanso_semana: diasRaw, es_especial }, areas, i + 2),
-            };
-          })
-          .filter(r => r.cedula !== '' || r.nombre !== '');
-
-        if (parsed.length === 0) {
-          setParseError('No se encontraron filas de datos en el archivo. Asegúrese de que la primera hoja tenga datos debajo del encabezado.');
-          return;
-        }
-
-        setRows(parsed);
-        setFileName(file.name);
+        setParsedRows(rows);
         setStep('preview');
       } catch (err) {
-        setParseError(`Error al leer el archivo: ${err.message}`);
+        setParseError('No se pudo leer el archivo. Verifica que sea .xlsx, .xls o .csv válido.');
+        console.error(err);
       }
     };
     reader.readAsArrayBuffer(file);
   }, [areas]);
 
-  const handleFile = (file) => {
-    if (!file) return;
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (!['xlsx', 'xls', 'csv'].includes(ext)) {
-      setParseError('Solo se aceptan archivos .xlsx, .xls o .csv');
-      return;
-    }
-    parseFile(file);
-  };
-
   const handleDrop = (e) => {
     e.preventDefault();
     setDragOver(false);
-    handleFile(e.dataTransfer.files[0]);
+    const f = e.dataTransfer.files?.[0];
+    if (f) handleFile(f);
   };
 
-  const handleDownloadTemplate = async () => {
-    setDownloading(true);
-    try {
-      await generateTemplate(areas);
-    } catch (err) {
-      console.error('Error generando plantilla:', err);
-    } finally {
-      setDownloading(false);
-    }
-  };
+  const validRows = parsedRows.filter(r => r._errors.length === 0);
+  const invalidRows = parsedRows.filter(r => r._errors.length > 0);
 
-  // ─── Estadísticas ──────────────────────────────────────────────────────────
-  const validRows   = rows.filter(r => r._errors.length === 0);
-  const invalidRows = rows.filter(r => r._errors.length > 0);
-  const totalRows   = rows.length;
-  const hayErrores  = invalidRows.length > 0;
-
-  // ─── Importación ──────────────────────────────────────────────────────────
   const handleImport = async () => {
-    if (hayErrores || validRows.length === 0) return;
+    if (!validRows.length) return;
     setStep('importing');
     setProgress(0);
-
-    const errorList = [];
     let successCount = 0;
+    const errorList = [];
 
     for (let i = 0; i < validRows.length; i++) {
-      const row    = validRows[i];
-      const areaObj = areas.find(a => a.nombre.toLowerCase() === row.area.toLowerCase().trim());
-
+      const row = validRows[i];
       try {
-        let vHora = row.valor_hora !== '' ? parseFloat(row.valor_hora) : (areaObj?.valor_hora_default || 0);
-        if (!vHora || vHora <= 0) throw new Error('Valor hora no definido y el área tampoco tiene un valor hora configurado');
+        const areaObj = areas.find(a => a.nombre.toLowerCase() === String(row.area).toLowerCase());
 
-        const tipoContrato = parseTipoContrato(row._tipo_raw || row.tipo_contrato) || 'POR_HORAS';
-        const diasDescanso = parseInt(row.dias_descanso_semana) || 1;
+        const valorHora = parseNumero(row.valor_hora);
+        const salarioMensual = parseNumero(row.salario_mensual);
 
-        await onBulkSave({
-          employeeData: {
-            cedula: row.cedula,
-            nombre: row.nombre,
-            cargo:  row.cargo,
-            valor_hora:           vHora,
-            tipo_contrato:        tipoContrato,
-            dias_descanso_semana: diasDescanso,
-            es_especial:          row.es_especial,
-            turno_predeterminado_id: null,
-          },
-          areaId:    areaObj?.id || null,
-          esEspecial: row.es_especial,
-        });
+        const employeeData = {
+          // Identidad
+          tipo_documento: row.tipo_documento ? String(row.tipo_documento).toUpperCase().trim() : 'CC',
+          cedula: String(row.cedula).replace(/\D/g, '').trim(),
+          nombre: String(row.nombre).trim(),
+          lugar_expedicion: row.lugar_expedicion ? String(row.lugar_expedicion).trim() : null,
+          fecha_nacimiento: row.fecha_nacimiento ? parseFecha(row.fecha_nacimiento) : null,
+          genero: row.genero ? String(row.genero).toUpperCase().trim() : null,
+          estado_civil: row.estado_civil ? String(row.estado_civil).toUpperCase().trim() : null,
+          numero_hijos: parseEntero(row.numero_hijos) ?? 0,
+          // Contacto
+          telefono_contacto: row.telefono_contacto ? String(row.telefono_contacto).trim() : null,
+          email_personal: row.email_personal ? String(row.email_personal).trim() : null,
+          direccion: row.direccion ? String(row.direccion).trim() : null,
+          ciudad: row.ciudad ? String(row.ciudad).trim() : null,
+          departamento: row.departamento ? String(row.departamento).trim() : null,
+          // Contrato
+          cargo: String(row.cargo).trim(),
+          nivel_cargo: row.nivel_cargo ? String(row.nivel_cargo).toUpperCase().trim() : 'JUNIOR',
+          tipo_contrato: row.tipo_contrato ? String(row.tipo_contrato).toUpperCase().trim() : (areaObj?.tipo_contrato_predominante || 'INDEFINIDO'),
+          fecha_ingreso: row.fecha_ingreso ? parseFecha(row.fecha_ingreso) : new Date().toISOString().slice(0, 10),
+          fecha_fin_contrato: row.fecha_fin_contrato ? parseFecha(row.fecha_fin_contrato) : null,
+          horas_semanales_contrato: parseEntero(row.horas_semanales_contrato) ?? 42,
+          dias_descanso_semana: parseEntero(row.dias_descanso_semana) ?? (areaObj?.dias_descanso_default || 1),
+          // Salario
+          valor_hora: valorHora ?? (useAreaDefaultSalario && areaObj ? parseFloat(areaObj.valor_hora_default) : SMLV_HORA_2025),
+          salario_mensual: salarioMensual ?? (valorHora ? valorHora * 240 : (useAreaDefaultSalario && areaObj ? parseFloat(areaObj.valor_hora_default) * 240 : SMLV_2025)),
+          es_especial: parseBoolean(row.es_especial) || (valorHora === null && !useAreaDefaultSalario),
+          recibe_auxilio_transporte: row.recibe_auxilio_transporte !== undefined ? parseBoolean(row.recibe_auxilio_transporte) : (areaObj?.paga_auxilio_transporte ?? true),
+          // Seguridad social
+          eps_nombre: row.eps_nombre ? String(row.eps_nombre).trim() : null,
+          afp_nombre: row.afp_nombre ? String(row.afp_nombre).trim() : null,
+          arl_nombre: row.arl_nombre ? String(row.arl_nombre).trim() : null,
+          nivel_riesgo_arl: parseEntero(row.nivel_riesgo_arl) ?? (areaObj?.nivel_riesgo_arl || 1),
+          caja_compensacion: row.caja_compensacion ? String(row.caja_compensacion).trim() : null,
+          fondo_cesantias: row.fondo_cesantias ? String(row.fondo_cesantias).trim() : null,
+          // Banco
+          banco_nombre: row.banco_nombre ? String(row.banco_nombre).trim() : null,
+          tipo_cuenta: row.tipo_cuenta ? String(row.tipo_cuenta).toUpperCase().trim() : 'AHORROS',
+          numero_cuenta: row.numero_cuenta ? String(row.numero_cuenta).trim() : null,
+          // Académico
+          nivel_educacion: row.nivel_educacion ? String(row.nivel_educacion).toUpperCase().trim() : null,
+          // Fiscal
+          responsable_iva: parseBoolean(row.responsable_iva),
+          declarante_renta: parseBoolean(row.declarante_renta),
+          // Activo
+          activo: true,
+        };
+
+        const saved = await onBulkSave(employeeData);
+        if (areaObj && saved?.id) {
+          // Asignar al área
+          await supabaseAssign(areaObj.id, saved.id);
+        }
         successCount++;
       } catch (err) {
-        errorList.push({ row: row._row, nombre: row.nombre, cedula: row.cedula, msg: err.message });
+        errorList.push({ row: row._row, nombre: row.nombre, msg: err.message });
       }
       setProgress(Math.round(((i + 1) / validRows.length) * 100));
     }
 
-    setResults({ success: successCount, errors: errorList });
+    setResults({ success: successCount, errors: errorList, total: parsedRows.length });
     setStep('done');
   };
 
@@ -456,404 +523,246 @@ export default function BulkImportModal({ areas, onClose, onBulkSave }) {
     <div className="cw-modal-overlay" style={{ zIndex: 9999 }}>
       <div className="cw-modal animate-slide-up" style={{ maxWidth: 820, width: '96vw', maxHeight: '92vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
 
-        {/* ── Header ── */}
         <div className="cw-modal__header">
           <h3 className="cw-modal__title">
-            <MdTableChart style={{ marginRight: 8, color: 'var(--cw-accent)' }} />
+            <MdPeople style={{ marginRight: 8, color: '#10b981' }} />
             Importación Masiva de Empleados
-            {fileName && <span style={{ fontSize: '0.72rem', fontWeight: 400, color: 'var(--text-muted)', marginLeft: 10 }}>{fileName}</span>}
+            {fileName && <span style={{ fontSize: '0.7rem', fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>{fileName}</span>}
           </h3>
-          <button className="cw-modal__close" onClick={onClose}><MdClose /></button>
+          <button className="cw-modal__close" onClick={() => onClose(results?.success > 0)}><MdClose /></button>
         </div>
 
-        {/* ── Steps bar ── */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border-subtle)', padding: '0 1.5rem', gap: 0 }}>
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--border-subtle)', padding: '0 1.5rem', flexShrink: 0 }}>
           {[
-            { key: 'upload',    label: '1. Subir archivo' },
-            { key: 'preview',   label: '2. Revisar datos' },
+            { key: 'upload',    label: '1. Subir' },
+            { key: 'preview',   label: '2. Revisar' },
             { key: 'importing', label: '3. Importando' },
             { key: 'done',      label: '4. Resultado' },
-          ].map((s, idx) => {
-            const order   = ['upload', 'preview', 'importing', 'done'];
-            const active  = step === s.key;
-            const passed  = order.indexOf(step) > order.indexOf(s.key);
+          ].map(s => {
+            const order = ['upload', 'preview', 'importing', 'done'];
+            const active = step === s.key;
+            const passed = order.indexOf(step) > order.indexOf(s.key);
             return (
               <div key={s.key} style={{
-                padding: '0.65rem 1.1rem', fontSize: '0.78rem', fontWeight: active ? 700 : 400,
-                color: active ? 'var(--cw-accent)' : passed ? 'var(--cw-success)' : 'var(--text-muted)',
-                borderBottom: active ? '2px solid var(--cw-accent)' : '2px solid transparent',
-                transition: 'all 0.2s',
-              }}>
-                {passed ? '✓ ' : ''}{s.label}
-              </div>
+                padding: '0.6rem 1rem', fontSize: '0.75rem', fontWeight: active ? 700 : 400,
+                color: active ? '#10b981' : passed ? 'var(--cw-success)' : 'var(--text-muted)',
+                borderBottom: active ? '2px solid #10b981' : '2px solid transparent',
+              }}>{passed ? '✓ ' : ''}{s.label}</div>
             );
           })}
         </div>
 
-        {/* ── Body ── */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem' }}>
 
-          {/* ══════════ STEP: upload ══════════ */}
+          {/* ══ UPLOAD ══ */}
           {step === 'upload' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-
-              {/* Info de formato */}
-              <div style={{
-                background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.22)',
-                borderRadius: 12, padding: '1rem 1.25rem',
-              }}>
-                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.88rem' }}>
-                  <MdInfo style={{ color: '#818cf8' }} /> Columnas del archivo
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div style={{ background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 12, padding: '0.85rem 1rem' }}>
+                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' }}>
+                  <MdInfo style={{ color: '#34d399' }} /> 35 columnas con catálogos laborales colombianos
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem 1.5rem' }}>
-                  {[
-                    { col: 'cedula',               req: true,  desc: 'Solo dígitos, 5–12 caracteres' },
-                    { col: 'nombre',               req: true,  desc: 'Nombre completo del empleado' },
-                    { col: 'cargo',                req: true,  desc: 'Cargo o puesto de trabajo' },
-                    { col: 'area',                 req: true,  desc: 'Nombre exacto de un área existente' },
-                    { col: 'valor_hora',           req: false, desc: 'Número en COP. Vacío = usa el del área' },
-                    { col: 'tipo_contrato',        req: false, desc: 'POR_HORAS o SALARIO_FIJO' },
-                    { col: 'dias_descanso_semana', req: false, desc: '1 o 2 (predeterminado: 1)' },
-                    { col: 'es_especial',          req: false, desc: 'Si o No (salario personalizado)' },
-                  ].map(({ col, req, desc }) => (
-                    <div key={col} style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                      <span style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 3,
-                        background: req ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.05)',
-                        border: `1px solid ${req ? 'rgba(99,102,241,0.35)' : 'var(--border-subtle)'}`,
-                        borderRadius: 6, padding: '0.1rem 0.45rem', fontSize: '0.73rem',
-                        color: req ? '#a5b4fc' : 'var(--text-muted)', flexShrink: 0, fontFamily: 'monospace',
-                      }}>
-                        {col}
-                        {req && <span style={{ color: '#f87171', fontSize: '0.65rem' }}>*</span>}
-                      </span>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingTop: '0.15rem' }}>{desc}</span>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Áreas disponibles */}
-                <div style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid rgba(99,102,241,0.18)', fontSize: '0.78rem' }}>
-                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Áreas disponibles en el sistema: </span>
-                  {areas.length === 0
-                    ? <span style={{ color: '#f87171' }}>⚠ No hay áreas creadas aún. Cree áreas primero.</span>
-                    : areas.map(a => (
-                        <span key={a.id} style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 4,
-                          background: a.color + '18', border: `1px solid ${a.color}45`,
-                          borderRadius: 100, padding: '0.1rem 0.65rem', marginRight: 5, marginTop: 4,
-                          fontSize: '0.74rem', color: 'var(--text-primary)',
-                        }}>
-                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: a.color, display: 'inline-block' }} />
-                          {a.nombre}
-                        </span>
-                      ))}
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  Solo <strong>cedula, nombre, cargo y area</strong> son obligatorios. El resto se autollena con defaults del área.
                 </div>
               </div>
 
-              {/* Zona Drag & Drop */}
+              {areas.length === 0 && (
+                <div className="cw-alert cw-alert--warning">
+                  ⚠️ Aún no has creado áreas. Crea al menos una en la sección de Áreas antes de importar empleados.
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={useAreaDefaultSalario} onChange={e => setUseAreaDefaultSalario(e.target.checked)} />
+                  <span>Usar salario del área si no se especifica valor_hora en el archivo</span>
+                </label>
+              </div>
+
+              <button className="cw-btn cw-btn--secondary" onClick={() => generateTemplate(areas)} style={{ alignSelf: 'flex-start' }} disabled={areas.length === 0}>
+                <MdDownload /> Descargar plantilla Excel con tus áreas ({areas.length})
+              </button>
+
               <div
                 onDragOver={e => { e.preventDefault(); setDragOver(true); }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
                 style={{
-                  border: `2px dashed ${dragOver ? 'var(--cw-accent)' : 'var(--border-subtle)'}`,
-                  borderRadius: 16, padding: '2.5rem 1.5rem', textAlign: 'center', cursor: 'pointer',
-                  background: dragOver ? 'rgba(99,102,241,0.07)' : 'var(--bg-glass)',
+                  border: `2px dashed ${dragOver ? '#10b981' : 'var(--border-subtle)'}`,
+                  borderRadius: 16, padding: '2rem 1rem', textAlign: 'center', cursor: 'pointer',
+                  background: dragOver ? 'rgba(16,185,129,0.06)' : 'var(--bg-glass)',
                   transition: 'all 0.25s',
                 }}
               >
-                <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>📂</div>
-                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.35rem' }}>
+                <div style={{ fontSize: '2.2rem', marginBottom: '0.4rem' }}>📂</div>
+                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.3rem' }}>
                   Arrastra tu archivo aquí o haz clic para seleccionarlo
                 </div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  Acepta archivos <strong>.xlsx</strong>, <strong>.xls</strong> y <strong>.csv</strong>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Acepta <strong>.xlsx</strong>, <strong>.xls</strong> y <strong>.csv</strong>
                 </div>
                 <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }}
                   onChange={e => handleFile(e.target.files[0])} />
               </div>
 
-              {/* Error de parseo */}
               {parseError && (
-                <div style={{
-                  background: 'rgba(239,68,68,0.09)', border: '1px solid rgba(239,68,68,0.3)',
-                  borderRadius: 10, padding: '0.85rem 1rem', color: '#fca5a5',
-                  display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.84rem',
-                }}>
-                  <MdError style={{ color: '#ef4444', flexShrink: 0, marginTop: 2, fontSize: '1.1rem' }} />
-                  <div>
-                    <div style={{ fontWeight: 600, marginBottom: '0.2rem', color: '#f87171' }}>Error al leer el archivo</div>
-                    {parseError}
-                  </div>
-                </div>
+                <div className="cw-alert cw-alert--error">🚫 {parseError}</div>
               )}
             </div>
           )}
 
-          {/* ══════════ STEP: preview ══════════ */}
+          {/* ══ PREVIEW ══ */}
           {step === 'preview' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-
-              {/* Resumen */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
-                {[
-                  { icon: '📋', label: 'Total filas',  value: totalRows,        color: 'var(--cw-accent)' },
-                  { icon: '✅', label: 'Sin errores',  value: validRows.length,  color: 'var(--cw-success)' },
-                  { icon: '❌', label: 'Con errores',  value: invalidRows.length, color: invalidRows.length > 0 ? '#f87171' : 'var(--text-muted)' },
-                ].map(c => (
-                  <div key={c.label} style={{
-                    background: 'var(--bg-glass)', border: `1px solid ${c.color}30`, borderRadius: 12,
-                    padding: '0.85rem', textAlign: 'center',
-                  }}>
-                    <div style={{ fontSize: '1.4rem' }}>{c.icon}</div>
-                    <div style={{ fontSize: '1.7rem', fontWeight: 800, color: c.color, lineHeight: 1.1 }}>{c.value}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>{c.label}</div>
-                  </div>
-                ))}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
+                <StatBox label="Filas" value={parsedRows.length} color="#6366f1" />
+                <StatBox label="Válidas" value={validRows.length} color="#10b981" />
+                <StatBox label="Con errores" value={invalidRows.length} color={invalidRows.length ? '#ef4444' : 'var(--text-muted)'} />
               </div>
 
-              {/* ⛔ BLOQUEO TOTAL si hay errores */}
-              {hayErrores && (
-                <div style={{
-                  background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.3)',
-                  borderRadius: 12, overflow: 'hidden',
-                }}>
-                  <div style={{
-                    padding: '0.85rem 1.1rem', background: 'rgba(239,68,68,0.12)',
-                    display: 'flex', alignItems: 'center', gap: 8,
-                  }}>
-                    <MdError style={{ color: '#f87171', fontSize: '1.2rem', flexShrink: 0 }} />
-                    <div>
-                      <div style={{ fontWeight: 700, color: '#f87171', fontSize: '0.9rem' }}>
-                        ⛔ Importación bloqueada — Se encontraron {invalidRows.length} fila{invalidRows.length !== 1 ? 's' : ''} con errores
-                      </div>
-                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                        Corrija <strong style={{ color: '#fca5a5' }}>todos los errores</strong> en el archivo y vuelva a subirlo antes de poder importar.
-                      </div>
+              {invalidRows.length > 0 && (
+                <div style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '0.75rem' }}>
+                  <div style={{ fontWeight: 700, color: '#fca5a5', fontSize: '0.82rem', marginBottom: '0.4rem' }}>
+                    ⚠ {invalidRows.length} fila(s) con errores:
+                  </div>
+                  {invalidRows.slice(0, 5).map((r, i) => (
+                    <div key={i} style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>
+                      <strong>Fila {r._row}:</strong> {r.nombre || r.cedula || '(sin nombre)'}
+                      <ul style={{ margin: '0.2rem 0 0 1.2rem', color: '#fca5a5' }}>
+                        {r._errors.map((e, j) => <li key={j}>{e.msg}</li>)}
+                      </ul>
                     </div>
-                  </div>
-
-                  {/* Lista de errores detallada */}
-                  <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-                    {invalidRows.map((row, i) => (
-                      <div key={i} style={{
-                        padding: '0.6rem 1.1rem', borderBottom: '1px solid rgba(239,68,68,0.15)',
-                        display: 'flex', flexDirection: 'column', gap: '0.2rem',
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem' }}>
-                          <span style={{
-                            background: 'rgba(239,68,68,0.2)', color: '#f87171',
-                            borderRadius: 6, padding: '0.05rem 0.45rem', fontWeight: 700, flexShrink: 0, fontFamily: 'monospace',
-                          }}>
-                            Fila {row._row}
-                          </span>
-                          <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
-                            {row.nombre || row.cedula || '(vacío)'}
-                          </span>
-                          {row.cedula && <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace', fontSize: '0.74rem' }}>— CC {row.cedula}</span>}
-                        </div>
-                        <div style={{ paddingLeft: '0.25rem', display: 'flex', flexDirection: 'column', gap: '0.15rem' }}>
-                          {row._errors.map((err, j) => (
-                            <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: 5, fontSize: '0.76rem', color: '#fca5a5' }}>
-                              <span style={{ color: '#f87171', flexShrink: 0, marginTop: 1 }}>▸</span>
-                              <span><strong style={{ color: '#fb923c' }}>[{err.campo}]</strong> {err.msg}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* ✅ Todo OK */}
-              {!hayErrores && validRows.length > 0 && (
-                <div style={{
-                  background: 'rgba(74,222,128,0.07)', border: '1px solid rgba(74,222,128,0.25)',
-                  borderRadius: 10, padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: 8,
-                  color: '#4ade80', fontSize: '0.85rem',
-                }}>
-                  <MdCheckCircle style={{ fontSize: '1.2rem', flexShrink: 0 }} />
-                  <div>
-                    <strong>Todos los registros son válidos.</strong>
-                    {' '}Haga clic en "Importar" para registrar los {validRows.length} empleados.
-                  </div>
-                </div>
-              )}
-
-              {/* Tabla de preview */}
-              <div style={{ overflowX: 'auto', maxHeight: hayErrores ? 180 : 320, overflowY: 'auto', borderRadius: 10, border: '1px solid var(--border-subtle)' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.77rem' }}>
-                  <thead style={{ position: 'sticky', top: 0, background: 'var(--bg-card)', zIndex: 1 }}>
-                    <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                      {['Fila', 'Estado', 'Cédula', 'Nombre', 'Cargo', 'Área', 'Valor/h', 'Contrato', 'Desc.'].map(h => (
-                        <th key={h} style={{ padding: '0.5rem 0.7rem', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row, i) => {
-                      const ok = row._errors.length === 0;
-                      const areaObj = areas.find(a => a.nombre.toLowerCase() === String(row.area || '').toLowerCase().trim());
-                      return (
-                        <tr key={i} style={{
-                          borderBottom: '1px solid var(--border-subtle)',
-                          background: ok ? 'transparent' : 'rgba(239,68,68,0.05)',
-                        }}>
-                          <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{row._row}</td>
-                          <td style={{ padding: '0.4rem 0.7rem' }}>
-                            {ok
-                              ? <span style={{ color: '#4ade80', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}><MdCheckCircle /> OK</span>
-                              : <span title={row._errors.map(e => `[${e.campo}] ${e.msg}`).join('\n')} style={{ color: '#f87171', display: 'flex', alignItems: 'center', gap: 3, cursor: 'help', whiteSpace: 'nowrap' }}>
-                                  <MdError /> {row._errors.length} error{row._errors.length !== 1 ? 'es' : ''}
-                                </span>
-                            }
-                          </td>
-                          <td style={{ padding: '0.4rem 0.7rem', fontFamily: 'monospace', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{row.cedula || '—'}</td>
-                          <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-primary)', fontWeight: 500, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.nombre || '—'}</td>
-                          <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-secondary)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.cargo || '—'}</td>
-                          <td style={{ padding: '0.4rem 0.7rem' }}>
-                            {areaObj
-                              ? <span style={{ display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
-                                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: areaObj.color, flexShrink: 0 }} />
-                                  {areaObj.nombre}
-                                </span>
-                              : <span style={{ color: '#f87171' }}>{row.area || '—'}</span>
-                            }
-                          </td>
-                          <td style={{ padding: '0.4rem 0.7rem', color: 'var(--cw-success)', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
-                            {row.valor_hora !== '' ? `$${Number(row.valor_hora).toLocaleString('es-CO')}` : <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>del área</span>}
-                          </td>
-                          <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-                            {row.tipo_contrato === 'SALARIO_FIJO' ? 'Fijo' : row.tipo_contrato === 'POR_HORAS' ? 'Por horas' : <span style={{ color: '#f87171' }}>{String(row._tipo_raw || '—')}</span>}
-                          </td>
-                          <td style={{ padding: '0.4rem 0.7rem', color: 'var(--text-secondary)', textAlign: 'center' }}>{row.dias_descanso_semana}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* ══════════ STEP: importing ══════════ */}
-          {step === 'importing' && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem', padding: '2.5rem 0' }}>
-              <div style={{ fontSize: '2.8rem' }}>⚙️</div>
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '1.05rem' }}>
-                Importando {validRows.length} empleados...
-              </div>
-              <div style={{ width: '100%', maxWidth: 420 }}>
-                <div style={{
-                  background: 'var(--bg-glass)', borderRadius: 100, height: 14,
-                  overflow: 'hidden', border: '1px solid var(--border-subtle)',
-                }}>
-                  <div style={{
-                    height: '100%', borderRadius: 100,
-                    background: 'linear-gradient(90deg, var(--cw-accent), #818cf8)',
-                    width: `${progress}%`, transition: 'width 0.3s ease',
-                  }} />
-                </div>
-                <div style={{ textAlign: 'center', marginTop: '0.5rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                  {progress}% completado — No cierre esta ventana
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ══════════ STEP: done ══════════ */}
-          {step === 'done' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', padding: '1.5rem 0' }}>
-                <div style={{ fontSize: '2.8rem' }}>{results.errors.length === 0 ? '🎉' : '⚠️'}</div>
-                <div style={{ fontWeight: 800, fontSize: '1.15rem', color: 'var(--text-primary)' }}>
-                  {results.errors.length === 0 ? '¡Importación exitosa!' : 'Importación completada con algunos errores'}
-                </div>
-                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center' }}>
-                  <span style={{
-                    background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.3)',
-                    borderRadius: 10, padding: '0.5rem 1.25rem', color: '#4ade80', fontWeight: 700, fontSize: '0.9rem',
-                  }}>✅ {results.success} importados exitosamente</span>
-                  {results.errors.length > 0 && (
-                    <span style={{
-                      background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-                      borderRadius: 10, padding: '0.5rem 1.25rem', color: '#f87171', fontWeight: 700, fontSize: '0.9rem',
-                    }}>❌ {results.errors.length} fallaron durante la inserción</span>
+                  ))}
+                  {invalidRows.length > 5 && (
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      ... y {invalidRows.length - 5} más
+                    </div>
                   )}
                 </div>
-              </div>
+              )}
 
-              {results.errors.length > 0 && (
-                <div style={{ border: '1px solid rgba(239,68,68,0.25)', borderRadius: 10, overflow: 'hidden' }}>
-                  <div style={{ padding: '0.6rem 1rem', background: 'rgba(239,68,68,0.08)', borderBottom: '1px solid rgba(239,68,68,0.2)', fontWeight: 600, fontSize: '0.82rem', color: '#f87171' }}>
-                    Registros que fallaron al guardar en el sistema
-                  </div>
-                  <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-                    {results.errors.map((e, i) => (
-                      <div key={i} style={{ padding: '0.5rem 1rem', borderBottom: '1px solid var(--border-subtle)', fontSize: '0.79rem', display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
-                        <span style={{ color: 'var(--text-muted)', flexShrink: 0, fontFamily: 'monospace' }}>Fila {e.row}</span>
-                        <span style={{ color: 'var(--text-primary)', flexShrink: 0 }}>{e.nombre || e.cedula}</span>
-                        <span style={{ color: '#fca5a5', flex: 1 }}>{e.msg}</span>
-                      </div>
-                    ))}
-                  </div>
+              {validRows.length > 0 && (
+                <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 8 }}>
+                  <table className="cw-table" style={{ fontSize: '0.72rem' }}>
+                    <thead>
+                      <tr>
+                        <th>✓</th><th>Fila</th><th>Cédula</th><th>Nombre</th><th>Cargo</th><th>Área</th><th>Contrato</th><th>$/h</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {validRows.map((r, i) => (
+                        <tr key={i}>
+                          <td><MdCheckCircle style={{ color: '#10b981' }} /></td>
+                          <td>{r._row}</td>
+                          <td>{r.cedula}</td>
+                          <td>{r.nombre}</td>
+                          <td>{r.cargo}</td>
+                          <td>{r.area}</td>
+                          <td>{r.tipo_contrato || '—'}</td>
+                          <td>${parseNumero(r.valor_hora)?.toLocaleString('es-CO') || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
+
+              <div className="cw-modal__footer" style={{ padding: 0, borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
+                <button className="cw-btn cw-btn--secondary" onClick={() => { setStep('upload'); setParsedRows([]); setFileName(''); }}>
+                  ← Cambiar archivo
+                </button>
+                <button className="cw-btn cw-btn--primary" onClick={handleImport} disabled={validRows.length === 0}>
+                  ✅ Importar {validRows.length} empleado{validRows.length !== 1 ? 's' : ''}
+                </button>
+              </div>
             </div>
           )}
-        </div>
 
-        {/* ── Footer ── */}
-        <div className="cw-modal__footer">
-          {step === 'upload' && (
-            <>
-              <button className="cw-btn cw-btn--secondary" onClick={onClose}>Cancelar</button>
-              <button
-                className="cw-btn cw-btn--secondary"
-                onClick={handleDownloadTemplate}
-                disabled={downloading}
-                id="btn-download-template"
-              >
-                {downloading
-                  ? <><span className="cw-spinner cw-spinner--sm" /> Generando...</>
-                  : <><MdDownload /> Descargar plantilla Excel</>
-                }
-              </button>
-            </>
+          {/* ══ IMPORTING ══ */}
+          {step === 'importing' && (
+            <div style={{ textAlign: 'center', padding: '2rem 1rem' }}>
+              <div className="cw-spinner" style={{ margin: '0 auto 1rem' }}></div>
+              <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Importando empleados...</div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                {progress}% completado · Asignando a áreas
+              </div>
+              <div style={{ background: 'var(--border-subtle)', height: 6, borderRadius: 3, marginTop: '0.75rem', overflow: 'hidden' }}>
+                <div style={{ background: '#10b981', height: '100%', width: `${progress}%`, transition: 'width 0.2s' }} />
+              </div>
+            </div>
           )}
 
-          {step === 'preview' && (
-            <>
-              <button className="cw-btn cw-btn--secondary" onClick={() => { setStep('upload'); setRows([]); setFileName(''); }}>
-                ← Volver y corregir
-              </button>
-              {hayErrores ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.82rem', color: '#f87171' }}>
-                  <MdError /> Corrija los errores antes de importar
+          {/* ══ DONE ══ */}
+          {step === 'done' && results && (
+            <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+              <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>
+                {results.errors.length === 0 ? '🎉' : results.success > 0 ? '⚠️' : '🚫'}
+              </div>
+              <h3 style={{ marginBottom: '0.5rem' }}>
+                {results.errors.length === 0
+                  ? '¡Importación exitosa!'
+                  : results.success > 0
+                    ? 'Importación parcial'
+                    : 'No se pudo importar'}
+              </h3>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                <strong style={{ color: '#10b981' }}>{results.success}</strong> empleado(s) creado(s) ·
+                {' '}<strong style={{ color: results.errors.length ? '#ef4444' : 'var(--text-muted)' }}>{results.errors.length}</strong> error(es)
+              </div>
+              {results.errors.length > 0 && (
+                <div style={{ marginTop: '0.75rem', textAlign: 'left', maxHeight: 180, overflowY: 'auto', background: 'rgba(239,68,68,0.05)', padding: '0.5rem 0.75rem', borderRadius: 6, fontSize: '0.75rem' }}>
+                  {results.errors.map((e, i) => (
+                    <div key={i} style={{ color: '#fca5a5' }}>
+                      Fila {e.row} ({e.nombre}): {e.msg}
+                    </div>
+                  ))}
                 </div>
-              ) : (
-                <button
-                  id="btn-start-import"
-                  className="cw-btn cw-btn--primary"
-                  onClick={handleImport}
-                  disabled={validRows.length === 0}
-                >
-                  <MdUpload /> Importar {validRows.length} empleado{validRows.length !== 1 ? 's' : ''}
-                </button>
               )}
-            </>
-          )}
-
-          {step === 'done' && (
-            <button className="cw-btn cw-btn--primary" style={{ minWidth: 120 }} onClick={onClose}>
-              ✓ Listo
-            </button>
+              <button className="cw-btn cw-btn--primary" onClick={() => onClose(results.success > 0)} style={{ marginTop: '1rem' }}>
+                Cerrar
+              </button>
+            </div>
           )}
         </div>
       </div>
     </div>
   );
+}
+
+function StatBox({ label, value, color }) {
+  return (
+    <div style={{ background: 'var(--bg-glass)', border: `1px solid ${color}30`, borderRadius: 8, padding: '0.5rem 0.75rem' }}>
+      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ fontSize: '1.3rem', fontWeight: 700, color }}>{value}</div>
+    </div>
+  );
+}
+
+// Helpers
+function parseFecha(val) {
+  if (!val) return null;
+  // Acepta Date de Excel (número), YYYY-MM-DD, o DD/MM/YYYY
+  if (typeof val === 'number') {
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return d.toISOString().slice(0, 10);
+  }
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [d, m, y] = s.split('/');
+    return `${y}-${m}-${d}`;
+  }
+  return s;
+}
+
+async function supabaseAssign(areaId, employeeId) {
+  const { supabase } = await import('../config/supabaseClient');
+  await supabase
+    .from('area_employees')
+    .delete()
+    .eq('employee_id', employeeId);
+  await supabase
+    .from('area_employees')
+    .insert([{ area_id: areaId, employee_id: employeeId }]);
 }

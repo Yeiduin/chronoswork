@@ -1,3 +1,8 @@
+// ============================================================
+// ChronosWork — Página de Gestión de Áreas
+// Con AreaForm v3 (wizard 3 pasos) + Bulk Import
+// ============================================================
+
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../config/supabaseClient';
 import { useAreas } from '../hooks/useAreas';
@@ -7,14 +12,15 @@ import { useShifts } from '../hooks/useShifts';
 import { useAbsences } from '../hooks/useAbsences';
 import {
   MdAdd, MdEdit, MdDelete, MdClose, MdAccessTime,
-  MdBolt, MdDomain, MdWarning, MdUpload,
+  MdBolt, MdDomain, MdWarning, MdUpload, MdInfo, MdPeople,
 } from 'react-icons/md';
 import BulkImportAreasModal from '../components/BulkImportAreasModal';
-import { getPeriodoActual, getDiasMes, getDatesByOption } from '../core/dateUtils';
+import { getPeriodoActual, getDatesByOption } from '../core/dateUtils';
 import { format } from 'date-fns';
 import { AutoAssignModal } from '../components/AutoAssignModal';
 import { DemandCurveEditor } from '../components/DemandCurveEditor';
 import { LaborLimitsConfig } from '../components/LaborLimitsConfig';
+import AreaForm from '../components/AreaForm';
 
 const PALETTE = [
   '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b',
@@ -31,332 +37,6 @@ const DIAS_SEMANA = [
   { value: 7, label: 'Dom' },
 ];
 
-// ─── Modal crear/editar Área ────────────────────────────────────────────────
-function AreaModal({ area, onClose, onSave }) {
-  const isEdit = !!area;
-  const areaEmps = area?.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
-  const [form, setForm] = useState({
-    nombre: area?.nombre || '',
-    descripcion: area?.descripcion || '',
-    color: area?.color || '#6366f1',
-    dias_trabajo: area?.dias_trabajo || [1, 2, 3, 4, 5],
-    valor_hora_default: area?.valor_hora_default || '',
-    modo_operacion:             area?.modo_operacion             || 'OFICINA',
-    tipo_contrato_default: area?.tipo_contrato_default || 'POR_HORAS',
-    dias_descanso_default: area?.dias_descanso_default || 1,
-    night_shift_enabled:        area?.night_shift_enabled        || false,
-    night_shift_start:          area?.night_shift_start          || '22:00',
-    night_shift_end:            area?.night_shift_end            || '06:00',
-    night_shift_employee_ids:   area?.night_shift_employee_ids   || [],
-  });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const toggleDia = (d) => {
-    setForm(prev => ({
-      ...prev,
-      dias_trabajo: prev.dias_trabajo.includes(d)
-        ? prev.dias_trabajo.filter(x => x !== d)
-        : [...prev.dias_trabajo, d].sort(),
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!form.nombre.trim()) { setError('El nombre del área es obligatorio.'); return; }
-    if (!form.dias_trabajo.length) { setError('Seleccione al menos un día de trabajo.'); return; }
-    const valorNum = parseFloat(form.valor_hora_default);
-    if (!form.valor_hora_default || isNaN(valorNum) || valorNum <= 0) {
-      setError('Ingrese el valor hora base del área (mayor a 0).'); return;
-    }
-    setLoading(true);
-    try {
-      await onSave({
-        ...form,
-        valor_hora_default: valorNum,
-      });
-      onClose();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="cw-modal-overlay">
-      <div className="cw-modal animate-slide-up" style={{ maxWidth: 480 }}>
-        <div className="cw-modal__header">
-          <h3 className="cw-modal__title">
-            <MdDomain style={{ marginRight: '0.5rem' }} />
-            {isEdit ? 'Editar Área' : 'Nueva Área'}
-          </h3>
-          <button className="cw-modal__close" onClick={onClose}><MdClose /></button>
-        </div>
-
-        {error && <div className="cw-alert cw-alert--error">🚫 {error}</div>}
-
-        <form onSubmit={handleSubmit}>
-          <div className="cw-form-group">
-            <label className="cw-label">Nombre del Área <span className="required">*</span></label>
-            <input className="cw-input" placeholder="Ej: Cajeros, Surtidores, Bodega..."
-              value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} />
-          </div>
-
-          <div className="cw-form-group">
-            <label className="cw-label">Descripción (opcional)</label>
-            <input className="cw-input" placeholder="Descripción breve del área..."
-              value={form.descripcion} onChange={e => setForm(p => ({ ...p, descripcion: e.target.value }))} />
-          </div>
-
-          {/* Modo de operación */}
-          <div className="cw-form-group">
-            <label className="cw-label">Tipo de Operación del Área <span className="required">*</span></label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              {/* Opción: Horario de Oficina */}
-              <button
-                type="button"
-                onClick={() => setForm(p => ({ ...p, modo_operacion: 'OFICINA' }))}
-                style={{
-                  padding: '0.875rem', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
-                  border: `2px solid ${form.modo_operacion === 'OFICINA' ? '#6366f1' : 'var(--border-subtle)'}`,
-                  background: form.modo_operacion === 'OFICINA' ? '#6366f118' : 'var(--bg-glass)',
-                  transition: 'all 0.15s',
-                }}
-              >
-                <div style={{ fontSize: '1.25rem', marginBottom: '0.3rem' }}>🏢</div>
-                <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>Horario de Oficina</div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem', lineHeight: 1.4 }}>
-                  Lunes a viernes (o días configurados). Turnos fijos como 8–6, 6–2 pm, 2–10 pm. Máx. 42h/sem.
-                </div>
-              </button>
-              {/* Opción: 24/7 */}
-              <button
-                type="button"
-                onClick={() => setForm(p => ({
-                  ...p,
-                  modo_operacion: '24_7',
-                  dias_trabajo: [1, 2, 3, 4, 5, 6, 7],
-                }))}
-                style={{
-                  padding: '0.875rem', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
-                  border: `2px solid ${form.modo_operacion === '24_7' ? '#f59e0b' : 'var(--border-subtle)'}`,
-                  background: form.modo_operacion === '24_7' ? '#f59e0b18' : 'var(--bg-glass)',
-                  transition: 'all 0.15s',
-                }}
-              >
-                <div style={{ fontSize: '1.25rem', marginBottom: '0.3rem' }}>🔄</div>
-                <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>Operación 24/7</div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem', lineHeight: 1.4 }}>
-                  7 días, domingos y festivos incluidos. Pago por horas con recargos nocturnos (HON, HOD, HCDN) según CST.
-                </div>
-              </button>
-            </div>
-            {form.modo_operacion === '24_7' && (
-              <div style={{ marginTop: '0.5rem', padding: '0.65rem 0.875rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                <strong>⚖️ Ley laboral colombiana (CST):</strong> El algoritmo aplica automáticamente recargos de HON (+35%), HOD (+80%/90%), HCDN (+115%/125%) y horas extra nocturnas dominicales según el período A/B. Límite: 42h/semana, máx. 2h extra/día y 12h extra/semana.
-              </div>
-            )}
-            {form.modo_operacion === '24_7' && (
-              <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 10 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.75rem' }}>
-                  <input
-                    type="checkbox"
-                    checked={form.night_shift_enabled}
-                    onChange={e => setForm(p => ({ ...p, night_shift_enabled: e.target.checked }))}
-                  />
-                  🌙 Activar Jornada Nocturna Dedicada
-                </label>
-
-                {form.night_shift_enabled && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                      Los trabajadores asignados a esta jornada <strong>solo recibirán turnos dentro del horario nocturno</strong> y no serán asignados en horario diurno durante el período.
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '1rem' }}>
-                      <div className="cw-form-group" style={{ flex: 1, marginBottom: 0 }}>
-                        <label className="cw-label">Inicio jornada nocturna</label>
-                        <input
-                          type="time"
-                          className="cw-input"
-                          value={form.night_shift_start}
-                          onChange={e => setForm(p => ({ ...p, night_shift_start: e.target.value }))}
-                        />
-                      </div>
-                      <div className="cw-form-group" style={{ flex: 1, marginBottom: 0 }}>
-                        <label className="cw-label">Fin jornada nocturna</label>
-                        <input
-                          type="time"
-                          className="cw-input"
-                          value={form.night_shift_end}
-                          onChange={e => setForm(p => ({ ...p, night_shift_end: e.target.value }))}
-                        />
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                          Puede cruzar medianoche (ej: 22:00 → 06:00)
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                      <label className="cw-label">
-                        Trabajadores nocturnos
-                        <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: '0.4rem' }}>
-                          (si no seleccionas ninguno, el sistema los elige automáticamente)
-                        </span>
-                      </label>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: 160, overflowY: 'auto', padding: '0.5rem', background: 'var(--bg-glass)', borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
-                        {areaEmps.map(emp => (
-                          <label key={emp.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.8rem' }}>
-                            <input
-                              type="checkbox"
-                              checked={(form.night_shift_employee_ids || []).includes(emp.id)}
-                              onChange={e => {
-                                const ids = form.night_shift_employee_ids || [];
-                                setForm(p => ({
-                                  ...p,
-                                  night_shift_employee_ids: e.target.checked
-                                    ? [...ids, emp.id]
-                                    : ids.filter(id => id !== emp.id)
-                                }));
-                              }}
-                            />
-                            {emp.nombre}
-                          </label>
-                        ))}
-                        {areaEmps.length === 0 && (
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                            Primero guarda el área y agrega colaboradores para seleccionarlos aquí.
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            {form.modo_operacion === 'OFICINA' && (
-              <div style={{ marginTop: '0.5rem', padding: '0.65rem 0.875rem', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 8, fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                <strong>📋 Jornada ordinaria:</strong> El algoritmo respeta los días laborables del área y asigna turnos respetando el tope de 42h semanales (Ley 2101/2021). Las novedades (vacaciones, incapacidades) bloquean automáticamente los días afectados.
-              </div>
-            )}
-          </div>
-
-          <div className="cw-form-group">
-            <label className="cw-label">Color del área</label>
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              {PALETTE.map(c => (
-                <button key={c} type="button" onClick={() => setForm(p => ({ ...p, color: c }))}
-                  style={{
-                    width: 32, height: 32, borderRadius: '50%', background: c, border: 'none',
-                    cursor: 'pointer', outline: form.color === c ? `3px solid white` : 'none',
-                    boxShadow: form.color === c ? `0 0 0 5px ${c}60` : 'none',
-                    transition: 'all 0.15s',
-                  }} />
-              ))}
-            </div>
-          </div>
-
-          <div className="cw-form-group">
-            <label className="cw-label">Días de trabajo <span className="required">*</span></label>
-            {form.modo_operacion === '24_7' ? (
-              <div style={{ padding: '0.5rem 0.75rem', background: 'var(--bg-glass)', borderRadius: 8, fontSize: '0.82rem', color: 'var(--text-muted)', border: '1px dashed var(--border-subtle)' }}>
-                🔄 <strong>Todos los días</strong> — En modo 24/7 el algoritmo cubre Lun–Dom incluidos festivos.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                {DIAS_SEMANA.map(d => (
-                  <button key={d.value} type="button"
-                    onClick={() => toggleDia(d.value)}
-                    style={{
-                      padding: '0.4rem 0.75rem', borderRadius: 8, fontSize: '0.82rem',
-                      fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
-                      border: `2px solid ${form.dias_trabajo.includes(d.value) ? form.color : 'var(--border-subtle)'}`,
-                      background: form.dias_trabajo.includes(d.value) ? form.color + '20' : 'var(--bg-glass)',
-                      color: form.dias_trabajo.includes(d.value) ? 'var(--text-primary)' : 'var(--text-muted)',
-                    }}>
-                    {d.label}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
-              {form.modo_operacion === '24_7'
-                ? '7 días seleccionados · ~30-31 días/mes'
-                : `${form.dias_trabajo.length} días seleccionados · ~${form.dias_trabajo.length * 4} días/mes`}
-            </div>
-          </div>
-
-          {/* Salario base del área */}
-          <div className="cw-form-group">
-            <label className="cw-label">Valor Hora Base del Área (COP) <span className="required">*</span></label>
-            <input
-              className="cw-input"
-              inputMode="numeric"
-              placeholder="Ej: 12500"
-              value={form.valor_hora_default}
-              onChange={e => {
-                const val = e.target.value.replace(/[^0-9.]/g, '');
-                setForm(p => ({ ...p, valor_hora_default: val }));
-              }}
-            />
-            {form.valor_hora_default && parseFloat(form.valor_hora_default) > 0 && (
-              <span style={{ fontSize: '0.78rem', color: 'var(--cw-success)' }}>
-                = {new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(parseFloat(form.valor_hora_default))} / hora · Aplica a todos los empleados del área
-              </span>
-            )}
-          </div>
-
-          {/* Defaults de contrato para nuevos empleados */}
-          <div className="cw-form-group">
-            <label className="cw-label">
-              Configuración predeterminada para nuevos colaboradores
-            </label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              <div>
-                <label className="cw-label" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  Tipo de Contrato
-                </label>
-                <select
-                  className="cw-input"
-                  value={form.tipo_contrato_default}
-                  onChange={e => setForm(p => ({ ...p, tipo_contrato_default: e.target.value }))}
-                >
-                  <option value="POR_HORAS">Por Horas (Dom a Dom)</option>
-                  <option value="SALARIO_FIJO">Salario Fijo</option>
-                </select>
-              </div>
-              <div>
-                <label className="cw-label" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  Días de Descanso / Semana
-                </label>
-                <select
-                  className="cw-input"
-                  value={form.dias_descanso_default}
-                  onChange={e => setForm(p => ({ ...p, dias_descanso_default: parseInt(e.target.value) }))}
-                >
-                  <option value={1}>1 Día</option>
-                  <option value={2}>2 Días</option>
-                </select>
-              </div>
-            </div>
-            <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-              Estos valores se arrastran automáticamente al asignar esta área a un colaborador.
-            </div>
-          </div>
-
-          <div className="cw-modal__footer">
-            <button type="button" className="cw-btn cw-btn--secondary" onClick={onClose}>Cancelar</button>
-            <button type="submit" className="cw-btn cw-btn--primary" disabled={loading}>
-              {loading ? <><span className="cw-spinner cw-spinner--sm"></span> Guardando...</> : (isEdit ? '💾 Actualizar' : '+ Crear Área')}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 // ─── Modal crear/editar Plantilla de Turno ──────────────────────────────────
 function TemplateModal({ template, areaId, onClose, onSave }) {
   const isEdit = !!template;
@@ -366,6 +46,8 @@ function TemplateModal({ template, areaId, onClose, onSave }) {
     hora_fin: template?.hora_fin?.slice(0, 5) || '14:00',
     cruza_medianoche: template?.cruza_medianoche || false,
     color: template?.color || '#3b82f6',
+    shift_kind: template?.shift_kind || 'STANDARD',
+    descripcion: template?.descripcion || '',
     area_id: areaId,
   });
   const [loading, setLoading] = useState(false);
@@ -397,7 +79,7 @@ function TemplateModal({ template, areaId, onClose, onSave }) {
 
   return (
     <div className="cw-modal-overlay">
-      <div className="cw-modal animate-slide-up" style={{ maxWidth: 420 }}>
+      <div className="cw-modal animate-slide-up" style={{ maxWidth: 460 }}>
         <div className="cw-modal__header">
           <h3 className="cw-modal__title">
             <MdAccessTime style={{ marginRight: '0.5rem' }} />
@@ -413,6 +95,18 @@ function TemplateModal({ template, areaId, onClose, onSave }) {
             <label className="cw-label">Nombre del turno <span className="required">*</span></label>
             <input className="cw-input" placeholder="Ej: Turno Mañana, Turno 8-5..."
               value={form.nombre} onChange={e => setForm(p => ({ ...p, nombre: e.target.value }))} />
+          </div>
+
+          <div className="cw-form-group">
+            <label className="cw-label">Tipo de turno</label>
+            <select className="cw-input" value={form.shift_kind} onChange={e => setForm(p => ({ ...p, shift_kind: e.target.value }))}>
+              <option value="STANDARD">⏰ Estándar (corrido)</option>
+              <option value="PARTIDO">⏸️ Partido (con almuerzo)</option>
+              <option value="ROTATIVO">🔄 Rotativo</option>
+              <option value="NOCTURNO">🌙 Nocturno (paga HON)</option>
+              <option value="DISPONIBILIDAD">🛎️ Disponibilidad / Guardia</option>
+              <option value="CUSTOM">🛠️ Personalizado</option>
+            </select>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
@@ -432,7 +126,7 @@ function TemplateModal({ template, areaId, onClose, onSave }) {
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
               <input type="checkbox" checked={form.cruza_medianoche}
                 onChange={e => setForm(p => ({ ...p, cruza_medianoche: e.target.checked }))} />
-              <span className="cw-label" style={{ margin: 0 }}>Turno nocturno (cruza medianoche)</span>
+              <span className="cw-label" style={{ margin: 0 }}>Turno cruza medianoche</span>
             </label>
           </div>
 
@@ -480,7 +174,7 @@ function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove }) {
   return (
     <div>
       <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '0.5rem', fontWeight: 600 }}>
-        COLABORADORES ({areaEmps.length})
+        👥 COLABORADORES ({areaEmps.length})
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem' }}>
         {areaEmps.map(emp => (
@@ -498,7 +192,7 @@ function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove }) {
         ))}
         {areaEmps.length === 0 && (
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-            Sin colaboradores asignados
+            Sin colaboradores asignados. Regístralos en Personal y asígnalos aquí.
           </span>
         )}
       </div>
@@ -552,7 +246,7 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
       hora_fin: globalTpl.hora_fin,
       cruza_medianoche: globalTpl.cruza_medianoche,
       color: globalTpl.color,
-      area_id: area.id
+      area_id: area.id,
     });
     setShowImport(false);
   };
@@ -566,7 +260,7 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
     const [y, m] = periodo.split('-').map(Number);
     const daysInMonth = new Date(y, m, 0).getDate();
     const areaDias = area.dias_trabajo || [];
-    
+
     const getLocalYYYYMMDD = (d) => {
       const yy = d.getFullYear();
       const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -578,16 +272,15 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
       const d = new Date(y, m - 1, i);
       const dow = d.getDay() === 0 ? 7 : d.getDay();
       if (!areaDias.includes(dow)) continue;
-      
+
       const dateStr = getLocalYYYYMMDD(d);
-      
+
       templates.forEach(t => {
         turnosTotales++;
         const isCovered = shifts.some(s => s.template_id === t.id && getLocalYYYYMMDD(new Date(s.start_time)) === dateStr);
         if (isCovered) {
           turnosCubiertos++;
         } else {
-          // Calcular horas
           const hIni = new Date(`${dateStr}T${t.hora_inicio.slice(0,5)}:00`);
           const nextDay = new Date(d);
           if (t.cruza_medianoche) nextDay.setDate(nextDay.getDate() + 1);
@@ -599,16 +292,21 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
     }
 
     const faltantes = turnosTotales - turnosCubiertos;
-    const personalNecesario = Math.ceil(horasFaltantes / 182); // 42 hrs/semana * 4.33 = ~182 hrs/mes
+    const personalNecesario = Math.ceil(horasFaltantes / 182);
 
     return { turnosTotales, turnosCubiertos, faltantes, horasFaltantes, personalNecesario };
   }, [area, templates, shifts, periodo]);
+
+  const getShiftKindIcon = (kind) => {
+    const map = { STANDARD: '⏰', PARTIDO: '⏸️', ROTATIVO: '🔄', NOCTURNO: '🌙', DISPONIBILIDAD: '🛎️', CUSTOM: '🛠️' };
+    return map[kind] || '⏰';
+  };
 
   return (
     <div style={{ marginTop: '1.25rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
         <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-          FRANJAS HORARIAS ({templates.length})
+          ⏰ FRANJAS HORARIAS ({templates.length})
         </div>
         <div style={{ display: 'flex', gap: '0.4rem', position: 'relative' }}>
           {globalTemplates.length > 0 && (
@@ -620,23 +318,23 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
                 <div style={{
                   position: 'absolute', top: '100%', right: 0, marginTop: '0.3rem', zIndex: 50,
                   background: 'var(--bg-secondary)', border: '1px solid var(--border-medium)',
-                  borderRadius: 8, padding: '0.4rem', width: 220, boxShadow: 'var(--shadow-md)'
+                  borderRadius: 8, padding: '0.4rem', width: 240, boxShadow: 'var(--shadow-md)',
                 }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.3rem', padding: '0 0.3rem' }}>
                     Desde Globales:
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', maxHeight: 200, overflowY: 'auto' }}>
                     {globalTemplates.map(gt => (
                       <button key={gt.id} onClick={() => handleImport(gt)} style={{
                         background: 'transparent', border: 'none', textAlign: 'left',
                         padding: '0.4rem', borderRadius: 6, cursor: 'pointer',
-                        fontSize: '0.8rem', color: 'var(--text-primary)',
-                        display: 'flex', alignItems: 'center', gap: '0.4rem'
+                        fontSize: '0.78rem', color: 'var(--text-primary)',
+                        display: 'flex', alignItems: 'center', gap: '0.4rem',
                       }}
                       onMouseOver={e => e.currentTarget.style.background = 'var(--bg-glass)'}
                       onMouseOut={e => e.currentTarget.style.background = 'transparent'}>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: gt.color }} />
-                        {gt.nombre}
+                        {getShiftKindIcon(gt.shift_kind)} {gt.nombre}
                       </button>
                     ))}
                   </div>
@@ -665,7 +363,15 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <div style={{ width: 10, height: 10, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
                 <div>
-                  <div style={{ fontSize: '0.83rem', fontWeight: 600, color: 'var(--text-primary)' }}>{t.nombre}</div>
+                  <div style={{ fontSize: '0.83rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    {getShiftKindIcon(t.shift_kind)} {t.nombre}
+                    {t.shift_kind && t.shift_kind !== 'STANDARD' && (
+                      <span style={{
+                        fontSize: '0.62rem', padding: '0.05rem 0.35rem', borderRadius: 4,
+                        background: t.color + '30', color: t.color, fontWeight: 700,
+                      }}>{t.shift_kind}</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                     {t.hora_inicio.slice(0, 5)} — {t.hora_fin.slice(0, 5)}
                     {t.cruza_medianoche && ' (+1 día)'}
@@ -690,14 +396,14 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
       {cobertura && cobertura.faltantes > 0 && (
         <div style={{
           marginTop: '1rem', padding: '0.875rem', background: 'rgba(239, 68, 68, 0.05)',
-          border: '1px solid #fca5a5', borderRadius: 8
+          border: '1px solid #fca5a5', borderRadius: 8,
         }}>
           <h4 style={{ fontSize: '0.8rem', color: '#ef4444', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem', margin: 0 }}>
             <MdWarning /> Faltan {cobertura.faltantes} turnos por cubrir en {periodo}
           </h4>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.4rem' }}>
             Quedan por programar aprox. <strong>{Math.round(cobertura.horasFaltantes)} horas</strong>.
-            <br/>
+            <br />
             <span style={{ color: '#ef4444' }}>
               Equivale a ~<strong>{cobertura.personalNecesario} empleado{cobertura.personalNecesario !== 1 ? 's' : ''}</strong> a tiempo completo.
             </span>
@@ -708,13 +414,12 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
         <div style={{
           marginTop: '1rem', padding: '0.75rem', background: 'rgba(16, 185, 129, 0.05)',
           border: '1px solid #6ee7b7', borderRadius: 8, fontSize: '0.75rem', color: '#059669',
-          display: 'flex', alignItems: 'center', gap: '0.4rem'
+          display: 'flex', alignItems: 'center', gap: '0.4rem',
         }}>
           ✅ Todos los turnos de este mes están cubiertos.
         </div>
       )}
 
-      {/* Botón auto-asignar */}
       <button
         className="cw-btn cw-btn--primary"
         style={{ width: '100%', marginTop: '1rem', justifyContent: 'center' }}
@@ -747,13 +452,18 @@ function GlobalTemplatesPanel() {
   const [showModal, setShowModal] = useState(false);
   const [editTemplate, setEditTemplate] = useState(null);
 
+  const getShiftKindIcon = (kind) => {
+    const map = { STANDARD: '⏰', PARTIDO: '⏸️', ROTATIVO: '🔄', NOCTURNO: '🌙', DISPONIBILIDAD: '🛎️', CUSTOM: '🛠️' };
+    return map[kind] || '⏰';
+  };
+
   return (
     <div className="cw-card" style={{ padding: '1.25rem' }}>
       <h3 className="cw-card__title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
         <span style={{ fontSize: '1.2rem' }}>🌐</span> Franjas Horarias Predeterminadas
       </h3>
       <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1.25rem' }}>
-        Estas franjas actúan como un catálogo. Se copiarán automáticamente a las nuevas áreas que crees, 
+        Estas franjas actúan como un catálogo. Se copiarán automáticamente a las nuevas áreas que crees,
         y podrás importarlas fácilmente a las áreas ya existentes para ahorrar tiempo.
       </p>
 
@@ -781,7 +491,15 @@ function GlobalTemplatesPanel() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 <div style={{ width: 12, height: 12, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
                 <div>
-                  <div style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)' }}>{t.nombre}</div>
+                  <div style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    {getShiftKindIcon(t.shift_kind)} {t.nombre}
+                    {t.shift_kind && t.shift_kind !== 'STANDARD' && (
+                      <span style={{
+                        fontSize: '0.62rem', padding: '0.05rem 0.35rem', borderRadius: 4,
+                        background: t.color + '30', color: t.color, fontWeight: 700,
+                      }}>{t.shift_kind}</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                     {t.hora_inicio.slice(0, 5)} — {t.hora_fin.slice(0, 5)}
                     {t.cruza_medianoche && ' (+1 día)'}
@@ -810,7 +528,7 @@ function GlobalTemplatesPanel() {
       {showModal && (
         <TemplateModal
           template={editTemplate}
-          areaId={null} // Null means global
+          areaId={null}
           onClose={() => { setShowModal(false); setEditTemplate(null); }}
           onSave={editTemplate ? (data) => updateTemplate(editTemplate.id, data) : createTemplate}
         />
@@ -821,7 +539,7 @@ function GlobalTemplatesPanel() {
 
 // ─── Página principal ───────────────────────────────────────────────────────
 export default function AreasPage() {
-  const { areas, loading, createArea, updateArea, deleteArea, deleteAllAreas, assignEmployee, removeEmployee } = useAreas();
+  const { areas, loading, createArea, updateArea, deleteArea, deleteAllAreas, assignEmployee, removeEmployee, fetchAreas } = useAreas();
   const { employees } = useEmployees();
   const { absences } = useAbsences();
   const periodoActual = getPeriodoActual();
@@ -843,7 +561,7 @@ export default function AreasPage() {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedArea(areas[0]);
     }
-    if (selectedArea) {
+    if (selectedArea && selectedArea !== 'global') {
       const updated = areas.find(a => a.id === selectedArea.id);
       if (updated) {
         // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -879,14 +597,14 @@ export default function AreasPage() {
       if (strategyOptions.onlyNewEmployees && processedDays.length > 0) {
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
-        
+
         const { data: existing } = await supabase
           .from('shifts')
           .select('employee_id')
           .in('employee_id', empIds)
           .gte('start_time', `${dStartStr}T00:00:00`)
           .lte('start_time', `${dEndStr}T23:59:59`);
-        
+
         const empIdsWithShifts = new Set(existing?.map(s => s.employee_id) || []);
         finalEmployees = finalEmployees.filter(emp => !empIdsWithShifts.has(emp.id));
 
@@ -899,10 +617,6 @@ export default function AreasPage() {
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
         if (empIds.length > 0) {
-          // Si tuvieras clearShiftsByDateRange expuesto por useShifts lo llamaríamos aquí
-          // Pero como no lo importamos explícitamente y supabase.from('shifts').delete() está encapsulado,
-          // Vamos a dejar que useShifts lo haga... ¡espera! clearShiftsByDateRange no está exportado en AreasPage.
-          // Para no romper nada, haremos el delete manual si está la opción
           await supabase.from('shifts')
             .delete()
             .in('employee_id', empIds)
@@ -911,12 +625,11 @@ export default function AreasPage() {
         }
       }
 
-      // Construir config nocturna desde los datos del área
       const nightShiftConfig = (area.modo_operacion === '24_7' && area.night_shift_enabled)
         ? {
-            enabled:     true,
-            start:       area.night_shift_start  || '22:00',
-            end:         area.night_shift_end    || '06:00',
+            enabled: true,
+            start: area.night_shift_start || '22:00',
+            end: area.night_shift_end || '06:00',
             employeeIds: area.night_shift_employee_ids || [],
           }
         : null;
@@ -927,13 +640,14 @@ export default function AreasPage() {
         absences: areaAbsences,
         existingShifts: areaShifts,
         year, month,
-        diasTrabajo: area.modo_operacion === '24_7' ? [1,2,3,4,5,6,7] : (area.dias_trabajo || [1, 2, 3, 4, 5]),
+        diasTrabajo: area.modo_operacion === '24_7' ? [1, 2, 3, 4, 5, 6, 7] : (area.dias_trabajo || [1, 2, 3, 4, 5]),
         strategyOptions,
         diasToProcess: processedDays,
         modoOperacion: area.modo_operacion || 'OFICINA',
         laborLimits: area.labor_limits || null,
         areaId: area.id,
         nightShiftConfig,
+        patronRotativo: area.patron_rotativo || null,
       });
       setAutoAssignResult({ ...result, areaName: area.nombre });
     } catch (err) {
@@ -945,10 +659,13 @@ export default function AreasPage() {
 
   return (
     <div className="page-wrapper animate-fade-in">
-      {/* Bulk Import Modal */}
+      {/* Modal Bulk Import */}
       {showBulkModal && (
         <BulkImportAreasModal
-          onClose={() => setShowBulkModal(false)}
+          onClose={async (refresh) => {
+            setShowBulkModal(false);
+            if (refresh) await fetchAreas();
+          }}
           onBulkSave={async (areaData) => {
             await createArea(areaData);
           }}
@@ -959,26 +676,33 @@ export default function AreasPage() {
       <div className="page-header">
         <div className="page-header__info">
           <h1 className="page-title">🏢 Gestión de Áreas</h1>
-          <p className="page-subtitle">Defina departamentos, franjas horarias y asigne colaboradores por área</p>
+          <p className="page-subtitle">
+            Define departamentos, franjas horarias y asigna colaboradores · Catálogo laboral Colombia 2026
+          </p>
         </div>
         <div className="page-header__actions">
-          <button
-            className="cw-btn cw-btn--danger"
-            onClick={() => setDeleteAllConfirm(true)}
-            title="Eliminar todas las áreas"
-            disabled={areas.length === 0}
-          >
-            <MdDelete /> Eliminar Todas
-          </button>
+          {areas.length > 0 && (
+            <button
+              className="cw-btn cw-btn--danger"
+              onClick={() => setDeleteAllConfirm(true)}
+              title="Eliminar todas las áreas"
+            >
+              <MdDelete /> Eliminar Todas
+            </button>
+          )}
           <button
             id="btn-bulk-import-areas"
             className="cw-btn cw-btn--secondary"
             onClick={() => setShowBulkModal(true)}
-            title="Importar áreas desde archivo Excel o CSV"
+            title="Importar áreas y franjas desde Excel/CSV"
           >
-            <MdUpload /> Importar desde Excel
+            <MdUpload /> Importar Excel
           </button>
-          <button className="cw-btn cw-btn--primary" onClick={() => { setEditArea(null); setShowAreaModal(true); }}>
+          <button
+            id="btn-new-area"
+            className="cw-btn cw-btn--primary"
+            onClick={() => { setEditArea(null); setShowAreaModal(true); }}
+          >
             <MdAdd /> Nueva Área
           </button>
         </div>
@@ -1012,17 +736,24 @@ export default function AreasPage() {
           <div className="empty-state">
             <div className="empty-state__icon">🏢</div>
             <div className="empty-state__title">No hay áreas creadas</div>
-            <div className="empty-state__desc">Cree la primera área de trabajo de su empresa para organizar a su personal.</div>
-            <button className="cw-btn cw-btn--primary" onClick={() => { setEditArea(null); setShowAreaModal(true); }}>
-              <MdAdd /> Crear primera área
-            </button>
+            <div className="empty-state__desc">
+              Crea la primera área de tu empresa. Solo necesitas el nombre — el sistema
+              autollenará salario, jornada, franjas y tipo de contrato según el sector que elijas.
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+              <button className="cw-btn cw-btn--secondary" onClick={() => setShowBulkModal(true)}>
+                <MdUpload /> Importar desde Excel
+              </button>
+              <button className="cw-btn cw-btn--primary" onClick={() => { setEditArea(null); setShowAreaModal(true); }}>
+                <MdAdd /> Crear primera área
+              </button>
+            </div>
           </div>
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: '1.5rem', alignItems: 'start' }}>
           {/* Lista de áreas y Globales */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            
             <div
               onClick={() => setSelectedArea('global')}
               style={{
@@ -1058,21 +789,28 @@ export default function AreasPage() {
                     <div style={{ width: 12, height: 12, borderRadius: '50%', background: area.color, flexShrink: 0 }} />
                     <div>
                       <div style={{ fontWeight: 600, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{area.nombre}</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                         {empCount} colaborador{empCount !== 1 ? 'es' : ''}
                         {area.modo_operacion === '24_7' && (
                           <span style={{ background: 'rgba(245,158,11,0.15)', color: '#d97706', border: '1px solid rgba(245,158,11,0.35)', borderRadius: 4, padding: '0 0.35rem', fontSize: '0.65rem', fontWeight: 700 }}>24/7</span>
+                        )}
+                        {area.sector && (
+                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                            · {area.sector}
+                          </span>
                         )}
                       </div>
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: '0.2rem' }} onClick={e => e.stopPropagation()}>
                     <button className="cw-btn cw-btn--secondary cw-btn--sm cw-btn--icon"
-                      onClick={() => { setEditArea(area); setShowAreaModal(true); }}>
+                      onClick={() => { setEditArea(area); setShowAreaModal(true); }}
+                      title="Editar área">
                       <MdEdit style={{ fontSize: '0.85rem' }} />
                     </button>
                     <button className="cw-btn cw-btn--danger cw-btn--sm cw-btn--icon"
-                      onClick={() => setDeleteConfirm(area)}>
+                      onClick={() => setDeleteConfirm(area)}
+                      title="Eliminar área">
                       <MdDelete style={{ fontSize: '0.85rem' }} />
                     </button>
                   </div>
@@ -1110,23 +848,56 @@ export default function AreasPage() {
                   </p>
                 )}
 
-                {/* Modo de operación */}
+                {/* Resumen del área con datos laborales */}
                 <div style={{
                   marginBottom: '1.25rem', padding: '0.75rem 1rem', borderRadius: 8,
                   background: selectedArea.modo_operacion === '24_7' ? 'rgba(245,158,11,0.08)' : 'rgba(99,102,241,0.06)',
                   border: `1px solid ${selectedArea.modo_operacion === '24_7' ? 'rgba(245,158,11,0.3)' : 'rgba(99,102,241,0.25)'}`,
-                  display: 'flex', alignItems: 'center', gap: '0.75rem',
                 }}>
-                  <span style={{ fontSize: '1.5rem' }}>{selectedArea.modo_operacion === '24_7' ? '🔄' : '🏢'}</span>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
-                      {selectedArea.modo_operacion === '24_7' ? 'Operación 24/7' : 'Horario de Oficina'}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '1.5rem' }}>{selectedArea.modo_operacion === '24_7' ? '🔄' : '🏢'}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                        {selectedArea.modo_operacion === '24_7' ? 'Operación 24/7' : 'Horario de Oficina'}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                        {selectedArea.modo_operacion === '24_7'
+                          ? 'Cobertura 7 días · Dom/Festivos incluidos · Recargos CST automáticos (HON, HOD, HCDN)'
+                          : `${(selectedArea.dias_trabajo || []).length} días laborables · Máx. 42h/semana (Ley 2101/2021)`}
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                      {selectedArea.modo_operacion === '24_7'
-                        ? 'Cobertura 7 días · Dom/Festivos incluidos · Recargos CST automáticos (HON, HOD, HCDN)'
-                        : `${(selectedArea.dias_trabajo || []).length} días laborables · Máx. 42h/semana (Ley 2101/2021)`}
-                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.5rem', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                    {selectedArea.sector && (
+                      <div>
+                        <span style={{ color: 'var(--text-muted)' }}>Sector:</span>{' '}
+                        <strong>{selectedArea.sector}</strong>
+                      </div>
+                    )}
+                    {selectedArea.tipo_contrato_predominante && (
+                      <div>
+                        <span style={{ color: 'var(--text-muted)' }}>Contrato:</span>{' '}
+                        <strong>{selectedArea.tipo_contrato_predominante}</strong>
+                      </div>
+                    )}
+                    {selectedArea.valor_hora_default && (
+                      <div>
+                        <span style={{ color: 'var(--text-muted)' }}>Valor hora:</span>{' '}
+                        <strong>${parseFloat(selectedArea.valor_hora_default).toLocaleString('es-CO')}</strong>
+                      </div>
+                    )}
+                    {selectedArea.nivel_riesgo_arl && (
+                      <div>
+                        <span style={{ color: 'var(--text-muted)' }}>ARL:</span>{' '}
+                        <strong>Nivel {selectedArea.nivel_riesgo_arl}</strong>
+                      </div>
+                    )}
+                    {selectedArea.patron_rotativo && (
+                      <div>
+                        <span style={{ color: 'var(--text-muted)' }}>Patrón:</span>{' '}
+                        <strong>{selectedArea.patron_rotativo}</strong>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1163,12 +934,15 @@ export default function AreasPage() {
         </div>
       )}
 
-      {/* Modal crear/editar área */}
+      {/* Modal crear/editar área con el NUEVO wizard */}
       {showAreaModal && (
-        <AreaModal
+        <AreaForm
           area={editArea}
-          onClose={() => { setShowAreaModal(false); setEditArea(null); }}
-          onSave={editArea ? (data) => updateArea(editArea.id, data) : createArea}
+          onClose={async (refresh) => {
+            setShowAreaModal(false);
+            setEditArea(null);
+            if (refresh) await fetchAreas();
+          }}
         />
       )}
 
@@ -1186,7 +960,11 @@ export default function AreasPage() {
             </p>
             <div className="cw-modal__footer">
               <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
-              <button className="cw-btn cw-btn--danger" onClick={async () => { await deleteArea(deleteConfirm.id); setDeleteConfirm(null); if (selectedArea?.id === deleteConfirm.id) setSelectedArea(null); }}>
+              <button className="cw-btn cw-btn--danger" onClick={async () => {
+                await deleteArea(deleteConfirm.id);
+                setDeleteConfirm(null);
+                if (selectedArea?.id === deleteConfirm.id) setSelectedArea(null);
+              }}>
                 <MdDelete /> Eliminar
               </button>
             </div>
@@ -1208,7 +986,11 @@ export default function AreasPage() {
             </p>
             <div className="cw-modal__footer">
               <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteAllConfirm(false)}>Cancelar</button>
-              <button className="cw-btn cw-btn--danger" onClick={async () => { await deleteAllAreas(); setDeleteAllConfirm(false); setSelectedArea(null); }}>
+              <button className="cw-btn cw-btn--danger" onClick={async () => {
+                await deleteAllAreas();
+                setDeleteAllConfirm(false);
+                setSelectedArea(null);
+              }}>
                 <MdDelete /> Sí, eliminar todas
               </button>
             </div>

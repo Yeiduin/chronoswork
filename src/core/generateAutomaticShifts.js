@@ -1,10 +1,15 @@
-import { format, addDays } from 'date-fns';
+// ============================================================
+// ChronosWork — Generador de Turnos v3
+// Con soporte para TODOS los tipos de turno del mercado colombiano
+// (Estándar, Partido, Rotativo, Nocturno, Disponibilidad, Custom)
+// ============================================================
 
-// ============================================================
-// ChronosWork — Algoritmo de Generación Automática de Turnos v2
-// Sin dependencia de plantillas (templates opcionales)
-// Slots de 15 minutos, curva de demanda, CST Colombia 2026
-// ============================================================
+import { format, addDays } from 'date-fns';
+import {
+  PATRONES_ROTATIVOS,
+  getAreasBySector,
+  getFranjasBySector,
+} from '../config/laborCatalog';
 
 // ── Defaults legales Colombia (Ley 2101/2021 + Ley 2466/2025) ──────────────
 export const LEGAL_DEFAULTS_CO = {
@@ -16,7 +21,7 @@ export const LEGAL_DEFAULTS_CO = {
   diasDescansoSemana:     1,
 };
 
-// ── Curva de demanda default Colombia ─────────────────────────────────────
+// ── Curvas de demanda por defecto (Colombia) ───────────────────────────────
 const DEMAND_CURVE_DEFAULT = {
   0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 2,
   6: 4, 7: 6, 8: 8, 9: 9, 10: 9, 11: 8,
@@ -31,21 +36,25 @@ const DEMAND_CURVE_WEEKEND = {
   18: 3, 19: 3, 20: 2, 21: 2, 22: 1, 23: 1,
 };
 
-// ── Utilidades de cuadrícula de 15 minutos ────────────────────────────────
+// ── Utilidades de cuadrícula de 15 minutos ─────────────────────────────────
 export function timeToSlot(hhmm) {
-  const [h, m] = hhmm.split(':').map(Number);
+  if (!hhmm) return 0;
+  const parts = hhmm.split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1] || '0', 10);
   return h * 4 + Math.floor(m / 15);
 }
 
 export function slotToTime(slot) {
-  const h = Math.floor(slot / 4);
-  const m = (slot % 4) * 15;
-  return `${String(h % 24).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  const s = ((slot % SLOTS_PER_DAY) + SLOTS_PER_DAY) % SLOTS_PER_DAY;
+  const h = Math.floor(s / 4);
+  const m = (s % 4) * 15;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 const SLOTS_PER_DAY = 96;
 
-// ── Construcción de la matriz de demanda ──────────────────────────────────
+// ── Construcción de la matriz de demanda ───────────────────────────────────
 function buildDemandVector(dayOfWeek, demandSlots, numEmployees, isWeekend) {
   const vec = new Array(SLOTS_PER_DAY).fill(0);
   const dayRows = demandSlots.filter(s => s.day_of_week === dayOfWeek);
@@ -74,7 +83,112 @@ function buildDemandVector(dayOfWeek, demandSlots, numEmployees, isWeekend) {
   return vec;
 }
 
-// ── Función principal ─────────────────────────────────────────────────────
+// ── Construye turnos a partir de templates, respetando el shift_kind ────────
+/**
+ * Devuelve un array de bloques de turno a partir de un template.
+ *  - STANDARD / NOCTURNO / CUSTOM: 1 bloque (inicio → fin)
+ *  - PARTIDO: 2 bloques (manana + tarde) con break entre medio
+ *  - ROTATIVO: 1 bloque (la rotación entre empleados la gestiona el algoritmo)
+ *  - DISPONIBILIDAD: 1 bloque largo con etiqueta especial
+ */
+export function expandTemplateToShifts(tpl, dateStr, nextDayStr) {
+  const kind = tpl.shift_kind || 'STANDARD';
+
+  if (kind === 'PARTIDO' && tpl.hora_inicio_2 && tpl.hora_fin_2) {
+    // Dos bloques: mañana y tarde
+    return [
+      {
+        template_id:  tpl.id,
+        start_time:   `${dateStr}T${tpl.hora_inicio}`,
+        end_time:     `${dateStr}T${tpl.hora_fin}`,
+        break_minutes: tpl.split_break_minutos || 60,
+        shift_kind:   kind,
+        bloque:       1,
+      },
+      {
+        template_id:  tpl.id,
+        start_time:   `${dateStr}T${tpl.hora_inicio_2}`,
+        end_time:     `${dateStr}T${tpl.hora_fin_2}`,
+        break_minutes: 0,
+        shift_kind:   kind,
+        bloque:       2,
+      },
+    ];
+  }
+
+  if (kind === 'DISPONIBILIDAD') {
+    // Bloque de guardia: paga disponibilidad completa si no es llamado
+    return [{
+      template_id:  tpl.id,
+      start_time:   `${dateStr}T${tpl.hora_inicio}`,
+      end_time:     tpl.cruza_medianoche
+        ? `${nextDayStr}T${tpl.hora_fin}`
+        : `${dateStr}T${tpl.hora_fin}`,
+      break_minutes: 0,
+      shift_kind:   kind,
+      disponibilidad: true,
+      recargo_porcentaje: tpl.disponibilidad_recargo_porcentaje || 0,
+    }];
+  }
+
+  // STANDARD, NOCTURNO, CUSTOM, ROTATIVO → un solo bloque
+  return [{
+    template_id:  tpl.id,
+    start_time:   `${dateStr}T${tpl.hora_inicio}`,
+    end_time:     tpl.cruza_medianoche
+      ? `${nextDayStr}T${tpl.hora_fin}`
+      : `${dateStr}T${tpl.hora_fin}`,
+    break_minutes: tpl.break_minutos || 0,
+    shift_kind:   kind,
+  }];
+}
+
+// ── Calcula horas de un bloque de turno (en horas decimales) ───────────────
+export function blockHours(block) {
+  const start = new Date(block.start_time);
+  const end = new Date(block.end_time);
+  const raw = (end - start) / 3600000;
+  return Math.max(0, raw - (block.break_minutes || 0) / 60);
+}
+
+// ── Detecta si un turno debe pagar recargo nocturno (HON) ──────────────────
+export function shiftPagaNocturno(tpl) {
+  if (tpl.shift_kind === 'NOCTURNO') return true;
+  if (tpl.paga_recargo_nocturno) return true;
+  // Si el inicio es a partir de las 19:00 → siempre paga HON
+  const [h] = (tpl.hora_inicio || '00:00').split(':').map(Number);
+  return h >= 19;
+}
+
+// ── Resuelve el patrón rotativo (X días trabajo, Y días descanso) ──────────
+/**
+ * Devuelve un set de "dateStr" donde el empleado con índice `pos` en la rotación
+ * debe trabajar, dado un patrón "5x2", "7x7", "14x14", etc.
+ * El algoritmo reparte el patrón equitativamente entre los empleados
+ * de la rotación. Para "5x2" con 1 empleado: trabaja 5, descansa 2, cicla.
+ * Para "7x7" con 3 empleados: cada uno en fase distinta.
+ */
+export function buildRotativeSchedule({ days, employees, patron, positionOffset = 0 }) {
+  const def = PATRONES_ROTATIVOS.find(p => p.value === patron) || PATRONES_ROTATIVOS[3];
+  const cycleLen = def.diasTrabajo + def.diasDescanso;
+  const cycle = []; // array de booleanos: true = trabaja
+  for (let i = 0; i < def.diasTrabajo; i++) cycle.push(true);
+  for (let i = 0; i < def.diasDescanso; i++) cycle.push(false);
+
+  // El offset hace que no todos los empleados trabajen los mismos días
+  return days.map((d, idx) => {
+    const cyclePos = ((idx + positionOffset) % cycleLen + cycleLen) % cycleLen;
+    return { date: d, works: cycle[cyclePos] };
+  });
+}
+
+// ── Genera el patrón de descanso semanal a partir de un patrón rotativo ────
+export function descansasPorPatron(patron) {
+  const def = PATRONES_ROTATIVOS.find(p => p.value === patron);
+  return def ? def.diasDescanso : 1;
+}
+
+// ── Función principal de generación ────────────────────────────────────────
 export function generateAutomaticShifts({
   employees,
   templates = [],
@@ -88,12 +202,7 @@ export function generateAutomaticShifts({
   modoOperacion = 'OFICINA',
   laborLimits = {},
   nightShiftConfig = null,
-  // nightShiftConfig = {
-  //   enabled: boolean,
-  //   start: '22:00',   // hora inicio jornada nocturna
-  //   end:   '06:00',   // hora fin (puede cruzar medianoche)
-  //   employeeIds: []   // vacío = el sistema los elige automáticamente
-  // }
+  patronRotativo = null,  // NUEVO: '5x2', '6x1', '7x7', etc.
 }) {
   const generatedShifts = [];
   const warnings = [];
@@ -121,83 +230,28 @@ export function generateAutomaticShifts({
   const empFijos    = employees.filter(e => e.tipo_contrato === 'SALARIO_FIJO');
   const empPorHoras = employees.filter(e => e.tipo_contrato !== 'SALARIO_FIJO');
 
-  // ── Configuración de Jornada Nocturna (solo modo 24_7) ─────────────────
+  // ── Configuración de Jornada Nocturna (24/7) ───────────────────────────
   const nightConfig = modoOperacion === '24_7' && nightShiftConfig?.enabled
     ? nightShiftConfig
     : null;
 
-  // Convertir hora nocturna a slots
   const nightStartSlot = nightConfig ? timeToSlot(nightConfig.start) : null;
   const nightEndRaw    = nightConfig ? timeToSlot(nightConfig.end)    : null;
-  // Si cruza medianoche (end < start), el "end real" en slots es end + 96
   const nightCrosses   = nightConfig ? (nightEndRaw <= nightStartSlot) : false;
-  const nightEndSlot   = nightConfig
-    ? (nightCrosses ? nightEndRaw + SLOTS_PER_DAY : nightEndRaw)
-    : null;
 
-  // Empleados nocturnos: los designados manualmente, o los que el sistema elige
   let nightEmployeeIds = new Set();
   if (nightConfig) {
     if (nightConfig.employeeIds && nightConfig.employeeIds.length > 0) {
-      // Fueron elegidos manualmente
       nightEmployeeIds = new Set(nightConfig.employeeIds);
     } else {
-      // El sistema elige automáticamente: ~33% de los empleados por horas
-      // (aprox. 1 de cada 3 turnos es nocturno en 24/7)
       const sortedByHrs = [...empPorHoras].sort((a, b) => a.id.localeCompare(b.id));
       const countNight  = Math.max(1, Math.ceil(sortedByHrs.length / 3));
       sortedByHrs.slice(0, countNight).forEach(e => nightEmployeeIds.add(e.id));
     }
   }
 
-  // Separar empleados en: nocturnos (solo noche) y diurnos (resto del día)
   const empNocturnosIds = nightEmployeeIds;
-  // Un empleado nocturno NO puede recibir turno fuera de la ventana nocturna
   const isNightEmployee = (empId) => nightConfig && empNocturnosIds.has(empId);
-
-  // Función que verifica si un slot cae dentro de la jornada nocturna
-  const isNightSlot = (slot) => {
-    if (!nightConfig) return false;
-    if (nightCrosses) {
-      return slot >= nightStartSlot || slot < nightEndRaw;
-    }
-    return slot >= nightStartSlot && slot < nightEndSlot;
-  };
-
-  // Determina si un slot de inicio es válido para turno nocturno/diurno y devuelve su tope
-  const getShiftBounds = (startSlot) => {
-    const minS = limits.minHorasTurno * 4;
-    if (!nightConfig) {
-      return { isNightShift: false, maxEndSlot: startSlot + limits.maxHorasTurno * 4, isValid: true };
-    }
-
-    let nightWindowEnd = -1;
-    if (nightCrosses) {
-      if (startSlot >= nightStartSlot) nightWindowEnd = nightEndRaw + SLOTS_PER_DAY;
-      else if (startSlot < nightEndRaw) nightWindowEnd = nightEndRaw;
-    } else {
-      if (startSlot >= nightStartSlot && startSlot < nightEndSlot) nightWindowEnd = nightEndSlot;
-    }
-
-    if (nightWindowEnd !== -1 && startSlot + minS <= nightWindowEnd) {
-      return { isNightShift: true, maxEndSlot: nightWindowEnd, isValid: true };
-    }
-
-    let dayWindowStart, dayWindowEnd;
-    if (nightCrosses) {
-      dayWindowStart = Math.max(0, nightEndRaw - 8); // e.g. 04:00 si fin noche es 06:00
-      dayWindowEnd = nightStartSlot + 4; // e.g. 23:00 si inicio noche es 22:00
-    } else {
-      dayWindowStart = 0;
-      dayWindowEnd = SLOTS_PER_DAY;
-    }
-
-    if (startSlot >= dayWindowStart && startSlot + minS <= dayWindowEnd) {
-      return { isNightShift: false, maxEndSlot: dayWindowEnd, isValid: true };
-    }
-
-    return { isValid: false };
-  };
 
   // ── Helpers ────────────────────────────────────────────────────────────
   const isBlocked = (empId, dateStr) =>
@@ -218,7 +272,7 @@ export function generateAutomaticShifts({
     monday.setDate(monday.getDate() - dow + 1);
     monday.setHours(0, 0, 0, 0);
     const sunday = new Date(monday);
-    sunday.setDate(sunday.getDate() + 6);
+    sunday.setDate(monday.getDate() + 6);
     sunday.setHours(23, 59, 59, 999);
     let totalHrs = 0;
     [...existingShifts, ...generatedShifts]
@@ -226,8 +280,7 @@ export function generateAutomaticShifts({
       .forEach(s => {
         const sDate = new Date(s.start_time);
         if (sDate >= monday && sDate <= sunday) {
-          const eDate = new Date(s.end_time);
-          let hrs = (eDate - sDate) / 3600000;
+          let hrs = (new Date(s.end_time) - sDate) / 3600000;
           if (s.break_minutes) hrs -= s.break_minutes / 60;
           totalHrs += hrs;
         }
@@ -240,7 +293,9 @@ export function generateAutomaticShifts({
     [...existingShifts, ...generatedShifts]
       .filter(s => s.employee_id === empId && s.start_time.startsWith(dateStr))
       .forEach(s => {
-        totalHrs += (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
+        let hrs = (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
+        if (s.break_minutes) hrs -= s.break_minutes / 60;
+        totalHrs += hrs;
       });
     return totalHrs;
   };
@@ -256,7 +311,7 @@ export function generateAutomaticShifts({
     ).end_time;
   };
 
-  // ── FASE A: Cobertura actual por slots ────────────────────────────────
+  // ── Cobertura actual por slots ─────────────────────────────────────────
   const getCoverageVector = (dateStr) => {
     const vec = new Array(SLOTS_PER_DAY).fill(0);
     const allShifts = [...existingShifts, ...generatedShifts];
@@ -278,7 +333,7 @@ export function generateAutomaticShifts({
     return vec;
   };
 
-  // ── FASE B: Fijos con template predeterminado ─────────────────────────
+  // ── FASE A: Fijos con template predeterminado ─────────────────────────
   if (templates.length > 0) {
     empFijos.forEach(emp => {
       if (!emp.turno_predeterminado_id) return;
@@ -287,28 +342,32 @@ export function generateAutomaticShifts({
       days.forEach(day => {
         if (isBlocked(emp.id, day.dateStr) || hasShiftOnDay(emp.id, day.dateStr)) return;
         const nextDay = format(addDays(day.date, 1), 'yyyy-MM-dd');
-        generatedShifts.push({
-          employee_id:  emp.id,
-          template_id:  tpl.id,
-          start_time:   `${day.dateStr}T${tpl.hora_inicio}`,
-          end_time:     tpl.cruza_medianoche
-            ? `${nextDay}T${tpl.hora_fin}`
-            : `${day.dateStr}T${tpl.hora_fin}`,
-          shift_type:   'custom',
-          periodo:      periodoStr,
-          break_minutes: 0,
+        const blocks = expandTemplateToShifts(tpl, day.dateStr, nextDay);
+        blocks.forEach(b => {
+          generatedShifts.push({
+            employee_id:  emp.id,
+            template_id:  tpl.id,
+            start_time:   b.start_time,
+            end_time:     b.end_time,
+            shift_type:   'custom',
+            periodo:      periodoStr,
+            break_minutes: b.break_minutes,
+            shift_kind:   b.shift_kind,
+            bloque:       b.bloque,
+            disponibilidad: b.disponibilidad || false,
+          });
         });
       });
     });
   }
 
-  // ── FASE C: Asignación de descansos ───────────────────────────────────
+  // ── FASE B: Asignación de descansos (considerando patrón rotativo) ────
   const weeks = {};
   days.forEach(day => {
     const d = new Date(day.date);
     const dow = d.getDay() || 7;
     const monday = new Date(d);
-    monday.setDate(monday.getDate() - dow + 1);
+    monday.setDate(d.getDate() - dow + 1);
     const weekKey = format(monday, 'yyyy-MM-dd');
     if (!weeks[weekKey]) weeks[weekKey] = [];
     weeks[weekKey].push(day);
@@ -317,9 +376,27 @@ export function generateAutomaticShifts({
   const restDays = new Set();
   const restsPerDay = {};
 
+  // Si hay patrón rotativo, los descansos los define el patrón
+  const restPattern = patronRotativo
+    ? buildRotativeSchedule({ days, employees: empPorHoras, patron: patronRotativo, positionOffset: 0 })
+    : null;
+
   empPorHoras.forEach(emp => {
-    const requiredRests = emp.dias_descanso_semana || limits.diasDescansoSemana;
-    Object.values(weeks).forEach(weekDays => {
+    const requiredRests = patronRotativo
+      ? descansasPorPatron(patronRotativo)
+      : (emp.dias_descanso_semana || limits.diasDescansoSemana);
+
+    Object.values(weeks).forEach((weekDays, weekIdx) => {
+      // Si hay patrón rotativo, cada empleado tiene un offset distinto
+      const offset = patronRotativo
+        ? empPorHoras.indexOf(emp) % (PATRONES_ROTATIVOS.find(p => p.value === patronRotativo)?.diasTrabajo || 5)
+        : 0;
+
+      const cycleLen = patronRotativo
+        ? (PATRONES_ROTATIVOS.find(p => p.value === patronRotativo)?.diasTrabajo || 5)
+            + (PATRONES_ROTATIVOS.find(p => p.value === patronRotativo)?.diasDescanso || 2)
+        : 0;
+
       const sorted = [...weekDays].sort((a, b) => {
         const sumA = buildDemandVector(a.dayOfWeek, demandSlots, employees.length, a.isWeekend)
           .reduce((s, v) => s + v, 0);
@@ -328,10 +405,23 @@ export function generateAutomaticShifts({
         if (sumA !== sumB) return sumA - sumB;
         return (restsPerDay[a.dateStr] || 0) - (restsPerDay[b.dateStr] || 0);
       });
+
       let assigned = 0;
       for (const day of sorted) {
         if (assigned >= requiredRests) break;
         if (isBlocked(emp.id, day.dateStr)) continue;
+
+        // Si hay patrón rotativo, validar que sea día OFF
+        if (patronRotativo && cycleLen > 0) {
+          const dayIdx = days.findIndex(d => d.dateStr === day.dateStr);
+          if (dayIdx >= 0) {
+            const cyclePos = ((dayIdx + offset) % cycleLen + cycleLen) % cycleLen;
+            const def = PATRONES_ROTATIVOS.find(p => p.value === patronRotativo);
+            const offThreshold = def ? def.diasTrabajo : cycleLen / 2;
+            if (cyclePos < offThreshold) continue; // este día es de trabajo según el patrón
+          }
+        }
+
         restDays.add(`${emp.id}_${day.dateStr}`);
         restsPerDay[day.dateStr] = (restsPerDay[day.dateStr] || 0) + 1;
         assigned++;
@@ -339,7 +429,42 @@ export function generateAutomaticShifts({
     });
   });
 
-  // ── FASE D: Generación dinámica por demanda — slots de 15 min ─────────
+  // ── FASE C: Generación por demanda con slots ──────────────────────────
+  const minSlots = limits.minHorasTurno * 4;
+  const maxSlots = limits.maxHorasTurno * 4;
+
+  const getShiftBounds = (startSlot) => {
+    if (!nightConfig) {
+      return { isNightShift: false, maxEndSlot: startSlot + maxSlots, isValid: true };
+    }
+    let nightWindowEnd = -1;
+    if (nightCrosses) {
+      if (startSlot >= nightStartSlot) nightWindowEnd = nightEndRaw + SLOTS_PER_DAY;
+      else if (startSlot < nightEndRaw) nightWindowEnd = nightEndRaw;
+    } else {
+      if (startSlot >= nightStartSlot && startSlot < nightEndRaw) nightWindowEnd = nightEndRaw;
+    }
+
+    if (nightWindowEnd !== -1 && startSlot + minSlots <= nightWindowEnd) {
+      return { isNightShift: true, maxEndSlot: nightWindowEnd, isValid: true };
+    }
+
+    let dayWindowStart, dayWindowEnd;
+    if (nightCrosses) {
+      dayWindowStart = Math.max(0, nightEndRaw - 8);
+      dayWindowEnd = nightStartSlot + 4;
+    } else {
+      dayWindowStart = 0;
+      dayWindowEnd = SLOTS_PER_DAY;
+    }
+
+    if (startSlot >= dayWindowStart && startSlot + minSlots <= dayWindowEnd) {
+      return { isNightShift: false, maxEndSlot: dayWindowEnd, isValid: true };
+    }
+
+    return { isValid: false };
+  };
+
   let changed = true;
   let iterations = 0;
   const MAX_ITER = employees.length * days.length * 4;
@@ -348,7 +473,6 @@ export function generateAutomaticShifts({
     changed = false;
     iterations++;
 
-    // Ordenar días por mayor déficit total
     const daysSorted = [...days].sort((a, b) => {
       const demA = buildDemandVector(a.dayOfWeek, demandSlots, employees.length, a.isWeekend);
       const covA = getCoverageVector(a.dateStr);
@@ -366,7 +490,6 @@ export function generateAutomaticShifts({
       const totalDeficit = defVec.reduce((s, v) => s + v, 0);
       if (totalDeficit === 0) continue;
 
-      // Calcular vectores del día siguiente para turnos que cruzan la medianoche
       const nextDate = addDays(day.date, 1);
       const nextDayStr = format(nextDate, 'yyyy-MM-dd');
       const nextDayOfWeek = nextDate.getDay() === 0 ? 7 : nextDate.getDay();
@@ -375,14 +498,6 @@ export function generateAutomaticShifts({
       const nextCovVec = getCoverageVector(nextDayStr);
       const nextDefVec = nextDemVec.map((d, i) => Math.max(0, d - nextCovVec[i]));
 
-      const minSlots = limits.minHorasTurno * 4;
-      const maxSlots = limits.maxHorasTurno * 4;
-
-      // Ventana deslizante: encontrar inicio de mayor déficit acumulado
-      let bestStartSlot = -1;
-      let bestScore = -1;
-
-      // Si hay config nocturna, restringir la búsqueda según disponibilidad de empleados
       const nightFreeThisDay = nightConfig
         ? [...empNocturnosIds].some(id =>
             !restDays.has(`${id}_${day.dateStr}`) &&
@@ -391,27 +506,27 @@ export function generateAutomaticShifts({
           )
         : false;
 
-      // Construir rango de slots permitidos para esta iteración
       const allowedSlots = [];
       for (let s = 0; s < SLOTS_PER_DAY; s++) {
         const bounds = getShiftBounds(s);
         if (!bounds.isValid) continue;
-
         if (nightConfig) {
-          if (bounds.isNightShift && !nightFreeThisDay) continue;   // no hay nocturnos → skip noche
+          if (bounds.isNightShift && !nightFreeThisDay) continue;
         }
         allowedSlots.push(s);
       }
+
+      let bestStartSlot = -1;
+      let bestScore = -1;
 
       for (const start of allowedSlots) {
         let score = 0;
         const bounds = getShiftBounds(start);
         const limitEnd = Math.min(start + maxSlots, bounds.maxEndSlot);
-        
         for (let s = start; s < limitEnd; s++) {
           if (s < SLOTS_PER_DAY) {
             score += defVec[s];
-            if (covVec[s] >= demVec[s]) score -= 0.5; // penalizar cobertura
+            if (covVec[s] >= demVec[s]) score -= 0.5;
           } else {
             const nextS = s - SLOTS_PER_DAY;
             score += nextDefVec[nextS];
@@ -426,19 +541,14 @@ export function generateAutomaticShifts({
 
       if (bestStartSlot === -1 || bestScore <= 0) continue;
 
-      // Calcular duración óptima: extender mientras hay déficit
       let duration = minSlots;
       const bounds = getShiftBounds(bestStartSlot);
       const limitEnd = Math.min(bestStartSlot + maxSlots, bounds.maxEndSlot);
-      
       for (let s = bestStartSlot + minSlots; s < limitEnd; s++) {
         let def = s < SLOTS_PER_DAY ? defVec[s] : nextDefVec[s - SLOTS_PER_DAY];
         if (def > 0) duration = s - bestStartSlot + 1;
       }
-      
-      // Redondear a múltiplo de 4 slots = 1 hora (para horas limpias)
       duration = Math.max(minSlots, Math.ceil(duration / 4) * 4);
-      // Asegurar que no sobrepase el límite máximo permitido
       duration = Math.min(duration, limitEnd - bestStartSlot);
 
       const shiftEndSlot = bestStartSlot + duration;
@@ -446,15 +556,12 @@ export function generateAutomaticShifts({
       const startTimeStr = slotToTime(bestStartSlot);
       const endTimeStr   = slotToTime(shiftEndSlot % SLOTS_PER_DAY);
       const crossesMidnight = shiftEndSlot >= SLOTS_PER_DAY;
-
-      // Determinar si el turno calculado es nocturno basándose en los límites
       const shiftIsNight = bounds.isNightShift;
 
-      // Buscar empleado compatible: nocturno si el turno es nocturno, diurno si no
       const candidatePool = empPorHoras.filter(emp => {
         if (nightConfig) {
-          if (shiftIsNight && !isNightEmployee(emp.id)) return false;   // turno nocturno → solo nocturnos
-          if (!shiftIsNight && isNightEmployee(emp.id)) return false;   // turno diurno → no nocturnos
+          if (shiftIsNight && !isNightEmployee(emp.id)) return false;
+          if (!shiftIsNight && isNightEmployee(emp.id)) return false;
         }
         return true;
       });
@@ -486,14 +593,15 @@ export function generateAutomaticShifts({
         shift_type:   'custom',
         periodo:      periodoStr,
         break_minutes: shiftHours >= 6 ? 30 : 0,
+        shift_kind:   shiftIsNight ? 'NOCTURNO' : 'STANDARD',
       });
 
       changed = true;
-      break; // recalcular cobertura
+      break;
     }
   }
 
-  // ── FASE E: Relleno con templates si existen ──────────────────────────
+  // ── FASE D: Relleno con templates (soporta PARTIDO, ROTATIVO, etc.) ───
   if (templates.length > 0) {
     let tplChanged = true;
     let tplIter = 0;
@@ -506,30 +614,58 @@ export function generateAutomaticShifts({
           const demVec = buildDemandVector(day.dayOfWeek, demandSlots, employees.length, day.isWeekend);
           const tplStart = timeToSlot(tpl.hora_inicio);
           const tplEnd   = tpl.cruza_medianoche ? SLOTS_PER_DAY : timeToSlot(tpl.hora_fin);
-          const deficit  = demVec.slice(tplStart, tplEnd)
+
+          // Para PARTIDO también considerar el segundo bloque
+          let totalDeficit = demVec.slice(tplStart, tplEnd)
             .reduce((s, d, i) => s + Math.max(0, d - covVec[tplStart + i]), 0);
-          if (deficit <= 0) continue;
-          const tplHrs = (tplEnd - tplStart) / 4;
+          if (tpl.shift_kind === 'PARTIDO' && tpl.hora_inicio_2 && tpl.hora_fin_2) {
+            const tpl2Start = timeToSlot(tpl.hora_inicio_2);
+            const tpl2End   = timeToSlot(tpl.hora_fin_2);
+            totalDeficit += demVec.slice(tpl2Start, tpl2End)
+              .reduce((s, d, i) => s + Math.max(0, d - covVec[tpl2Start + i]), 0);
+          }
+          if (totalDeficit <= 0) continue;
+
+          // Calcular horas totales del template (sumando bloques si es PARTIDO)
+          let tplHrs = (tplEnd - tplStart) / 4;
+          if (tpl.shift_kind === 'PARTIDO' && tpl.hora_inicio_2 && tpl.hora_fin_2) {
+            tplHrs += (timeToSlot(tpl.hora_fin_2) - timeToSlot(tpl.hora_inicio_2)) / 4;
+          }
+          if (tpl.shift_kind === 'DISPONIBILIDAD') {
+            tplHrs = (tplEnd - tplStart) / 4; // se paga toda la disponibilidad
+          }
+
+          // Validar compatibilidad empleado ↔ turno nocturno
+          const tplIsNight = shiftPagaNocturno(tpl);
+
           const candidate = [...empPorHoras]
-            .filter(e =>
-              !isBlocked(e.id, day.dateStr) &&
-              !restDays.has(`${e.id}_${day.dateStr}`) &&
-              !hasShiftOnDay(e.id, day.dateStr) &&
-              getWeeklyHours(e.id, day.date) + tplHrs <= limits.maxHorasSemanales
-            )
+            .filter(e => {
+              if (nightConfig && tplIsNight && !isNightEmployee(e.id)) return false;
+              if (nightConfig && !tplIsNight && isNightEmployee(e.id)) return false;
+              return !isBlocked(e.id, day.dateStr) &&
+                !restDays.has(`${e.id}_${day.dateStr}`) &&
+                !hasShiftOnDay(e.id, day.dateStr) &&
+                getWeeklyHours(e.id, day.date) + tplHrs <= limits.maxHorasSemanales;
+            })
             .sort((a, b) => getWeeklyHours(a.id, day.date) - getWeeklyHours(b.id, day.date))[0];
+
           if (!candidate) continue;
+
           const nextDay = format(addDays(day.date, 1), 'yyyy-MM-dd');
-          generatedShifts.push({
-            employee_id:  candidate.id,
-            template_id:  tpl.id,
-            start_time:   `${day.dateStr}T${tpl.hora_inicio}`,
-            end_time:     tpl.cruza_medianoche
-              ? `${nextDay}T${tpl.hora_fin}`
-              : `${day.dateStr}T${tpl.hora_fin}`,
-            shift_type:   'custom',
-            periodo:      periodoStr,
-            break_minutes: tplHrs >= 6 ? 30 : 0,
+          const blocks = expandTemplateToShifts(tpl, day.dateStr, nextDay);
+          blocks.forEach(b => {
+            generatedShifts.push({
+              employee_id:  candidate.id,
+              template_id:  tpl.id,
+              start_time:   b.start_time,
+              end_time:     b.end_time,
+              shift_type:   'custom',
+              periodo:      periodoStr,
+              break_minutes: b.break_minutes,
+              shift_kind:   b.shift_kind,
+              bloque:       b.bloque,
+              disponibilidad: b.disponibilidad || false,
+            });
           });
           tplChanged = true;
           break;
@@ -539,19 +675,19 @@ export function generateAutomaticShifts({
     }
   }
 
-  // ── Advertencias finales ───────────────────────────────────────────────
+  // ── Advertencias finales ──────────────────────────────────────────────
   days.forEach(day => {
     const covVec = getCoverageVector(day.dateStr);
     const demVec = buildDemandVector(day.dayOfWeek, demandSlots, employees.length, day.isWeekend);
     const totalDef = demVec.reduce((s, d, i) => s + Math.max(0, d - covVec[i]), 0);
     if (totalDef > 0) {
-      warnings.push(`${day.dateStr}: déficit de ${Math.round(totalDef / 4)} horas-persona sin cubrir. Considera más personal.`);
+      warnings.push(`${day.dateStr}: déficit de ${Math.round(totalDef / 4)} horas-persona sin cubrir.`);
     }
   });
 
   empPorHoras.forEach(emp => {
     if (!generatedShifts.some(s => s.employee_id === emp.id)) {
-      warnings.push(`${emp.nombre || 'Empleado'}: sin turnos asignados (verifica novedades y límites de horas).`);
+      warnings.push(`${emp.nombre || 'Empleado'}: sin turnos asignados.`);
     }
   });
 
