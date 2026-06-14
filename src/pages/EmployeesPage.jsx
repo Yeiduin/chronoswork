@@ -318,6 +318,7 @@ export default function EmployeesPage() {
       {showBulkModal && (
         <BulkImportModal
           areas={areas}
+          onBulkSave={async (employeeData) => await createEmployee(employeeData)}
           onClose={async (refresh) => {
             setShowBulkModal(false);
             if (refresh) await fetchEmployees();
