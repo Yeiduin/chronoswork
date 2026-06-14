@@ -45,7 +45,7 @@ const COLUMN_ALIASES = {
   tipo_contrato_predominante:   ['contrato', 'tipo_contrato', 'tipo_contrato_predominante', 'modalidad'],
   tipo_contrato_default:        ['contrato_default', 'tipo_contrato_default', 'contrato por defecto'],
   valor_hora_default:           ['valor_hora', 'valor_hora_default', 'valor hora', 'salario hora', 'hourly_rate', 'tarifa hora', 'valor/hora', 'salario', 'salario base'],
-  paga_auxilio_transporte:      ['auxilio_transporte', 'aux_transporte', 'auxilio', 'subsidio transporte'],
+  paga_auxilio_transporte:      ['auxilio_transporte', 'aux_transporte', 'auxilio', 'subsidio transporte', 'paga_auxilio'],
   nivel_riesgo_arl:             ['nivel_arl', 'arl', 'nivel_riesgo_arl', 'nivel riesgo', 'riesgo arl'],
   requiere_dotacion:            ['dotacion', 'requiere_dotacion', 'dotación'],
   requiere_epp:                 ['epp', 'requiere_epp', 'elementos proteccion'],
@@ -54,10 +54,18 @@ const COLUMN_ALIASES = {
   notas_operativas:             ['notas', 'observaciones', 'notas_operativas', 'comentarios'],
 };
 
-function normalizeH(h) { return String(h || '').toLowerCase().trim().replace(/\s+/g, ' '); }
+// Normaliza header: minúscula, sin espacios extras, SIN asterisco final
+function normalizeH(h) { return String(h || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/[*\s]+$/, '').trim(); }
+
 function findCol(headers, aliases) {
+  // Intento 1: match exacto con el header normalizado (sin asterisco)
   for (const a of aliases) {
     const i = headers.findIndex(h => normalizeH(h) === a);
+    if (i !== -1) return i;
+  }
+  // Intento 2: match que CONTENGA el alias (ej. "nombre *" contiene "nombre")
+  for (const a of aliases) {
+    const i = headers.findIndex(h => normalizeH(h).includes(a));
     if (i !== -1) return i;
   }
   return -1;
@@ -110,28 +118,54 @@ function validateAreaRow(row) {
     errors.push({ campo: 'valor_hora_default', msg: 'Valor hora es obligatorio y debe ser > 0' });
   }
 
-  if (row.sector && !SECTORES_VALUES.includes(String(row.sector).trim().toUpperCase())) {
-    errors.push({ campo: 'sector', msg: `Sector inválido. Válidos: ${SECTORES_VALUES.join(', ')}` });
+  if (row.sector) {
+    const u = String(row.sector).trim().toUpperCase();
+    if (!SECTORES_VALUES.includes(u)) {
+      errors.push({ campo: 'sector', msg: `Sector "${row.sector}" no es válido. Válidos: ${SECTORES_VALUES.join(', ')}` });
+    }
   }
 
-  if (row.modo_operacion && !['OFICINA', '24_7'].includes(String(row.modo_operacion).trim().toUpperCase())) {
-    errors.push({ campo: 'modo_operacion', msg: 'modo_operacion debe ser OFICINA o 24_7' });
+  if (row.modo_operacion) {
+    const u = String(row.modo_operacion).trim().toUpperCase().replace(/[\/\-]/g, '_');
+    if (!['OFICINA', '24_7'].includes(u)) {
+      errors.push({ campo: 'modo_operacion', msg: `Modo "${row.modo_operacion}" no es válido. Use OFICINA o 24_7 (acepta 24/7, 24-7)` });
+    }
   }
 
-  if (row.jornada_tipo && !JORNADAS_VALUES.includes(String(row.jornada_tipo).trim().toUpperCase())) {
-    errors.push({ campo: 'jornada_tipo', msg: `Jornada inválida. Válidas: ${JORNADAS_VALUES.join(', ')}` });
+  if (row.jornada_tipo) {
+    const u = String(row.jornada_tipo).trim().toUpperCase();
+    if (!JORNADAS_VALUES.includes(u)) {
+      errors.push({ campo: 'jornada_tipo', msg: `Jornada "${row.jornada_tipo}" no es válida. Válidas: ${JORNADAS_VALUES.join(', ')}` });
+    }
   }
 
-  if (row.patron_rotativo && !PATRONES_VALUES.includes(String(row.patron_rotativo).trim())) {
-    errors.push({ campo: 'patron_rotativo', msg: `Patrón inválido. Válidos: ${PATRONES_VALUES.join(', ')}` });
+  if (row.patron_rotativo) {
+    if (!PATRONES_VALUES.includes(String(row.patron_rotativo).trim())) {
+      errors.push({ campo: 'patron_rotativo', msg: `Patrón "${row.patron_rotativo}" no es válido. Válidos: ${PATRONES_VALUES.join(', ')}` });
+    }
   }
 
-  if (row.tipo_contrato_predominante && !TIPOS_CONTRATO_VALUES.includes(String(row.tipo_contrato_predominante).trim().toUpperCase())) {
-    errors.push({ campo: 'tipo_contrato_predominante', msg: `Tipo contrato inválido. Válidos: ${TIPOS_CONTRATO_VALUES.join(', ')}` });
+  if (row.tipo_contrato_predominante) {
+    const u = String(row.tipo_contrato_predominante).trim().toUpperCase();
+    // Si no está en la lista exacta, pero contiene un alias válido (ej. "TERMINO_INDEFINIDO" contiene "INDEFINIDO"),
+    // se considerará un warning (no error) y se normalizará durante el import.
+    if (!TIPOS_CONTRATO_VALUES.includes(u)) {
+      // Mapeo flexible: si contiene la palabra clave, es recuperable
+      const recoverable = TIPOS_CONTRATO_VALUES.some(t => u.includes(t.replace(/_/g, ' ')) || u.includes(t));
+      if (!recoverable) {
+        errors.push({ campo: 'tipo_contrato_predominante', msg: `"${row.tipo_contrato_predominante}" no es válido. Use: ${TIPOS_CONTRATO_VALUES.join(', ')}` });
+      }
+    }
   }
 
-  if (row.tipo_contrato_default && !TIPOS_CONTRATO_VALUES.includes(String(row.tipo_contrato_default).trim().toUpperCase())) {
-    errors.push({ campo: 'tipo_contrato_default', msg: `Tipo contrato inválido. Válidos: ${TIPOS_CONTRATO_VALUES.join(', ')}` });
+  if (row.tipo_contrato_default) {
+    const u = String(row.tipo_contrato_default).trim().toUpperCase();
+    if (!TIPOS_CONTRATO_VALUES.includes(u)) {
+      const recoverable = TIPOS_CONTRATO_VALUES.some(t => u.includes(t.replace(/_/g, ' ')) || u.includes(t));
+      if (!recoverable) {
+        errors.push({ campo: 'tipo_contrato_default', msg: `"${row.tipo_contrato_default}" no es válido. Use: ${TIPOS_CONTRATO_VALUES.join(', ')}` });
+      }
+    }
   }
 
   if (row.nivel_riesgo_arl) {
@@ -142,9 +176,14 @@ function validateAreaRow(row) {
   }
 
   if (row.dias_descanso) {
-    const d = parseInt(row.dias_descanso, 10);
-    if (isNaN(d) || (d !== 1 && d !== 2)) {
-      errors.push({ campo: 'dias_descanso', msg: 'dias_descanso debe ser 1 o 2' });
+    const u = String(row.dias_descanso).toUpperCase().trim();
+    // Acepta "1", "2", "D", "S-D", "FIN DE SEMANA", "SAB-DOM"
+    const validAliases = ['1', '2', 'D', 'S-D', 'SAB-DOM', 'FIN_DE_SEMANA', 'FIN SEMANA', 'DOMINGO'];
+    if (!validAliases.includes(u)) {
+      const n = parseInt(u, 10);
+      if (isNaN(n) || (n !== 1 && n !== 2)) {
+        errors.push({ campo: 'dias_descanso', msg: `dias_descanso "${row.dias_descanso}" no es válido. Use 1, 2, "D" o "S-D"` });
+      }
     }
   }
 
@@ -369,11 +408,35 @@ export default function BulkImportAreasModal({ onClose, onBulkSave }) {
       try {
         const data = new Uint8Array(e.target.result);
         const wb = XLSX.read(data, { type: 'array' });
-        const wsname = wb.SheetNames[0];
+        // 🐛 FIX: Elegir la hoja que tenga los datos correctos
+        // Prioridad: hoja con "nombre" + "valor_hora_default" como columnas
+        // Excluir __listas__ y hojas de guía
+        const findDataSheet = (wb) => {
+          for (const sn of wb.SheetNames) {
+            if (sn.startsWith('__')) continue;
+            if (sn.toLowerCase().includes('guía') || sn.toLowerCase().includes('guia')) continue;
+            if (sn.toLowerCase().includes('instrucciones')) continue;
+            if (sn.toLowerCase().includes('readme')) continue;
+            const ws = wb.Sheets[sn];
+            if (!ws) continue;
+            const json = XLSX.utils.sheet_to_json(ws, { defval: '', header: 1 });
+            if (json.length < 2) continue;
+            const headers = (json[0] || []).map(h => String(h || '').toLowerCase().trim().replace(/\s+/g, ' '));
+            // Debe tener al menos "nombre" como columna (acepta "nombre *", "nombre", "area", etc.)
+            const hasNombre = headers.some(h => {
+              const norm = h.toLowerCase().trim().replace(/[*\s]+$/, '').trim();
+              return ['nombre', 'name', 'area', 'área'].includes(norm);
+            });
+            if (hasNombre) return sn;
+          }
+          // Si no encontró, devuelve la primera no oculta
+          return wb.SheetNames.find(sn => !sn.startsWith('__')) || wb.SheetNames[0];
+        };
+        const wsname = findDataSheet(wb);
         const ws = wb.Sheets[wsname];
         const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
         if (!json.length) {
-          setParseError('El archivo no contiene filas con datos.');
+          setParseError(`La hoja "${wsname}" no contiene filas con datos.`);
           return;
         }
 
@@ -420,13 +483,81 @@ export default function BulkImportAreasModal({ onClose, onBulkSave }) {
     let successCount = 0;
     const errorList = [];
 
+    // Helper local: normaliza valores del Excel a los del CHECK constraint
+    const norm = (field, val) => {
+      if (val === null || val === undefined || val === '') return null;
+      const s = String(val).trim();
+      switch (field) {
+        case 'modo_operacion': {
+          const u = s.toUpperCase().replace(/[\/\-]/g, '_');
+          if (['OFICINA', '24_7'].includes(u)) return u;
+          return null;
+        }
+        case 'jornada_tipo': {
+          const u = s.toUpperCase();
+          return JORNADAS_VALUES.includes(u) ? u : null;
+        }
+        case 'sector': {
+          const u = s.toUpperCase();
+          return SECTORES_VALUES.includes(u) ? u : null;
+        }
+        case 'patron_rotativo': {
+          return PATRONES_VALUES.includes(s) ? s : null;
+        }
+        case 'tipo_contrato_predominante':
+        case 'tipo_contrato_default': {
+          const u = s.toUpperCase().replace(/\s+/g, '_');
+          if (TIPOS_CONTRATO_VALUES.includes(u)) return u;
+          // Intentar recuperar errores comunes del usuario
+          if (u.includes('INDEFINIDO')) return 'INDEFINIDO';
+          if (u.includes('TERMINO') && u.includes('FIJO')) return 'TERMINO_FIJO';
+          if (u.includes('OBRA') || u.includes('LABOR')) return 'OBRA_LABOR';
+          if (u.includes('HORA')) return 'POR_HORAS';
+          if (u.includes('FIJO') || u === 'FIJO' || u === 'MENSUAL' || u === 'SALARIO_FIJO') return 'SALARIO_FIJO';
+          if (u.includes('PRESTACION') || u.includes('PRESTACIÓN') || u === 'CONTRATISTA' || u === 'OPS') return 'PRESTACION_SERVICIOS';
+          if (u.includes('APRENDIZ') || u === 'SENA') return 'APRENDIZAJE';
+          if (u.includes('OCASIONAL')) return 'OCASIONAL';
+          if (u.includes('TEMPORAL') || u === 'EST') return 'TEMPORAL';
+          return null; // Inválido — usar el default del sector
+        }
+        case 'dias_descanso': {
+          const u = s.toUpperCase();
+          if (['1', 'D', 'DOMINGO'].includes(u)) return 1;
+          if (['2', 'S-D', 'SAB-DOM', 'FIN_DE_SEMANA', 'FIN SEMANA'].includes(u)) return 2;
+          const n = parseInt(u, 10);
+          return (n === 1 || n === 2) ? n : null;
+        }
+        case 'paga_auxilio_transporte':
+        case 'requiere_dotacion':
+        case 'requiere_epp':
+        case 'permite_turno_partido': {
+          const u = s.toLowerCase();
+          if (['no', 'false', '0'].includes(u)) return false;
+          return true;
+        }
+        default:
+          return val;
+      }
+    };
+
     for (let i = 0; i < validRows.length; i++) {
       const row = validRows[i];
       try {
-        const sector = String(row.sector || '').toUpperCase().trim();
+        const sector = norm('sector', row.sector) || '';
         const franjasAuto = (applyFranjas && sector) ? getFranjasBySector(sector) : [];
 
         // Aplicar defaults del sector si la opción está activa
+        const modoOperacion = norm('modo_operacion', row.modo_operacion)
+          || (applySector && sector ? SECTORES.find(s => s.value === sector)?.defaults.modo : 'OFICINA');
+        const jornadaTipo = norm('jornada_tipo', row.jornada_tipo) || 'DIURNA';
+        const patronRotativo = norm('patron_rotativo', row.patron_rotativo);
+        const diasDescanso = norm('dias_descanso', row.dias_descanso) || 1;
+        const nivelArl = row.nivel_riesgo_arl ? (parseInt(row.nivel_riesgo_arl, 10) || 1) : 1;
+        const tipoContratoPredom = norm('tipo_contrato_predominante', row.tipo_contrato_predominante)
+          || (applySector && sector ? SECTORES.find(s => s.value === sector)?.defaults.contrato : 'INDEFINIDO');
+        const tipoContratoDefault = norm('tipo_contrato_default', row.tipo_contrato_default)
+          || tipoContratoPredom;
+
         let areaData = {
           nombre: String(row.nombre).trim(),
           codigo_area: row.codigo_area ? String(row.codigo_area).trim() : null,
@@ -434,25 +565,25 @@ export default function BulkImportAreasModal({ onClose, onBulkSave }) {
           sector: sector || null,
           sub_sector: row.sub_sector ? String(row.sub_sector).trim() : null,
           centro_costo: row.centro_costo ? String(row.centro_costo).trim() : null,
-          modo_operacion: row.modo_operacion ? String(row.modo_operacion).toUpperCase().trim() : (applySector && sector ? SECTORES.find(s => s.value === sector)?.defaults.modo : 'OFICINA'),
-          jornada_tipo: row.jornada_tipo ? String(row.jornada_tipo).toUpperCase().trim() : 'DIURNA',
-          patron_rotativo: row.patron_rotativo ? String(row.patron_rotativo).trim() : null,
+          modo_operacion: modoOperacion,
+          jornada_tipo: jornadaTipo,
+          patron_rotativo: patronRotativo,
           dias_trabajo: row.dias_trabajo ? parseDiasTrabajo(row.dias_trabajo) : (applySector && sector ? (SECTORES.find(s => s.value === sector)?.defaults.modo === '24_7' ? [1,2,3,4,5,6,7] : [1,2,3,4,5]) : [1,2,3,4,5]),
-          dias_descanso: row.dias_descanso ? parseInt(row.dias_descanso, 10) : 1,
+          dias_descanso: diasDescanso,
           duracion_jornada_horas: row.duracion_jornada_horas ? parseFloat(row.duracion_jornada_horas) : 8,
           horas_extras_max_dia: row.horas_extras_max_dia ? parseInt(row.horas_extras_max_dia, 10) : 2,
           horas_extras_max_semana: row.horas_extras_max_semana ? parseInt(row.horas_extras_max_semana, 10) : 12,
           descanso_min_entre_jornadas: row.descanso_min_entre_jornadas ? parseInt(row.descanso_min_entre_jornadas, 10) : 9,
-          tipo_contrato_predominante: row.tipo_contrato_predominante ? String(row.tipo_contrato_predominante).toUpperCase().trim() : (applySector && sector ? SECTORES.find(s => s.value === sector)?.defaults.contrato : 'INDEFINIDO'),
-          tipo_contrato_default: row.tipo_contrato_default ? String(row.tipo_contrato_default).toUpperCase().trim() : (applySector && sector ? SECTORES.find(s => s.value === sector)?.defaults.contrato : 'INDEFINIDO'),
-          dias_descanso_default: row.dias_descanso ? parseInt(row.dias_descanso, 10) : 1,
+          tipo_contrato_predominante: tipoContratoPredom,
+          tipo_contrato_default: tipoContratoDefault,
+          dias_descanso_default: diasDescanso,
           valor_hora_default: parseNumero(row.valor_hora_default),
-          paga_auxilio_transporte: row.paga_auxilio_transporte !== undefined ? parseBool(row.paga_auxilio_transporte) : true,
-          nivel_riesgo_arl: row.nivel_riesgo_arl ? parseInt(row.nivel_riesgo_arl, 10) : 1,
-          requiere_dotacion: row.requiere_dotacion !== undefined ? parseBool(row.requiere_dotacion) : false,
-          requiere_epp: row.requiere_epp !== undefined ? parseBool(row.requiere_epp) : false,
+          paga_auxilio_transporte: norm('paga_auxilio_transporte', row.paga_auxilio_transporte),
+          nivel_riesgo_arl: nivelArl,
+          requiere_dotacion: norm('requiere_dotacion', row.requiere_dotacion),
+          requiere_epp: norm('requiere_epp', row.requiere_epp),
           break_minutos: row.break_minutos ? parseInt(row.break_minutos, 10) : 0,
-          permite_turno_partido: row.permite_turno_partido !== undefined ? parseBool(row.permite_turno_partido) : true,
+          permite_turno_partido: norm('permite_turno_partido', row.permite_turno_partido),
           notas_operativas: row.notas_operativas ? String(row.notas_operativas).trim() : '',
           color: PALETTE_DEFAULTS[i % PALETTE_DEFAULTS.length],
           night_shift_enabled: false,
