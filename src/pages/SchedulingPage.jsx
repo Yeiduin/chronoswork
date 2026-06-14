@@ -8,10 +8,11 @@ import { getDiasMes, formatFecha, getNombreMes } from '../core/dateUtils';
 import { formatCOP } from '../core/validators';
 import {
   MdClose, MdInfo, MdCalendarMonth, MdChevronLeft, MdChevronRight,
-  MdBolt, MdDelete, MdDeleteSweep, MdWarning, MdCheckCircle,
+  MdBolt, MdDelete, MdDeleteSweep, MdWarning, MdCheckCircle, MdDownload,
 } from 'react-icons/md';
 import { format } from 'date-fns';
 import { AutoAssignModal } from '../components/AutoAssignModal';
+import { ExportShiftsModal } from '../components/ExportShiftsModal';
 
 // ─── Modal Asignar / Editar Turno ────────────────────────────────────────────
 function ShiftModal({ employee, fecha, areaId, areaTemplates, onClose, onSave, onDelete, existingShift }) {
@@ -459,6 +460,7 @@ export default function SchedulingPage() {
   const [autoAssignLoading, setAutoAssignLoading] = useState(false);
   const [autoResult, setAutoResult] = useState(null);
   const [showClearModal, setShowClearModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   const periodos = useMemo(() => {
     const prevMes = mes === 1 ? 12 : mes - 1;
@@ -1005,6 +1007,13 @@ export default function SchedulingPage() {
             Auto-asignar...
           </button>
 
+          {/* Exportar Excel */}
+          <button className="cw-btn cw-btn--secondary" onClick={() => setShowExportModal(true)}
+            title="Exportar turnos y resumen a Excel"
+            disabled={shifts.length === 0 && employees.length === 0}>
+            <MdDownload /> Exportar Excel
+          </button>
+
           {/* Limpiar período */}
           <button className="cw-btn cw-btn--danger" onClick={() => setShowClearModal(true)}
             title={`Eliminar todos los turnos de ${getNombreMes(mes)} ${anio}${selectedArea ? ` (${selectedArea.nombre})` : ''}`}
@@ -1297,6 +1306,25 @@ export default function SchedulingPage() {
           dias={dias}
           onClose={() => setShowClearModal(false)}
           onConfirm={handleClearPeriod}
+        />
+      )}
+
+      {/* ── Modal Exportar a Excel ─────────────────────────────────────────── */}
+      {showExportModal && (
+        <ExportShiftsModal
+          areas={areas}
+          employees={filteredEmployees}
+          shifts={shifts}
+          absences={absences}
+          allTemplates={allTemplatesMap}
+          defaultAreaId={selectedAreaId}
+          defaultRange="this_week"
+          currentViewRange={dias && dias.length > 0 ? {
+            start: dias[0],
+            end: dias[dias.length - 1],
+            days: dias,
+          } : null}
+          onClose={() => setShowExportModal(false)}
         />
       )}
     </div>
