@@ -771,6 +771,8 @@ export default function BulkImportModal({ areas = [], onClose, onBulkSave }) {
           tipo_cuenta: row.tipo_cuenta ? String(row.tipo_cuenta).toUpperCase().trim() : 'AHORROS',
           numero_cuenta: row.numero_cuenta ? String(row.numero_cuenta).trim() : null,
           nivel_educacion: row.nivel_educacion ? String(row.nivel_educacion).toUpperCase().trim() : null,
+          // 'sector' a nivel de empleado representa su sector/rubro económico
+          // (puede ser distinto al sector del área donde trabaja).
           sector: row.sector ? String(row.sector).toUpperCase().trim() : null,
           activo: true,
         };
@@ -790,7 +792,19 @@ export default function BulkImportModal({ areas = [], onClose, onBulkSave }) {
         }
         successCount++;
       } catch (err) {
-        errorList.push({ row: row._row, nombre: row.nombre, msg: err.message });
+        // Mostrar mensaje de Supabase más legible (incluye hint/details si los trae)
+        const msg = err?.message || String(err);
+        const hint = err?.hint || err?.details ? ` (${err.details || err.hint})` : '';
+        // Si el error menciona "schema cache" o "column ... not found", el problema es del payload.
+        if (/schema cache|column .* (of|not found)/i.test(msg)) {
+          errorList.push({
+            row: row._row,
+            nombre: row.nombre,
+            msg: `Columna inexistente en BD: ${msg.replace(/.*'([^']+)'.*'([^']+)'.*/, "$2.$1")}${hint}`,
+          });
+        } else {
+          errorList.push({ row: row._row, nombre: row.nombre, msg: `${msg}${hint}` });
+        }
       }
       setProgress(Math.round(((i + 1) / validRows.length) * 100));
     }
