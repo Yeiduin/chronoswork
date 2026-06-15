@@ -88,6 +88,15 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     turno_predeterminado_id: employee?.turno_predeterminado_id || '',
     jornada_partida: employee?.jornada_partida || false,
 
+    // Paso 3-bis: Preferencia de jornada (v4 — algoritmo mejorado)
+    jornada_preferida: employee?.jornada_preferida || 'CUALQUIERA',
+    solo_diurno: employee?.solo_diurno || false,
+    solo_nocturno: employee?.solo_nocturno || false,
+    horas_max_diarias: employee?.horas_max_diarias ?? '',
+    horas_nocturnas_max_semana: employee?.horas_nocturnas_max_semana ?? '',
+    horas_max_semana: employee?.horas_max_semana ?? '',
+    permite_partido: employee?.permite_partido || false,
+
     // Paso 4: Salario
     valor_hora: employee?.valor_hora ?? SMLV_HORA_2025,
     salario_mensual: employee?.salario_mensual ?? SMLV_2025,
@@ -527,6 +536,75 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               <input type="checkbox" checked={form.es_jefe} onChange={e => set('es_jefe', e.target.checked)} />
               <span>👑 Es jefe / tiene subordinados</span>
             </label>
+
+            {/* ── v4: Preferencia de jornada (CRÍTICO para 24/7) ── */}
+            <div style={{ marginTop: '1rem', padding: '0.85rem', background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.3)', borderRadius: 10 }}>
+              <h5 style={{ fontSize: '0.82rem', color: '#4f46e5', marginBottom: '0.5rem', fontWeight: 700 }}>
+                🌙 Preferencia de jornada (para call centers 24/7)
+              </h5>
+              <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.4 }}>
+                Define en qué horarios este empleado puede trabajar. En áreas 24/7, el sistema usará esto para asignar
+                empleados dedicados a la noche (22:00-06:00) o evitar asignar noche a quien no quiere.
+              </p>
+
+              <div className="cw-form-group" style={{ marginBottom: '0.75rem' }}>
+                <label className="cw-label">Jornada preferida</label>
+                <select className="cw-input" value={form.jornada_preferida}
+                  onChange={e => {
+                    set('jornada_preferida', e.target.value);
+                    // Si selecciona específica, ajustar flags
+                    if (e.target.value === 'DIURNA')   { set('solo_diurno', true);   set('solo_nocturno', false); }
+                    if (e.target.value === 'NOCTURNA') { set('solo_nocturno', true); set('solo_diurno', false); }
+                    if (e.target.value === 'MIXTA' || e.target.value === 'CUALQUIERA') {
+                      set('solo_diurno', false); set('solo_nocturno', false);
+                    }
+                  }}>
+                  <option value="CUALQUIERA">🔄 Cualquiera (el sistema decide)</option>
+                  <option value="DIURNA">☀️ Solo Diurna (04:00-22:00)</option>
+                  <option value="NOCTURNA">🌙 Solo Nocturna (cubre 22:00-06:00)</option>
+                  <option value="MIXTA">🌓 Mixta (puede cubrir ambas)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                  <input type="checkbox" checked={form.solo_diurno}
+                    onChange={e => { set('solo_diurno', e.target.checked); if (e.target.checked) set('solo_nocturno', false); }} />
+                  <span>☀️ Solo diurno</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                  <input type="checkbox" checked={form.solo_nocturno}
+                    onChange={e => { set('solo_nocturno', e.target.checked); if (e.target.checked) set('solo_diurno', false); }} />
+                  <span>🌙 Solo nocturno</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                  <input type="checkbox" checked={form.permite_partido}
+                    onChange={e => set('permite_partido', e.target.checked)} />
+                  <span>⏸️ Acepta turno partido</span>
+                </label>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx horas/día</label>
+                  <input type="number" step="0.5" className="cw-input" placeholder="Auto"
+                    value={form.horas_max_diarias} onChange={e => set('horas_max_diarias', e.target.value)} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx horas/sem</label>
+                  <input type="number" className="cw-input" placeholder="Auto (42)"
+                    value={form.horas_max_semana} onChange={e => set('horas_max_semana', e.target.value)} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx horas NOCHE/sem</label>
+                  <input type="number" className="cw-input" placeholder="Sin tope"
+                    value={form.horas_nocturnas_max_semana} onChange={e => set('horas_nocturnas_max_semana', e.target.value)} />
+                </div>
+              </div>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
+                💡 Déjalo vacío para usar el límite del área o el legal (42h/sem).
+              </div>
+            </div>
           </div>
         )}
 

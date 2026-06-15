@@ -173,7 +173,8 @@ export function useShifts(periodo = null) {
     if (!Array.isArray(employees) || !employees.length) {
       return { error: 'No hay empleados en el área para programar.', inserted: 0, alertaDias: [] };
     }
-    if (!Array.isArray(templates) || !templates.length) {
+    // v4: En modo 24/7 el algoritmo puede generar slots dinámicos sin templates
+    if (modoOperacion === 'OFICINA' && (!Array.isArray(templates) || !templates.length)) {
       return {
         error: 'El área no tiene franjas horarias configuradas. Agrega al menos una en Áreas → Franjas.',
         inserted: 0,
@@ -198,6 +199,21 @@ export function useShifts(periodo = null) {
       }
     }
 
+    // Cargar datos del área si hay areaId (para v4: estrategia, min_noche, etc)
+    let areaConfig = {};
+    if (areaId) {
+      try {
+        const { data: areaData } = await supabase
+          .from('areas')
+          .select('modo_operacion, estrategia_asignacion, min_empleados_noche, noche_solo_empleados_dedicados, permite_dia_cubrir_noche, slots_por_hora, snap_turnos_minutos, balancear_carga, rotar_slots_entre_asesores, permitir_horas_extras, permitir_turno_partido, min_horas_turno_override, max_horas_turno_override')
+          .eq('id', areaId)
+          .single();
+        areaConfig = areaData || {};
+      } catch (e) {
+        console.warn('[autoAssign] areaConfig no se pudo cargar:', e.message);
+      }
+    }
+
     const { shifts: shiftsToInsert, warnings } = generateAutomaticShifts({
       modoOperacion: modoOperacion || 'OFICINA',
       employees,
@@ -212,6 +228,19 @@ export function useShifts(periodo = null) {
       laborLimits: laborLimits || {},
       nightShiftConfig: nightShiftConfig || null,
       patronRotativo: patronRotativo || null,
+      // ── v4: parámetros nuevos del área ──
+      estrategia: areaConfig.estrategia_asignacion || 'COVERAGE_FIRST',
+      minEmpleadosNoche: areaConfig.min_empleados_noche || 1,
+      nocheSoloDedicados: areaConfig.noche_solo_empleados_dedicados ?? true,
+      permiteDiaCubrirNoche: areaConfig.permite_dia_cubrir_noche ?? false,
+      balancearCarga: areaConfig.balancear_carga ?? true,
+      rotarSlots: areaConfig.rotar_slots_entre_asesores ?? false,
+      slotsPorHora: areaConfig.slots_por_hora || 4,
+      snapMinutos: areaConfig.snap_turnos_minutos || 15,
+      minHorasTurnoOverride: areaConfig.min_horas_turno_override || null,
+      maxHorasTurnoOverride: areaConfig.max_horas_turno_override || null,
+      permiteExtras: areaConfig.permitir_horas_extras ?? false,
+      permitePartidos: areaConfig.permitir_turno_partido ?? false,
     });
 
     if (!Array.isArray(shiftsToInsert) || shiftsToInsert.length === 0) {

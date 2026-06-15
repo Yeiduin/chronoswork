@@ -95,6 +95,19 @@ export default function AreaFormModal({ area, onClose }) {
         night_shift_enabled: area.night_shift_enabled || false,
         night_shift_start: area.night_shift_start || '22:00',
         night_shift_end: area.night_shift_end || '06:00',
+        // v4: Estrategia de asignación
+        estrategia_asignacion: area.estrategia_asignacion || 'COVERAGE_FIRST',
+        min_empleados_noche: area.min_empleados_noche || 1,
+        noche_solo_empleados_dedicados: area.noche_solo_empleados_dedicados ?? true,
+        permite_dia_cubrir_noche: area.permite_dia_cubrir_noche ?? false,
+        slots_por_hora: area.slots_por_hora || 4,
+        snap_turnos_minutos: area.snap_turnos_minutos || 15,
+        balancear_carga: area.balancear_carga ?? true,
+        rotar_slots_entre_asesores: area.rotar_slots_entre_asesores ?? false,
+        permitir_horas_extras: area.permitir_horas_extras ?? false,
+        permitir_turno_partido: area.permitir_turno_partido ?? false,
+        min_horas_turno_override: area.min_horas_turno_override ?? '',
+        max_horas_turno_override: area.max_horas_turno_override ?? '',
         // Otros
         requiere_dotacion: area.requiere_dotacion || false,
         dotacion_periodicidad_meses: area.dotacion_periodicidad_meses || 4,
@@ -344,7 +357,7 @@ export default function AreaFormModal({ area, onClose }) {
             {/* Modo operación */}
             <div className="cw-form-group">
               <label className="cw-label">Tipo de operación <span className="required">*</span></label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
                 <OpcionCard
                   selected={form.modo_operacion === 'OFICINA'}
                   onClick={() => setForm(p => ({
@@ -355,7 +368,7 @@ export default function AreaFormModal({ area, onClose }) {
                     patron_rotativo: null,
                     night_shift_enabled: false,
                   }))}
-                  icono="🏢" titulo="Horario de Oficina"
+                  icono="🏢" titulo="Oficina"
                   desc="L-V, turnos fijos, máx 42h/sem (Ley 2101/2021)"
                   color="#6366f1" />
                 <OpcionCard
@@ -366,9 +379,21 @@ export default function AreaFormModal({ area, onClose }) {
                     dias_trabajo: [1, 2, 3, 4, 5, 6, 7],
                     patron_rotativo: '6x1',
                   }))}
-                  icono="🔄" titulo="Operación 24/7"
-                  desc="Todos los días incluyendo domingos y festivos, turnos rotativos"
+                  icono="🔄" titulo="24/7"
+                  desc="Todos los días, turnos rotativos, recargos HON automáticos"
                   color="#f59e0b" />
+                <OpcionCard
+                  selected={form.modo_operacion === '24_7_NIGHT_SPLIT'}
+                  onClick={() => setForm(p => ({
+                    ...p,
+                    modo_operacion: '24_7_NIGHT_SPLIT',
+                    dias_trabajo: [1, 2, 3, 4, 5, 6, 7],
+                    patron_rotativo: null,
+                    night_shift_enabled: true,
+                  }))}
+                  icono="📞" titulo="24/7 Call Center"
+                  desc="Empleados dedicados a la noche + slots dinámicos de día (recomendado call centers)"
+                  color="#10b981" />
               </div>
             </div>
 
@@ -534,7 +559,7 @@ export default function AreaFormModal({ area, onClose }) {
             </h4>
 
             {/* 24/7 - Turno nocturno */}
-            {form.modo_operacion === '24_7' && (
+            {(form.modo_operacion === '24_7' || form.modo_operacion === '24_7_NIGHT_SPLIT') && (
               <div style={{
                 marginBottom: '1rem', padding: '0.875rem', background: 'rgba(99,102,241,0.06)',
                 border: '1px solid rgba(99,102,241,0.2)', borderRadius: 10,
@@ -545,23 +570,113 @@ export default function AreaFormModal({ area, onClose }) {
                   🌙 Habilitar jornada nocturna dedicada
                 </label>
                 {form.night_shift_enabled && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-                    <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                      <label className="cw-label">Inicio noche</label>
-                      <input type="time" className="cw-input"
-                        value={form.night_shift_start}
-                        onChange={e => setForm(p => ({ ...p, night_shift_start: e.target.value }))} />
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                      <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                        <label className="cw-label">Inicio noche</label>
+                        <input type="time" className="cw-input"
+                          value={form.night_shift_start}
+                          onChange={e => setForm(p => ({ ...p, night_shift_start: e.target.value }))} />
+                      </div>
+                      <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                        <label className="cw-label">Fin noche</label>
+                        <input type="time" className="cw-input"
+                          value={form.night_shift_end}
+                          onChange={e => setForm(p => ({ ...p, night_shift_end: e.target.value }))} />
+                      </div>
+                      <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                        <label className="cw-label">Mín. personas en la noche</label>
+                        <input type="number" min="1" className="cw-input"
+                          value={form.min_empleados_noche}
+                          onChange={e => setForm(p => ({ ...p, min_empleados_noche: parseInt(e.target.value) || 1 }))} />
+                      </div>
                     </div>
-                    <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                      <label className="cw-label">Fin noche</label>
-                      <input type="time" className="cw-input"
-                        value={form.night_shift_end}
-                        onChange={e => setForm(p => ({ ...p, night_shift_end: e.target.value }))} />
+                    <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                        <input type="checkbox" checked={form.noche_solo_empleados_dedicados}
+                          onChange={e => setForm(p => ({ ...p, noche_solo_empleados_dedicados: e.target.checked }))} />
+                        <span>🌙 Solo empleados dedicados a la noche</span>
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                        <input type="checkbox" checked={form.permite_dia_cubrir_noche}
+                          onChange={e => setForm(p => ({ ...p, permite_dia_cubrir_noche: e.target.checked }))} />
+                        <span>☀️ Permitir diurnos cubrir noche (emergencia)</span>
+                      </label>
                     </div>
-                  </div>
+                  </>
                 )}
               </div>
             )}
+
+            {/* v4: Estrategia de asignación del algoritmo */}
+            <div style={{
+              marginBottom: '1rem', padding: '0.875rem', background: 'rgba(16, 185, 129, 0.06)',
+              border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: 10,
+            }}>
+              <h5 style={{ fontSize: '0.85rem', color: '#059669', marginBottom: '0.5rem', fontWeight: 700 }}>
+                🤖 Estrategia de Asignación (Algoritmo v4)
+              </h5>
+              <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.4 }}>
+                Define cómo el algoritmo prioriza al generar turnos automáticamente.
+              </p>
+
+              <div className="cw-form-group">
+                <label className="cw-label">Estrategia</label>
+                <select className="cw-input" value={form.estrategia_asignacion}
+                  onChange={e => setForm(p => ({ ...p, estrategia_asignacion: e.target.value }))}>
+                  <option value="COVERAGE_FIRST">📊 COVERAGE_FIRST — Llenar demanda primero (recomendado 24/7)</option>
+                  <option value="BALANCED">⚖️ BALANCED — Balancear horas entre todos (recomendado oficina)</option>
+                  <option value="EMPLOYEE_PREF">👤 EMPLOYEE_PREF — Respetar preferencias del empleado</option>
+                </select>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  💡 Para call centers elige COVERAGE_FIRST. Para oficinas BALANCED.
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Min horas/turno</label>
+                  <input type="number" step="0.5" min="1" className="cw-input" placeholder="4 (legal)"
+                    value={form.min_horas_turno_override}
+                    onChange={e => setForm(p => ({ ...p, min_horas_turno_override: e.target.value }))} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Max horas/turno</label>
+                  <input type="number" step="0.5" min="1" className="cw-input" placeholder="9 (defecto)"
+                    value={form.max_horas_turno_override}
+                    onChange={e => setForm(p => ({ ...p, max_horas_turno_override: e.target.value }))} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Snap turnos (min)</label>
+                  <select className="cw-input" value={form.snap_turnos_minutos}
+                    onChange={e => setForm(p => ({ ...p, snap_turnos_minutos: parseInt(e.target.value) }))}>
+                    <option value="5">5 min</option>
+                    <option value="10">10 min</option>
+                    <option value="15">15 min (recomendado)</option>
+                    <option value="30">30 min</option>
+                    <option value="60">60 min</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                  <input type="checkbox" checked={form.balancear_carga}
+                    onChange={e => setForm(p => ({ ...p, balancear_carga: e.target.checked }))} />
+                  <span>⚖️ Balancear carga semanal al final</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                  <input type="checkbox" checked={form.rotar_slots_entre_asesores}
+                    onChange={e => setForm(p => ({ ...p, rotar_slots_entre_asesores: e.target.checked }))} />
+                  <span>🔄 Rotar asesores entre slots</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
+                  <input type="checkbox" checked={form.permitir_horas_extras}
+                    onChange={e => setForm(p => ({ ...p, permitir_horas_extras: e.target.checked }))} />
+                  <span>⏰ Permitir horas extra (max 2/día)</span>
+                </label>
+              </div>
+            </div>
 
             {/* Dotación */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
@@ -630,7 +745,7 @@ export default function AreaFormModal({ area, onClose }) {
                 <strong>{form.nombre || 'Nueva área'}</strong>
                 {form.sector && ` · ${SECTORES.find(s => s.value === form.sector)?.label}`}
                 <br />
-                {form.modo_operacion === '24_7' ? '🔄 24/7' : '🏢 Oficina'} ·{' '}
+                {form.modo_operacion === '24_7' ? '🔄 24/7' : form.modo_operacion === '24_7_NIGHT_SPLIT' ? '📞 24/7 Call Center' : '🏢 Oficina'} ·{' '}
                 {form.patron_rotativo
                   ? PATRONES_ROTATIVOS.find(p => p.value === form.patron_rotativo)?.label
                   : `${form.dias_trabajo.length} días laborables`}
