@@ -5,6 +5,21 @@ import { useAuth } from '../context/AuthContext';
 import { getDatesByOption } from '../core/dateUtils';
 import { format } from 'date-fns';
 
+// ── Helper: clasificar jornada efectiva del empleado ─────────────────────
+function clasificarJornada(emp) {
+  if (emp.solo_nocturno || emp.jornada_preferida === 'NOCTURNA') return 'NOCTURNO';
+  if (emp.solo_diurno   || emp.jornada_preferida === 'DIURNA')   return 'DIURNO';
+  if (emp.jornada_preferida === 'MIXTA')                         return 'MIXTO';
+  return 'CUALQUIERA';
+}
+
+const JORNADA_BADGE = {
+  NOCTURNO:   { icon: '🌙', color: '#6366f1', bg: 'rgba(99,102,241,0.15)' },
+  DIURNO:     { icon: '☀️', color: '#d97706', bg: 'rgba(245,158,11,0.15)' },
+  MIXTO:      { icon: '🌓', color: '#059669', bg: 'rgba(16,185,129,0.15)' },
+  CUALQUIERA: { icon: '🔄', color: '#64748b', bg: 'rgba(148,163,184,0.15)' },
+};
+
 export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm }) {
   const { tenant } = useAuth();
   // scope puede ser un area.id (string UUID) cuando viene desde AreasPage
@@ -18,9 +33,53 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
   const [conflictLoading, setConflictLoading] = useState(false);
   const [resolutionMode, setResolutionMode] = useState('only_new'); // 'reprogram' | 'only_new'
 
+  // ── Resumen de empleados del área seleccionada ───────────────────────────
+  const [empSummary, setEmpSummary] = useState(null);
+  const [empSummaryLoading, setEmpSummaryLoading] = useState(false);
+
   // Detectar si el área seleccionada es 24/7
   const selectedArea = area || (targetScope !== 'all' ? areas.find(a => a.id === targetScope) : null);
-  const is24_7 = selectedArea?.modo_operacion === '24_7';
+  const is24_7 = selectedArea?.modo_operacion === '24_7' || selectedArea?.modo_operacion === '24_7_NIGHT_SPLIT';
+
+  // ── Cargar resumen de empleados del área seleccionada ────────────────────
+  useEffect(() => {
+    let active = true;
+    if (!targetScope || targetScope === 'all') {
+      setEmpSummary(null);
+      return;
+    }
+
+    const loadEmpSummary = async () => {
+      setEmpSummaryLoading(true);
+      try {
+        const { data } = await supabase
+          .from('area_employees')
+          .select(`
+            employee_id,
+            employees(
+              id, nombre, jornada_preferida, solo_diurno, solo_nocturno,
+              horas_semanales_contrato, activo
+            )
+          `)
+          .eq('area_id', targetScope);
+
+        if (!active) return;
+
+        const emps = (data || []).map(ae => ae.employees).filter(e => e?.activo !== false);
+        const counts = { NOCTURNO: 0, DIURNO: 0, MIXTO: 0, CUALQUIERA: 0 };
+        emps.forEach(e => { counts[clasificarJornada(e)]++; });
+
+        setEmpSummary({ total: emps.length, counts, emps });
+      } catch {
+        if (active) setEmpSummary(null);
+      } finally {
+        if (active) setEmpSummaryLoading(false);
+      }
+    };
+
+    loadEmpSummary();
+    return () => { active = false; };
+  }, [targetScope]);
 
   // Buscar conflictos de turnos existentes
   useEffect(() => {
@@ -124,9 +183,16 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
     onClose();
   };
 
+  // Estrategia que se usará (para mostrar al usuario)
+  const estrategiaLabel = selectedArea?.estrategia_asignacion === 'BALANCED'
+    ? '⚖️ Balanceada (horas equitativas)'
+    : selectedArea?.estrategia_asignacion === 'EMPLOYEE_PREF'
+    ? '👤 Preferencia del empleado'
+    : '📊 Cobertura primero (recomendado 24/7)';
+
   return (
     <div className="cw-modal-overlay">
-      <div className="cw-modal animate-slide-up" style={{ maxWidth: 500 }}>
+      <div className="cw-modal animate-slide-up" style={{ maxWidth: 520 }}>
         <div className="cw-modal__header">
           <h3 className="cw-modal__title">🤖 Asignación Inteligente</h3>
           <button className="cw-modal__close" onClick={onClose}><MdClose /></button>
@@ -168,6 +234,74 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
               <label className="cw-label">Hasta</label>
               <input type="date" className="cw-input" value={customEnd} onChange={e => setCustomEnd(e.target.value)} />
             </div>
+          </div>
+        )}
+
+        {/* ── Panel informativo del área seleccionada ── */}
+        {selectedArea && !empSummaryLoading && empSummary && (
+          <div style={{
+            marginBottom: '1rem', padding: '0.75rem 1rem',
+            background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+            borderRadius: 8,
+          }}>
+            <div style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--text-primary)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <MdInfo style={{ color: 'var(--cw-accent)' }} />
+              Vista previa · {selectedArea.nombre}
+            </div>
+
+            {/* Modo operación + estrategia */}
+            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+              <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem', borderRadius: 4, background: 'rgba(99,102,241,0.12)', color: '#818cf8', fontWeight: 600 }}>
+                {is24_7 ? '🔄 24/7' : '🏢 Oficina'}
+              </span>
+              <span style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem', borderRadius: 4, background: 'rgba(16,185,129,0.12)', color: '#34d399', fontWeight: 600 }}>
+                {estrategiaLabel}
+              </span>
+            </div>
+
+            {/* Distribución de jornadas */}
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {empSummary.total} colaboradores activos:
+            </div>
+            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+              {Object.entries(empSummary.counts).map(([tipo, count]) => {
+                if (!count) return null;
+                const badge = JORNADA_BADGE[tipo];
+                return (
+                  <span key={tipo} style={{
+                    fontSize: '0.72rem', padding: '0.2rem 0.55rem', borderRadius: 20,
+                    background: badge.bg, color: badge.color, fontWeight: 700,
+                    border: `1px solid ${badge.color}30`,
+                  }}>
+                    {badge.icon} {count} {tipo.charAt(0) + tipo.slice(1).toLowerCase()}
+                  </span>
+                );
+              })}
+            </div>
+
+            {/* Alerta nocturna */}
+            {is24_7 && empSummary.counts.NOCTURNO === 0 && empSummary.counts.MIXTO === 0 && (
+              <div style={{
+                marginTop: '0.6rem', padding: '0.4rem 0.6rem',
+                background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
+                borderRadius: 6, fontSize: '0.72rem', color: '#fca5a5', display: 'flex', gap: '0.4rem', alignItems: 'center',
+              }}>
+                <MdWarning />
+                Sin empleados nocturnos. El algoritmo no podrá cubrir la noche. Ve a Personal → edita empleados → asigna jornada «Nocturna» o «Mixta».
+              </div>
+            )}
+
+            {/* Advertencia si 24/7 con solo 1 nocturno */}
+            {is24_7 && (empSummary.counts.NOCTURNO + empSummary.counts.MIXTO) === 1 && (
+              <div style={{
+                marginTop: '0.6rem', padding: '0.4rem 0.6rem',
+                background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+                borderRadius: 6, fontSize: '0.72rem', color: '#fcd34d', display: 'flex', gap: '0.4rem', alignItems: 'center',
+              }}>
+                <MdWarning />
+                Solo 1 empleado nocturno. Se recomienda mínimo 2 para garantizar descansos en operación 24/7.
+              </div>
+            )}
           </div>
         )}
 

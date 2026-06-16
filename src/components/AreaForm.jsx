@@ -40,12 +40,16 @@ const NIVELES_ARL = [
 function buildDefaultsForSector(sector) {
   const def = getSectorDefaults(sector);
   const franjas = getFranjasBySector(sector);
+  // Usar el modo recomendado del sector (antes estaba fijo en 24_7 para todos).
+  const modo = def.modo || 'OFICINA';
+  const es247 = modo === '24_7' || modo === '24_7_NIGHT_SPLIT';
   return {
-    modo_operacion: '24_7',
+    modo_operacion: modo,
     tipo_contrato_predominante: def.contrato,
     tipo_contrato_default: def.contrato,
     valor_hora_default: def.salario,
-    dias_trabajo: [1, 2, 3, 4, 5, 6, 7],
+    // 24/7 trabaja todos los días; oficina, L-V.
+    dias_trabajo: es247 ? [1, 2, 3, 4, 5, 6, 7] : [1, 2, 3, 4, 5],
     patron_rotativo: null,
     jornada_tipo: 'DIURNA',
     duracion_jornada_horas: 8,
@@ -54,6 +58,10 @@ function buildDefaultsForSector(sector) {
     nivel_riesgo_arl: 1,
     paga_auxilio_transporte: true,
     franjas_iniciales: franjas,
+    // Config nocturna coherente con el modo del sector.
+    night_shift_enabled: es247,
+    estrategia_asignacion: es247 ? 'COVERAGE_FIRST' : 'BALANCED',
+    min_empleados_noche: 1,
   };
 }
 

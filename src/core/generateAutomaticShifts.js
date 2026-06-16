@@ -1,22 +1,22 @@
 // ============================================================
-// ChronosWork — Generador de Turnos v4.0
+// ChronosWork — Generador de Turnos v4.1
 // Rediseñado para soportar call centers 24/7 y cualquier
 // empresa con demanda variable + jornada nocturna dedicada.
 // ============================================================
-// Cambios vs v3.1:
-//  ✅ Particiona empleados por `jornada_efectiva` (NIGHT_ONLY / DAY_ONLY /
-//     MIXED / ANY) en lugar de por tipo_contrato.
-//  ✅ FASE 1 garantiza cobertura nocturna con `nightOnly` primero.
-//  ✅ FASE 2 cubre la demanda diurna con el resto.
-//  ✅ FASE 3 rellena con templates (Mañana 7-15, Tarde 13-21, etc.).
-//  ✅ FASE 4 balancea horas entre empleados del mismo pool.
-//  ✅ FASE 5 valida que ningún turno "diurno" toque horario nocturno
-//     salvo que sea de un NIGHT_ONLY/MIXED y se marque correctamente.
-//  ✅ Estrategia configurable: COVERAGE_FIRST | BALANCED | EMPLOYEE_PREF.
-//  ✅ Modo 24_7_NIGHT_SPLIT: fuerza la noche a empleados dedicados.
-//  ✅ Snap a grilla configurable (15/30/60 min).
-//  ✅ Soporta que un turno cruce la frontera 22:00 marcándolo como
-//     parcialmente nocturno (split en dos registros si es necesario).
+// Cambios vs v4.0:
+//  ✅ FASE 1 (noche) reescrita: pool nocturno con FALLBACK garantizado,
+//     usa nightConfig.start/end (no hardcode), mide el déficit del día
+//     correcto (noche de D + madrugada de D+1) y reparte la noche con un
+//     greedy de bloques de duración variable (cubre el pico de madrugada
+//     sin sobre-cubrir el valle).
+//  ✅ Demanda nocturna real: buildDemandVector usa DEMAND_CURVE_NOCTURNA en
+//     horas nocturnas y garantiza min-staff en 24/7.
+//  ✅ Bug de zona horaria corregido (parseLocalDate, sin new Date('yyyy-mm-dd')).
+//  ✅ `nocheSoloDedicados` ahora tiene efecto real.
+//  ✅ Tope de horas nocturnas con horas nocturnas REALES (sin factor 0.7).
+//  ✅ FASE 3 (templates) eficiente, sin reiniciar en day[0] cada vuelta.
+//  ✅ FASE 4 (balanceo) compara horas SEMANALES correctamente.
+//  ✅ Eliminado código muerto (no-op de NOCTURNO, rotarSlots documentado).
 // ============================================================
 
 import { format, addDays } from 'date-fns';
@@ -29,16 +29,18 @@ export const LEGAL_DEFAULTS_CO = {
   maxHorasSemanales:     42,
   minHorasTurno:          4,   // mínimo por turno (art. 161 CST)
   maxHorasTurno:          9,   // máximo razonable sin HE formales
-  maxHorasDiarias:       10,
+  maxHorasDiarias:        9,   // tope diario por defecto (alineado con maxHorasTurno)
   minHorasEntreJornadas:  9,   // descanso mínimo entre jornadas
   diasDescansoSemana:     1,
 };
 
-// ── Constantes de horario nocturno (CST colombiano) ─────────────────────
+// ── Constantes de horario nocturno (CST colombiano, Ley 2466/2025) ───────
+// Trabajo nocturno: 19:00 → 06:00. La jornada DIURNA es 06:00 → 19:00.
 const NOCTURNA_INICIO_H = 19; // 19:00 inclusive
 const NOCTURNA_FIN_H    = 6;  // 06:00 exclusive
 
 // ── Curvas de demanda por defecto (call center colombia 24/7) ───────────
+// Solo se usan cuando el área NO tiene demandSlots configurados.
 const DEMAND_CURVE_DIURNA = {
   0: 1, 1: 1, 2: 1, 3: 1, 4: 2,
   5: 4, 6: 6, 7: 8, 8: 9, 9: 9, 10: 8,
@@ -57,6 +59,36 @@ const DEMAND_CURVE_FIN_SEMANA = {
   12: 6, 13: 5, 14: 5, 15: 4, 16: 4, 17: 3,
   18: 3, 19: 2, 20: 2, 21: 1, 22: 1, 23: 1,
 };
+
+// ── Horarios canónicos de inicio (12+ opciones para variedad real) ────────
+// Se usan en FASE 2 para generar horarios más realistas y variados.
+// Cada entrada: [hora, minuto]. Cubre desde madrugada hasta noche.
+const CANONICAL_DAY_STARTS = [
+  [4, 0],  // 04:00 - muy temprano (panadería, aeropuerto)
+  [5, 0],  // 05:00 - primer turno
+  [5, 30], // 05:30
+  [6, 0],  // 06:00 - entrada estándar mañana
+  [6, 30], // 06:30
+  [7, 0],  // 07:00
+  [7, 30], // 07:30
+  [8, 0],  // 08:00 - entrada oficina estándar
+  [9, 0],  // 09:00 - mañana media
+  [10, 0], // 10:00
+  [11, 0], // 11:00
+  [12, 0], // 12:00 - turno mediodía
+  [13, 0], // 13:00
+  [14, 0], // 14:00 - primer turno tarde
+  [15, 0], // 15:00
+  [15, 30],// 15:30
+  [16, 0], // 16:00
+  [17, 0], // 17:00
+  [18, 0], // 18:00 - noche temprana
+  [19, 0], // 19:00
+  [20, 0], // 20:00
+  [21, 0], // 21:00
+  [22, 0], // 22:00 - turno nocturno
+  [23, 0], // 23:00
+];
 
 // ── Utilidades de cuadrícula ─────────────────────────────────────────────
 export function timeToSlot(hhmm, slotsPerHour = 4) {
@@ -83,6 +115,12 @@ export function isNightHour(h) {
   return h >= NOCTURNA_INICIO_H || h < NOCTURNA_FIN_H;
 }
 
+// ── Parser de fecha LOCAL (evita el desfase UTC de new Date('yyyy-mm-dd')) ─
+function parseLocalDate(dateStr) {
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
 // ── Clasificación efectiva del empleado ──────────────────────────────────
 /**
  * Devuelve una de: 'NIGHT_ONLY' | 'DAY_ONLY' | 'MIXED' | 'ANY'
@@ -104,7 +142,7 @@ export function classifyEmployee(emp) {
 /**
  * Construye el vector de demanda requerida por cada slot para un día.
  * Prioriza `demandSlots` (config del área). Si no hay, usa curva default
- * según tipo de día (semana / sábado / domingo).
+ * (diurna/nocturna/fin de semana según la hora y el día).
  */
 function buildDemandVector(dayOfWeek, demandSlots, numEmployees, isWeekend, slotsPerHour = 4) {
   const slotsPerDay = getSlotsPerDay(slotsPerHour);
@@ -120,15 +158,15 @@ function buildDemandVector(dayOfWeek, demandSlots, numEmployees, isWeekend, slot
         vec[s] = Math.max(vec[s], row.required_staff || 1);
       }
     });
-    // Huecos = 0 (sin demanda), pero para que el algoritmo pueda balancear
-    // sin generar turnos vacíos, los rellenamos a 0 (no a 1 como v3).
-    // Solo rellenamos si el modo es 24_7 (debe haber alguien siempre).
   } else {
-    const curve = isWeekend ? DEMAND_CURVE_FIN_SEMANA : DEMAND_CURVE_DIURNA;
+    const dayCurve = isWeekend ? DEMAND_CURVE_FIN_SEMANA : DEMAND_CURVE_DIURNA;
     const peakStaff = Math.max(1, Math.round((numEmployees || 1) * 0.8));
     for (let s = 0; s < slotsPerDay; s++) {
       const h = Math.floor(s / slotsPerHour);
-      const level = curve[h] ?? 1;
+      // En horas nocturnas usamos la curva nocturna (antes nunca se usaba).
+      const level = isNightHour(h)
+        ? (DEMAND_CURVE_NOCTURNA[h] ?? 1)
+        : (dayCurve[h] ?? 1);
       vec[s] = Math.max(1, Math.round((level / 10) * peakStaff));
     }
   }
@@ -202,7 +240,7 @@ export function shiftPagaNocturno(tpl) {
   return h >= NOCTURNA_INICIO_H;
 }
 
-export function buildRotativeSchedule({ days, employees, patron, positionOffset = 0 }) {
+export function buildRotativeSchedule({ days, patron, positionOffset = 0 }) {
   const def = PATRONES_ROTATIVOS.find(p => p.value === patron) || PATRONES_ROTATIVOS[3];
   const cycleLen = def.diasTrabajo + def.diasDescanso;
   if (cycleLen <= 0) return days.map(d => ({ date: d, works: true }));
@@ -222,31 +260,7 @@ function dateToStr(d) {
 
 // ── FUNCIÓN PRINCIPAL DE GENERACIÓN ──────────────────────────────────────
 /**
- * @param {Object} params
- * @param {Array}  params.employees           - Empleados del área
- * @param {Array}  params.templates           - Plantillas de turno (opcional)
- * @param {Array}  params.absences            - Novedades activas
- * @param {Array}  params.existingShifts      - Turnos ya creados en el período
- * @param {number} params.year
- * @param {number} params.month
- * @param {Array}  params.diasTrabajoArea     - Días laborables del área [1-7]
- * @param {Array}  params.diasToProcess       - Fechas a procesar
- * @param {Array}  params.demandSlots         - Slots de demanda del área
- * @param {string} params.modoOperacion       - 'OFICINA' | '24_7' | '24_7_NIGHT_SPLIT'
- * @param {Object} params.laborLimits         - Overrides legales del área
- * @param {Object} params.nightShiftConfig    - Config nocturna legacy
- * @param {string} params.patronRotativo      - '5x2','6x1','7x7', etc.
- * @param {string} params.estrategia          - 'COVERAGE_FIRST' | 'BALANCED' | 'EMPLOYEE_PREF'
- * @param {number} params.minEmpleadosNoche   - Mínimo de empleados en la franja 22-06
- * @param {boolean} params.nocheSoloDedicados - Si true, solo NIGHT_ONLY/MIXED cubren la noche
- * @param {boolean} params.balancearCarga     - Si true, fase 4 hace balanceo
- * @param {boolean} params.rotarSlots         - Si true, fase 3 alterna empleados en slots
- * @param {number} params.slotsPorHora        - 1 | 2 | 4 (default 4 = 15 min)
- * @param {number} params.snapMinutos         - 5|10|15|30|60 (default 15)
- * @param {number} params.minHorasTurno       - Override del mínimo por turno
- * @param {number} params.maxHorasTurno       - Override del máximo por turno
- * @param {boolean} params.permiteExtras      - Si false, tope semanal estricto
- * @param {boolean} params.permitePartidos    - Habilita turnos partidos
+ * @param {Object} params  (ver README V4_ALGORITHM_UPGRADE.md)
  * @returns {{ shifts: Array, warnings: Array }}
  */
 export function generateAutomaticShifts({
@@ -284,13 +298,6 @@ export function generateAutomaticShifts({
   if (!Array.isArray(employees) || employees.length === 0) {
     return { shifts: [], warnings: ['No hay empleados en el área.'] };
   }
-  // Si es 24/7 SIN templates, el algoritmo puede generar slots dinámicos
-  // automáticamente (ideal para call centers con demanda variable).
-  // Solo exigimos templates si el modo es 24_7_NIGHT_SPLIT con plantillas
-  // explícitas o si el usuario las configuró.
-  if (modoOperacion === '24_7' && (!Array.isArray(templates) || templates.length === 0)) {
-    // OK, seguirá con slots dinámicos
-  }
 
   // ── Resolver configuración de jornada nocturna ───────────────────────
   const is24x7 = (modoOperacion === '24_7' || modoOperacion === '24_7_NIGHT_SPLIT');
@@ -306,19 +313,19 @@ export function generateAutomaticShifts({
 
   // ── Snap a grilla ────────────────────────────────────────────────────
   const snapSlots = Math.max(1, Math.round(snapMinutos / (60 / slotsPorHora)));
-  // Si snap=15 y slotsPorHora=4, snapSlots=1 (cada slot es snap).
-  // Si snap=60 y slotsPorHora=4, snapSlots=4.
 
   // ── Defaults legales + overrides ─────────────────────────────────────
   const limits = {
     ...LEGAL_DEFAULTS_CO,
     ...laborLimits,
-    minHorasTurno: minHorasTurnoOverride ?? LEGAL_DEFAULTS_CO.minHorasTurno,
-    maxHorasTurno: maxHorasTurnoOverride ?? LEGAL_DEFAULTS_CO.maxHorasTurno,
+    minHorasTurno: minHorasTurnoOverride ?? laborLimits.minHorasTurno ?? LEGAL_DEFAULTS_CO.minHorasTurno,
+    maxHorasTurno: maxHorasTurnoOverride ?? laborLimits.maxHorasTurno ?? LEGAL_DEFAULTS_CO.maxHorasTurno,
   };
 
   const periodoStr = `${year}-${String(month).padStart(2, '0')}`;
   const slotsPerDay = getSlotsPerDay(slotsPorHora);
+  const minSlots = Math.max(1, Math.round(limits.minHorasTurno * slotsPorHora));
+  const maxSlots = Math.max(minSlots, Math.round(limits.maxHorasTurno * slotsPorHora));
 
   // ── Días laborables del mes a procesar ───────────────────────────────
   const days = (Array.isArray(diasToProcess) ? diasToProcess : [])
@@ -334,28 +341,19 @@ export function generateAutomaticShifts({
     return { shifts: [], warnings: ['No hay días hábiles en el rango seleccionado. Ajusta los días laborables del área.'] };
   }
 
-  // ── Particionar empleados por jornada efectiva (NUEVO v4) ────────────
-  const empByClass = {
-    NIGHT_ONLY: [],
-    DAY_ONLY:   [],
-    MIXED:      [],
-    ANY:        [],
-  };
-  employees.forEach(emp => {
-    const cls = classifyEmployee(emp);
-    empByClass[cls].push(emp);
-  });
-
-  // Si hay NIGHT_ONLY/MIXED explícitos, ellos cubren la noche.
-  // DAY_ONLY y ANY se reservan para el día. ANY puede rotar si se necesita.
+  // ── Particionar empleados por jornada efectiva ───────────────────────
+  const empByClass = { NIGHT_ONLY: [], DAY_ONLY: [], MIXED: [], ANY: [] };
+  employees.forEach(emp => { empByClass[classifyEmployee(emp)].push(emp); });
 
   // ── Configuración de slots nocturnos ────────────────────────────────
-  let nightStartSlot = null, nightEndRaw = null, nightCrosses = false;
+  let nightStartSlot = null, nightEndRaw = null;
   if (nightConfig) {
-    nightStartSlot = timeToSlot(nightConfig.start, slotsPorHora);
-    nightEndRaw    = timeToSlot(nightConfig.end,   slotsPorHora);
-    nightCrosses   = nightEndRaw <= nightStartSlot;
+    nightStartSlot = timeToSlot(nightConfig.start, slotsPorHora); // ej 22:00 -> 88
+    nightEndRaw    = timeToSlot(nightConfig.end,   slotsPorHora); // ej 06:00 -> 24
   }
+  // Fin de la ventana nocturna en coordenadas "extendidas" (puede pasar
+  // de medianoche): ej 22:00 (88) → 06:00 del día siguiente (96+24 = 120).
+  const nightEndExt = nightConfig ? slotsPerDay + nightEndRaw : null;
 
   const safeAbsences = Array.isArray(absences) ? absences : [];
   const safeExisting = Array.isArray(existingShifts) ? existingShifts : [];
@@ -369,14 +367,21 @@ export function generateAutomaticShifts({
     );
 
   const hasShiftOnDay = (empId, dateStr) =>
-    safeExisting.some(s => s.employee_id === empId && s.start_time.startsWith(dateStr)) ||
-    generatedShifts.some(s => s.employee_id === empId && s.start_time.startsWith(dateStr));
+    [...safeExisting, ...generatedShifts].some(
+      s => s.employee_id === empId && String(s.start_time).startsWith(dateStr)
+    );
 
+  // Horas extra legales permitidas (CST: máx. 12h extra/semana) si el área
+  // habilita horas extra; si no, tope estricto en la jornada ordinaria.
+  const extrasSemana = permiteExtras ? 12 : 0;
   const getMaxHoursFor = (emp) => {
-    if (emp.horas_max_semana && emp.horas_max_semana > 0) return emp.horas_max_semana;
-    const h = parseInt(emp?.horas_semanales_contrato, 10);
-    if (!isNaN(h) && h > 0 && h <= 60) return h;
-    return limits.maxHorasSemanales;
+    let base;
+    if (emp.horas_max_semana && emp.horas_max_semana > 0) base = emp.horas_max_semana;
+    else {
+      const h = parseInt(emp?.horas_semanales_contrato, 10);
+      base = (!isNaN(h) && h > 0 && h <= 60) ? h : limits.maxHorasSemanales;
+    }
+    return base + extrasSemana;
   };
 
   const getMaxDailyHours = (emp) => {
@@ -387,16 +392,15 @@ export function generateAutomaticShifts({
   const getMaxNightHours = (emp) => {
     if (emp.horas_nocturnas_max_semana && emp.horas_nocturnas_max_semana > 0)
       return parseInt(emp.horas_nocturnas_max_semana, 10);
-    return Infinity; // sin tope individual
+    return Infinity;
   };
 
-  // Calcula horas de un turno cruzando posibles midnight
   const shiftHours = (s) => {
     const hrs = (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
     return Math.max(0, hrs - (s.break_minutes || 0) / 60);
   };
 
-  // Calcula horas nocturnas (>=19:00 o <06:00) de un turno
+  // Horas nocturnas reales (>=19:00 o <06:00) de un turno
   const shiftNightHours = (s) => {
     const start = new Date(s.start_time);
     const end = new Date(s.end_time);
@@ -406,16 +410,14 @@ export function generateAutomaticShifts({
       const nextHour = new Date(cur);
       nextHour.setMinutes(60, 0, 0);
       const sliceEnd = nextHour > end ? end : nextHour;
-      if (isNightHour(cur.getHours())) {
-        total += (sliceEnd - cur) / 3600000;
-      }
+      if (isNightHour(cur.getHours())) total += (sliceEnd - cur) / 3600000;
       cur = nextHour;
     }
     return total;
   };
 
-  const getWeeklyHours = (empId, date) => {
-    const d = new Date(date);
+  const weekBounds = (dateObj) => {
+    const d = new Date(dateObj);
     const dow = d.getDay() || 7;
     const monday = new Date(d);
     monday.setDate(monday.getDate() - dow + 1);
@@ -423,61 +425,54 @@ export function generateAutomaticShifts({
     const sunday = new Date(monday);
     sunday.setDate(monday.getDate() + 6);
     sunday.setHours(23, 59, 59, 999);
+    return { monday, sunday };
+  };
+
+  const getWeeklyHours = (empId, date) => {
+    const { monday, sunday } = weekBounds(date);
     return [...safeExisting, ...generatedShifts]
       .filter(s => s.employee_id === empId)
       .reduce((acc, s) => {
         const sDate = new Date(s.start_time);
-        if (sDate >= monday && sDate <= sunday) return acc + shiftHours(s);
-        return acc;
+        return (sDate >= monday && sDate <= sunday) ? acc + shiftHours(s) : acc;
       }, 0);
   };
 
   const getWeeklyNightHours = (empId, date) => {
-    const d = new Date(date);
-    const dow = d.getDay() || 7;
-    const monday = new Date(d);
-    monday.setDate(monday.getDate() - dow + 1);
-    monday.setHours(0, 0, 0, 0);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    sunday.setHours(23, 59, 59, 999);
+    const { monday, sunday } = weekBounds(date);
     return [...safeExisting, ...generatedShifts]
       .filter(s => s.employee_id === empId)
       .reduce((acc, s) => {
         const sDate = new Date(s.start_time);
-        if (sDate >= monday && sDate <= sunday) return acc + shiftNightHours(s);
-        return acc;
+        return (sDate >= monday && sDate <= sunday) ? acc + shiftNightHours(s) : acc;
       }, 0);
   };
 
-  const getDailyHours = (empId, dateStr) => {
-    return [...safeExisting, ...generatedShifts]
-      .filter(s => s.employee_id === empId && s.start_time.startsWith(dateStr))
+  const getDailyHours = (empId, dateStr) =>
+    [...safeExisting, ...generatedShifts]
+      .filter(s => s.employee_id === empId && String(s.start_time).startsWith(dateStr))
       .reduce((acc, s) => acc + shiftHours(s), 0);
-  };
 
   const getLastShiftEndTime = (empId, dateStr) => {
-    const d = new Date(dateStr);
-    const prevStr = dateToStr(new Date(d.getTime() - 86400000));
+    const prevStr = dateToStr(addDays(parseLocalDate(dateStr), -1)); // ← fix zona horaria
     const prevShifts = [...safeExisting, ...generatedShifts]
-      .filter(s => s.employee_id === empId && s.start_time.startsWith(prevStr));
+      .filter(s => s.employee_id === empId && String(s.start_time).startsWith(prevStr));
     if (!prevShifts.length) return null;
     return prevShifts.reduce((latest, s) =>
       new Date(s.end_time) > new Date(latest.end_time) ? s : latest
     ).end_time;
   };
 
-  // ── Cobertura actual por slots ───────────────────────────────────────
+  // ── Cobertura actual por slots de un día ─────────────────────────────
   const getCoverageVector = (dateStr) => {
     const vec = new Array(slotsPerDay).fill(0);
     [...safeExisting, ...generatedShifts].forEach(s => {
       if (!s.start_time || !s.end_time) return;
       const sDateStr = String(s.start_time).split('T')[0];
-      const eDate = new Date(s.end_time);
-      const eStr  = dateToStr(eDate);
+      const eStr = dateToStr(new Date(s.end_time));
       if (sDateStr === dateStr) {
         const startSlot = timeToSlot(String(s.start_time).split('T')[1].substring(0, 5), slotsPorHora);
-        const endSlot   = eStr !== dateStr
+        const endSlot = eStr !== dateStr
           ? slotsPerDay
           : timeToSlot(String(s.end_time).split('T')[1].substring(0, 5), slotsPorHora);
         for (let sl = startSlot; sl < Math.min(endSlot, slotsPerDay); sl++) vec[sl]++;
@@ -489,430 +484,446 @@ export function generateAutomaticShifts({
     return vec;
   };
 
-  // ── FASE 0: Asignar descansos respetando jornada + patrón rotativo ──
-  // Los descansos se asignan por semana y por empleado, priorizando los
-  // días de MENOR demanda y distribuyendo para que no todos descansen
-  // el mismo día.
+  // ── Cache de demanda por fecha (sirve para cualquier día, incl. D+1) ─
+  const demandVecCache = {};
+  const getDemandVecFor = (dateObj) => {
+    const ds = dateToStr(dateObj);
+    if (demandVecCache[ds]) return demandVecCache[ds];
+    const dow = dateObj.getDay() === 0 ? 7 : dateObj.getDay();
+    const isWk = dateObj.getDay() === 0 || dateObj.getDay() === 6;
+    const v = buildDemandVector(dow, demandSlots, employees.length, isWk, slotsPorHora);
+    demandVecCache[ds] = v;
+    return v;
+  };
+
+  // ── Eligibilidad por jornada ─────────────────────────────────────────
+  const canWorkNight = (emp) => {
+    const cls = classifyEmployee(emp);
+    if (cls === 'NIGHT_ONLY' || cls === 'MIXED') return true;
+    if (cls === 'DAY_ONLY') return false;
+    return nightConfig?.permiteDiaCubrir ?? false; // ANY
+  };
+  const canWorkDay = (emp) => classifyEmployee(emp) !== 'NIGHT_ONLY';
+
+  // ── FASE 0: Asignar descansos ────────────────────────────────────────
   const restDays = new Set();
   const restsPerDay = {};
+  const restsNightPerDay = {};
+  // Pool dedicado a la noche (para no dejar la franja nocturna sin gente).
+  const dedicadosNoche = new Set([...empByClass.NIGHT_ONLY, ...empByClass.MIXED].map(e => e.id));
+  const dedicadosCount = dedicadosNoche.size;
+  const minNoche = nightConfig ? nightConfig.minStaff : 0;
 
-  const allEmpsForRest = employees;
-  allEmpsForRest.forEach((emp, empIdx) => {
-    const requiredRests = patronRotativo
-      ? (PATRONES_ROTATIVOS.find(p => p.value === patronRotativo)?.diasDescanso || 1)
+  employees.forEach((emp, empIdx) => {
+    const esDedicadoNoche = dedicadosNoche.has(emp.id);
+    const patronDef = patronRotativo ? PATRONES_ROTATIVOS.find(p => p.value === patronRotativo) : null;
+    const requiredRests = patronDef
+      ? (patronDef.diasDescanso || 1)
       : (emp.dias_descanso_fijos?.length
           ? emp.dias_descanso_fijos.length
           : (emp.dias_descanso_semana || limits.diasDescansoSemana));
+    const cycleLen = patronDef ? ((patronDef.diasTrabajo || 5) + (patronDef.diasDescanso || 2)) : 0;
 
-    const cycleLen = patronRotativo
-      ? ((PATRONES_ROTATIVOS.find(p => p.value === patronRotativo)?.diasTrabajo || 5)
-          + (PATRONES_ROTATIVOS.find(p => p.value === patronRotativo)?.diasDescanso || 2))
-      : 0;
-
-    // Agrupar por semana
     const weeks = {};
     days.forEach(day => {
-      const d = new Date(day.date);
-      const dow = d.getDay() || 7;
-      const monday = new Date(d);
-      monday.setDate(d.getDate() - dow + 1);
+      const { monday } = weekBounds(day.date);
       const weekKey = dateToStr(monday);
-      if (!weeks[weekKey]) weeks[weekKey] = [];
-      weeks[weekKey].push(day);
+      (weeks[weekKey] ||= []).push(day);
     });
 
     Object.values(weeks).forEach((weekDays, weekIdx) => {
-      const offset = patronRotativo
-        ? empIdx % cycleLen
-        : (weekIdx + empIdx) % 7;
-
-      // Ordenar días por menor demanda promedio + menos descansos ya asignados
-      const sorted = [...weekDays].sort((a, b) => {
-        const sumA = buildDemandVector(a.dayOfWeek, demandSlots, employees.length, a.isWeekend, slotsPorHora)
-          .reduce((s, v) => s + v, 0);
-        const sumB = buildDemandVector(b.dayOfWeek, demandSlots, employees.length, b.isWeekend, slotsPorHora)
-          .reduce((s, v) => s + v, 0);
+      // No asignar descansos en semanas-borde demasiado cortas: dejarían
+      // días sin nadie (artefacto típico al inicio/fin del rango).
+      if (weekDays.length <= requiredRests) return;
+      // Cap por día: nunca dejar que descanse más de ~1/3 del personal el
+      // mismo día (preserva cobertura, incluida la noche).
+      const restCap = Math.max(1, Math.floor(employees.length / 3));
+      // Tope de descansos de dedicados-noche por día: siempre dejar minStaff.
+      const restCapNoche = Math.max(0, dedicadosCount - Math.max(1, minNoche));
+      const offset = patronRotativo ? empIdx % (cycleLen || 1) : (weekIdx + empIdx) % 7;
+      const sortedByDemand = [...weekDays].sort((a, b) => {
+        const sumA = getDemandVecFor(a.date).reduce((s, v) => s + v, 0);
+        const sumB = getDemandVecFor(b.date).reduce((s, v) => s + v, 0);
         if (sumA !== sumB) return sumA - sumB;
         return (restsPerDay[a.dateStr] || 0) - (restsPerDay[b.dateStr] || 0);
       });
+      // Rotar la preferencia por empleado (offset) para repartir los descansos
+      // entre distintos días y no apilar a todos en el mismo día de baja demanda.
+      const sorted = sortedByDemand.map((_, i) => sortedByDemand[(i + offset) % sortedByDemand.length]);
 
       let assigned = 0;
       for (const day of sorted) {
         if (assigned >= requiredRests) break;
         if (isBlocked(emp.id, day.dateStr)) continue;
-
-        // Si el empleado tiene descansos fijos, forzar a esos
-        if (emp.dias_descanso_fijos?.length) {
-          const dow = day.dayOfWeek;
-          if (!emp.dias_descanso_fijos.includes(dow)) continue;
-        }
-
-        // Si hay patrón rotativo, validar que sea día OFF
+        if ((restsPerDay[day.dateStr] || 0) >= restCap) continue;
+        if (esDedicadoNoche && (restsNightPerDay[day.dateStr] || 0) >= restCapNoche) continue;
+        if (emp.dias_descanso_fijos?.length && !emp.dias_descanso_fijos.includes(day.dayOfWeek)) continue;
         if (patronRotativo && cycleLen > 0) {
           const dayIdx = days.findIndex(d => d.dateStr === day.dateStr);
           if (dayIdx >= 0) {
             const cyclePos = ((dayIdx + offset) % cycleLen + cycleLen) % cycleLen;
-            const def = PATRONES_ROTATIVOS.find(p => p.value === patronRotativo);
-            const offThreshold = def ? def.diasTrabajo : cycleLen / 2;
+            const offThreshold = patronDef ? patronDef.diasTrabajo : cycleLen / 2;
             if (cyclePos < offThreshold) continue;
           }
         }
-
         restDays.add(`${emp.id}_${day.dateStr}`);
         restsPerDay[day.dateStr] = (restsPerDay[day.dateStr] || 0) + 1;
+        if (esDedicadoNoche) restsNightPerDay[day.dateStr] = (restsNightPerDay[day.dateStr] || 0) + 1;
         assigned++;
       }
     });
   });
 
-  // ── Pre-calcular demanda por día (cache) ─────────────────────────────
-  const dayDemandCache = {};
-  days.forEach(day => {
-    dayDemandCache[day.dateStr] = buildDemandVector(
-      day.dayOfWeek, demandSlots, employees.length, day.isWeekend, slotsPorHora
-    );
-  });
-
-  // ── Helper: ¿un turno cruza horario nocturno? ──────────────────────
-  // Devuelve true si entre start_time y end_time hay al menos un slot nocturno.
-  const shiftTouchesNight = (s) => shiftNightHours(s) > 0;
-
-  // Determina si un empleado PUEDE trabajar en un turno que toca la noche
-  const canWorkNight = (emp) => {
-    const cls = classifyEmployee(emp);
-    if (cls === 'NIGHT_ONLY' || cls === 'MIXED') return true;
-    if (cls === 'DAY_ONLY') return false;
-    // ANY depende de config
-    return nightConfig?.permiteDiaCubrir ?? false;
+  // ── Helper genérico: ¿el empleado puede tomar este turno? ────────────
+  const employeeEligible = (emp, { startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, touchesNight }) => {
+    if (touchesNight && !canWorkNight(emp)) return false;
+    if (!touchesNight && !canWorkDay(emp)) return false;
+    if (isBlocked(emp.id, startDateStr)) return false;
+    if (restDays.has(`${emp.id}_${startDateStr}`)) return false;
+    if (hasShiftOnDay(emp.id, startDateStr)) return false;
+    if (getWeeklyHours(emp.id, startDateObj) + shiftHrs > getMaxHoursFor(emp)) return false;
+    if (getDailyHours(emp.id, startDateStr) + shiftHrs > getMaxDailyHours(emp)) return false;
+    if (touchesNight && getWeeklyNightHours(emp.id, startDateObj) + nightHrs > getMaxNightHours(emp)) return false;
+    const lastEnd = getLastShiftEndTime(emp.id, startDateStr);
+    if (lastEnd) {
+      const gapHrs = (new Date(`${startDateStr}T${startTimeStr}`) - new Date(lastEnd)) / 3600000;
+      if (gapHrs < limits.minHorasEntreJornadas) return false;
+    }
+    return true;
   };
 
-  // Determina si un empleado PUEDE trabajar en un turno solo de día
-  const canWorkDay = (emp) => {
-    const cls = classifyEmployee(emp);
-    if (cls === 'NIGHT_ONLY') return false; // NO quiere día
-    return true; // DAY_ONLY, MIXED, ANY
+  // Hash determinista (sin Math.random) para rotar asignaciones de slot.
+  const slotHash = (id, key) => {
+    let x = 0;
+    const str = `${id}|${key}`;
+    for (let i = 0; i < str.length; i++) x = (x * 31 + str.charCodeAt(i)) >>> 0;
+    return x;
   };
 
-  // ── FASE 1: Garantizar cobertura NOCTURNA (24/7) ────────────────────
-  if (nightConfig && nightConfig.minStaff > 0) {
-    // Pool elegible para noche: NIGHT_ONLY + MIXED + (ANY si permite_dia)
-    const nightPool = [
-      ...empByClass.NIGHT_ONLY,
-      ...empByClass.MIXED,
-      ...(nightConfig.permiteDiaCubrir ? empByClass.ANY : []),
-    ];
-    if (nightConfig.soloDedicados) {
-      // Quitar DAY_ONLY explícitamente
+  const pickCandidate = (pool, ctx, startDateObj) => {
+    const candidates = pool.filter(emp => employeeEligible(emp, ctx));
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => {
+      if (estrategia === 'EMPLOYEE_PREF') {
+        if (a.solo_nocturno !== b.solo_nocturno) return a.solo_nocturno ? -1 : 1;
+        if (a.solo_diurno !== b.solo_diurno) return a.solo_diurno ? -1 : 1;
+      }
+      // Reparto equitativo: el de menos horas semanales primero.
+      const wa = getWeeklyHours(a.id, startDateObj);
+      const wb = getWeeklyHours(b.id, startDateObj);
+      if (Math.abs(wa - wb) > 0.01) return wa - wb;
+      // Empate: si rotarSlots, variar quién toma cada franja (no siempre el
+      // mismo); si no, orden estable.
+      if (rotarSlots && ctx?.startTimeStr) {
+        return slotHash(a.id, ctx.startTimeStr) - slotHash(b.id, ctx.startTimeStr);
+      }
+      return 0;
+    });
+    return candidates[0];
+  };
+
+  // ── FASE 1: Cobertura NOCTURNA (ventana nightStart → nightEnd) ───────
+  // Greedy de bloques nocturnos de duración variable. Cubre el valle y el
+  // pico de madrugada con el MENOR número de personas, garantizando minStaff.
+  if (nightConfig) {
+    // Pool nocturno: dedicados primero. Fallback a ANY si no son
+    // suficientes o si el área NO exige dedicados (para no dejar la noche
+    // descubierta en 24/7).
+    const dedicados = [...empByClass.NIGHT_ONLY, ...empByClass.MIXED];
+    const nightPool = [...dedicados];
+    const baseInsuficiente = dedicados.length < nightConfig.minStaff || dedicados.length === 0;
+    if (nightConfig.permiteDiaCubrir || !nightConfig.soloDedicados || baseInsuficiente) {
+      empByClass.ANY.forEach(e => { if (!nightPool.includes(e)) nightPool.push(e); });
+    }
+    // Si NADIE puede cubrir la noche (todos marcados solo diurno), avisar de
+    // forma accionable: es una operación 24/7 sin personal nocturno posible.
+    if (nightPool.length === 0) {
+      warnings.push(
+        'No hay empleados habilitados para la noche en esta área 24/7. ' +
+        'Marca al menos a algunos como "Nocturna" o "Cualquiera" (jornada preferida) en Personal, ' +
+        'o activa "permitir que diurnos cubran la noche" en el área.'
+      );
     }
 
-    // Para cada día, asegurar `minStaff` empleados en la franja 22-06
-    for (const day of days) {
-      const demVec = dayDemandCache[day.dateStr];
-      const covVec = getCoverageVector(day.dateStr);
+    // Coloca UN bloque nocturno óptimo para `day`. Devuelve true si lo logró.
+    const placeOneNightBlock = (day) => {
+      const dNextObj = addDays(day.date, 1);
+      const dNextStr = dateToStr(dNextObj);
+      const demD = getDemandVecFor(day.date);
+      const demN = getDemandVecFor(dNextObj);
+      const covD = getCoverageVector(day.dateStr);
+      const covN = getCoverageVector(dNextStr);
+      const nightVal = (i) => {
+        const onNext = i >= slotsPerDay;
+        const localSlot = i - (onNext ? slotsPerDay : 0);
+        const dem = Math.max((onNext ? demN : demD)[localSlot] || 0, nightConfig.minStaff);
+        const cov = (onNext ? covN : covD)[localSlot] || 0;
+        return { dem, cov, def: Math.max(0, dem - cov) };
+      };
 
-      // Slots nocturnos del día (considerando que la noche puede empezar
-      // el día anterior y continuar; aquí cubrimos 22:00 del día actual
-      // hasta 06:00 del día siguiente).
-      const nightSlots = [];
-      for (let s = nightStartSlot; s < slotsPerDay; s++) nightSlots.push(s);
-      for (let s = 0; s < nightEndRaw; s++) nightSlots.push(s);
-
-      // Déficit en cada slot nocturno
-      let maxDef = 0;
-      for (const s of nightSlots) {
-        const def = Math.max(0, (demVec[s] || 0) - covVec[s]);
-        if (def > maxDef) maxDef = def;
-      }
-      const needed = Math.max(nightConfig.minStaff, maxDef);
-      if (needed === 0) continue;
-
-      // Para cada empleado nocturno que esté libre, intentar crear 1 turno
-      // nocturno que cubra la mayor parte de la noche.
-      let assigned = 0;
-      for (const emp of nightPool) {
-        if (assigned >= needed) break;
-        if (restDays.has(`${emp.id}_${day.dateStr}`)) continue;
-        if (isBlocked(emp.id, day.dateStr)) continue;
-        if (hasShiftOnDay(emp.id, day.dateStr)) continue;
-
-        const maxWeek = getMaxHoursFor(emp);
-        const curWeek = getWeeklyHours(emp.id, day.date);
-        if (curWeek + 8 > maxWeek) continue; // no le caben 8h más
-        if (getWeeklyNightHours(emp.id, day.date) + 8 > getMaxNightHours(emp)) continue;
-
-        // Crear turno nocturno: 22:00 -> 06:00 (siguiente día)
-        const nextDay = addDays(day.date, 1);
-        const nextDayStr = dateToStr(nextDay);
-        // Si ya tiene turno el siguiente día, verificar descanso entre jornadas
-        const lastEndTomorrow = getLastShiftEndTime(emp.id, nextDayStr);
-        if (lastEndTomorrow) {
-          const proposedEnd = new Date(`${nextDayStr}T06:00`);
-          const gapHrs = (proposedEnd - new Date(lastEndTomorrow)) / 3600000;
-          if (gapHrs < limits.minHorasEntreJornadas) continue;
+      let best = null;
+      for (let start = nightStartSlot; start + minSlots <= nightEndExt; start += snapSlots) {
+        const tope = Math.min(start + maxSlots, nightEndExt);
+        let dur = minSlots;
+        for (let s = start + minSlots; s < tope; s += snapSlots) {
+          let d = 0;
+          for (let k = 0; k < snapSlots && (s + k) < tope; k++) d += nightVal(s + k).def;
+          if (d > 0) dur = (s - start) + snapSlots;
         }
+        dur = Math.max(minSlots, Math.min(dur, nightEndExt - start, maxSlots));
 
-        generatedShifts.push({
-          employee_id: emp.id,
-          template_id: null,
-          start_time: `${day.dateStr}T22:00`,
-          end_time:   `${nextDayStr}T06:00`,
-          shift_type: 'night',
-          periodo: periodoStr,
-          break_minutes: 0,
-          shift_kind: 'NOCTURNO',
-          bloque: 1,
-          disponibilidad: false,
-          recargo_porcentaje: 0,
-          observaciones: `Auto-asignado v4 · Turno nocturno dedicado 22:00-06:00 (cubrir demanda 24/7)`,
-        });
-        assigned++;
+        let score = 0;
+        for (let s = start; s < start + dur; s++) {
+          const v = nightVal(s);
+          score += v.def;
+          if (v.cov >= v.dem) score -= 0.3;
+        }
+        if (!best || score > best.score) best = { start, dur, score };
       }
+      if (!best || best.score <= 0) return false;
 
-      if (assigned < needed) {
-        warnings.push(`${day.dateStr}: solo se asignaron ${assigned}/${needed} empleados a la noche (pool nocturno insuficiente).`);
+      const startOnNext = best.start >= slotsPerDay;
+      const startDateObj = startOnNext ? dNextObj : day.date;
+      const startDateStr = startOnNext ? dNextStr : day.dateStr;
+      const startTimeStr = slotToTime(best.start % slotsPerDay, slotsPorHora);
+      const endExt = best.start + best.dur;
+      const endDateStr = endExt >= slotsPerDay ? dNextStr : day.dateStr;
+      const endTimeStr = slotToTime(endExt % slotsPerDay, slotsPorHora);
+      const shiftHrs = best.dur / slotsPorHora;
+      const proposed = { start_time: `${startDateStr}T${startTimeStr}`, end_time: `${endDateStr}T${endTimeStr}` };
+      const nightHrs = shiftNightHours(proposed);
+
+      const candidate = pickCandidate(nightPool, {
+        startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, touchesNight: true,
+      }, startDateObj);
+      if (!candidate) return false;
+
+      generatedShifts.push({
+        employee_id: candidate.id,
+        template_id: null,
+        start_time: proposed.start_time,
+        end_time: proposed.end_time,
+        shift_type: 'night',
+        periodo: periodoStr,
+        break_minutes: 0,
+        shift_kind: 'NOCTURNO',
+        bloque: 1,
+        disponibilidad: false,
+        recargo_porcentaje: 0,
+        observaciones: `Auto-asignado v4.1 · Turno nocturno ${startTimeStr}-${endTimeStr} (cobertura 24/7)`,
+      });
+      return true;
+    };
+
+    // Round-robin: en cada vuelta colocamos a lo sumo 1 bloque por noche.
+    // Así garantizamos primero la cobertura mínima de TODAS las noches
+    // (amplitud) antes de saturar una sola (profundidad), evitando que las
+    // primeras noches consuman toda la capacidad y dejen las últimas vacías.
+    let progress = true;
+    let rounds = 0;
+    const MAX_ROUNDS = 60;
+    while (progress && rounds < MAX_ROUNDS) {
+      progress = false;
+      rounds++;
+      for (const day of days) {
+        if (placeOneNightBlock(day)) progress = true;
+      }
+    }
+
+    // Advertencias de cobertura nocturna por día.
+    for (const day of days) {
+      const dNextStr = dateToStr(addDays(day.date, 1));
+      const demD = getDemandVecFor(day.date);
+      const demN = getDemandVecFor(addDays(day.date, 1));
+      const covDfin = getCoverageVector(day.dateStr);
+      const covNfin = getCoverageVector(dNextStr);
+      let nightDeficit = 0;
+      for (let i = nightStartSlot; i < nightEndExt; i++) {
+        const onNext = i >= slotsPerDay;
+        const localSlot = i - (onNext ? slotsPerDay : 0);
+        const dem = Math.max((onNext ? demN : demD)[localSlot] || 0, nightConfig.minStaff);
+        const cov = (onNext ? covNfin : covDfin)[localSlot] || 0;
+        nightDeficit += Math.max(0, dem - cov);
+      }
+      if (nightDeficit > 0) {
+        warnings.push(`${day.dateStr}: cobertura nocturna incompleta (faltan ~${Math.round(nightDeficit / slotsPorHora)} horas-persona). Pool nocturno insuficiente.`);
       }
     }
   }
 
-  // ── FASE 2: Cobertura DIURNA (slots 04:00-22:00) ────────────────────
-  // Estrategia: en cada iteración del while, para CADA día intentamos
-  // colocar 1 turno en el mejor slot disponible. Esto permite que un
-  // día con alta demanda reciba múltiples turnos a lo largo de varias
-  // iteraciones (ej: pico 7-18h necesita varios agentes).
+  // ── FASE 2: Cobertura DIURNA (06:00 → nightStart, o jornada de oficina) ─
   if (modoOperacion === 'OFICINA' || is24x7) {
-    const minSlots = Math.round(limits.minHorasTurno * slotsPorHora);
-    const maxSlots = Math.round(limits.maxHorasTurno * slotsPorHora);
+    const dayPool = [...empByClass.DAY_ONLY, ...empByClass.MIXED, ...empByClass.ANY];
+
+    // Demanda efectiva diurna: en 24/7 garantizamos al menos 1 entre 06:00 y nightStart.
+    const dayMinFloor = is24x7 ? 1 : 0;
+    const dayWindowStart = 6 * slotsPorHora;
+    const dayWindowEnd = nightConfig ? nightStartSlot : slotsPerDay;
 
     let changed = true;
     let iterations = 0;
-    // Suficientes iteraciones para cubrir incluso un call center con
-    // picos de 8 personas simultáneas por día.
-    const MAX_ITER = days.length * 20;
-
-    // Pool diurno: DAY_ONLY + MIXED + ANY
-    const dayPool = [
-      ...empByClass.DAY_ONLY,
-      ...empByClass.MIXED,
-      ...empByClass.ANY,
-    ];
+    const MAX_ITER = days.length * 25;
 
     while (changed && iterations < MAX_ITER) {
       changed = false;
       iterations++;
 
-      // Salir si ya no hay déficit total en ningún día
+      // Déficit total para ordenar días (más déficit primero) y para cortar.
       let totalDefAcrossDays = 0;
       const daysSorted = [...days].sort((a, b) => {
-        const demA = dayDemandCache[a.dateStr];
-        const demB = dayDemandCache[b.dateStr];
-        const covA = getCoverageVector(a.dateStr);
-        const covB = getCoverageVector(b.dateStr);
-        const defA = demA.reduce((s, d, i) => s + Math.max(0, d - covA[i]), 0);
-        const defB = demB.reduce((s, d, i) => s + Math.max(0, d - covB[i]), 0);
-        totalDefAcrossDays += defA;
-        return defB - defA;
+        const defOf = (day) => {
+          const dem = getDemandVecFor(day.date);
+          const cov = getCoverageVector(day.dateStr);
+          let t = 0;
+          for (let s = dayWindowStart; s < dayWindowEnd; s++) {
+            const d = Math.max(dem[s], s >= dayWindowStart && s < dayWindowEnd ? dayMinFloor : 0);
+            t += Math.max(0, d - cov[s]);
+          }
+          return t;
+        };
+        const dA = defOf(a), dB = defOf(b);
+        totalDefAcrossDays += dA;
+        return dB - dA;
       });
       if (totalDefAcrossDays === 0) break;
 
-      // Para CADA día, intentar colocar VARIOS turnos hasta saturar.
-      // (No break al primero: el día con pico 7-18h necesita 5+ turnos).
       for (const day of daysSorted) {
-        // Saturar este día: hasta 20 turnos por día (call center grande)
         let dayTurnos = 0;
-        const MAX_TURNOS_POR_DIA = 20;
+        const MAX_TURNOS_POR_DIA = 25;
         while (dayTurnos < MAX_TURNOS_POR_DIA) {
           dayTurnos++;
-          // Recalcular TODO cada iteración (incluyendo déficit y demand)
-          const demVec = dayDemandCache[day.dateStr];
+          const demVec = getDemandVecFor(day.date);
           const covVec = getCoverageVector(day.dateStr);
-          const defVec = demVec.map((d, i) => Math.max(0, d - covVec[i]));
+          const effDem = (s) => Math.max(demVec[s] || 0, (s >= dayWindowStart && s < dayWindowEnd) ? dayMinFloor : 0);
+          const defVec = new Array(slotsPerDay).fill(0);
+          for (let s = dayWindowStart; s < dayWindowEnd; s++) defVec[s] = Math.max(0, effDem(s) - covVec[s]);
           const totalDeficit = defVec.reduce((s, v) => s + v, 0);
-          if (totalDeficit === 0) break; // día ya cubierto
+          if (totalDeficit === 0) break;
 
-        // Buscar el mejor start_slot (ponderado por demanda y por hora)
-        // Para cada slot inicial posible, calculamos el score que tendría
-        // un turno de 4h empezando ahí. El score es la suma del déficit
-        // cubierto, penalizado si ese slot ya está sobrecubierto.
-        let bestStartSlot = -1;
-        let bestScore = -1;
-        const startSlots = [];
-        // Slots desde 4 AM hasta 22 PM (4*4=16, 22*4=88). En 24/7 cubrimos
-        // todo el rango diurno. En OFICINA, también.
-        const earliestStart = 4 * slotsPorHora;   // 04:00
-        const latestStart   = 22 * slotsPorHora;  // 22:00
-        for (let s = earliestStart; s <= latestStart; s += snapSlots) {
-          if (s + minSlots > slotsPerDay) break;
-          // En 24/7 no permitir turnos que inicien después del inicio de noche
-          // (la noche la cubren los NIGHT_ONLY).
-          if (is24x7 && nightConfig && s >= nightStartSlot) continue;
-          startSlots.push(s);
-        }
+          // ── v4.2: Puntuar STARTS CANÓNICOS primero (variedad de horarios) ──
+          // Convertir los starts canónicos a slots y priorizar los que tienen
+          // mayor déficit. Esto genera 12+ horarios distintos vs el bucle
+          // exhaustivo que producía siempre los mismos 4 horarios.
+          const earlyDeficit = defVec.slice(dayWindowStart, 9 * slotsPorHora).reduce((a, b) => a + b, 0);
+          const lateDeficit = defVec.slice(Math.max(dayWindowStart, 16 * slotsPorHora), dayWindowEnd).reduce((a, b) => a + b, 0);
 
-        for (const start of startSlots) {
-          let score = 0;
-          // Tope: no extender más allá de nightStartSlot (en 24/7) o del
-          // final del día. Esto evita que un turno de 9h cubra 04-13 pero
-          // no "robe" espacio a un posible turno de 5h en 17-22.
-          const slotTope = (is24x7 && nightConfig)
-            ? Math.min(start + maxSlots, nightStartSlot, slotsPerDay)
-            : Math.min(start + maxSlots, slotsPerDay);
-          for (let s = start; s < slotTope; s++) {
-            score += defVec[s];
-            if (covVec[s] >= demVec[s]) score -= 0.3;
+          // Candidatos: primero los starts canónicos dentro de la ventana diurna.
+          const canonicalSlots = CANONICAL_DAY_STARTS
+            .map(([h, m]) => h * slotsPorHora + Math.floor(m / (60 / slotsPorHora)))
+            .filter(s => s >= dayWindowStart && s <= dayWindowEnd - minSlots);
+
+          // También incluir el bucle de snapSlots como fallback
+          // para no perder granularidad en áreas con demanda muy específica.
+          const allCandidateStarts = new Set(canonicalSlots);
+          for (let s = dayWindowStart; s <= dayWindowEnd - minSlots; s += snapSlots) {
+            allCandidateStarts.add(s);
           }
-          // Bonus por slots extremos si el día está muy descubierto allí.
-          // Si los slots 4-6h AM o 18-21h PM están vacíos, premia empezar
-          // turnos en esos rangos aunque el score central sea mayor.
-          const earlyDeficit = defVec.slice(earliestStart, 7 * slotsPorHora).reduce((a,b)=>a+b,0);
-          const lateDeficit  = defVec.slice(18 * slotsPorHora, 22 * slotsPorHora).reduce((a,b)=>a+b,0);
-          const peakDeficit  = defVec.slice(7 * slotsPorHora, 18 * slotsPorHora).reduce((a,b)=>a+b,0);
-          if (start < 7 * slotsPorHora && earlyDeficit > 0) {
-            score += earlyDeficit * 0.5;
-          }
-          if (start >= 16 * slotsPorHora && lateDeficit > 0) {
-            score += lateDeficit * 0.5;
-          }
-          // Penalizar ligeramente los slots pico cuando ya hay buena cobertura
-          if (start >= 7 * slotsPorHora && start < 18 * slotsPorHora) {
-            const peakCov = covVec.slice(start, Math.min(start+maxSlots, 18*slotsPorHora))
-              .reduce((a,b)=>a+b,0);
-            const peakDem = demVec.slice(start, Math.min(start+maxSlots, 18*slotsPorHora))
-              .reduce((a,b)=>a+b,0);
-            if (peakCov >= peakDem * 0.7) score *= 0.7; // ya cubierto, no reforzar
-          }
-          if (score > bestScore) {
-            bestScore = score;
-            bestStartSlot = start;
-          }
-        }
 
-        if (bestStartSlot === -1 || bestScore <= 0) continue;
-
-        // Calcular duración óptima (extender mientras haya déficit)
-        let duration = minSlots;
-        const slotTope = (is24x7 && nightConfig)
-          ? Math.min(bestStartSlot + maxSlots, nightStartSlot, slotsPerDay)
-          : Math.min(bestStartSlot + maxSlots, slotsPerDay);
-        for (let s = bestStartSlot + minSlots; s < slotTope; s += snapSlots) {
-          let def = 0;
-          for (let k = 0; k < snapSlots && (s + k) < slotTope; k++) {
-            def += defVec[s + k];
-          }
-          if (def > 0) duration = s - bestStartSlot + snapSlots;
-        }
-        duration = Math.max(minSlots, Math.min(duration, slotTope - bestStartSlot));
-        duration = Math.max(minSlots, Math.ceil(duration / snapSlots) * snapSlots);
-
-        const shiftEndSlot = bestStartSlot + duration;
-        const crossesMidnight = shiftEndSlot >= slotsPerDay;
-        const startTimeStr = slotToTime(bestStartSlot, slotsPorHora);
-        const endTimeStr   = slotToTime(shiftEndSlot % slotsPerDay, slotsPorHora);
-        const nextDayStr   = dateToStr(addDays(day.date, 1));
-        const shiftHrs     = duration / slotsPorHora;
-
-        // Verificar si el turno toca horario nocturno
-        const proposedShift = {
-          start_time: `${day.dateStr}T${startTimeStr}`,
-          end_time:   `${crossesMidnight ? nextDayStr : day.dateStr}T${endTimeStr}`,
-        };
-        const touchesNight = shiftTouchesNight(proposedShift);
-
-        // Filtrar candidatos
-        const candidates = dayPool
-          .filter(emp => {
-            if (touchesNight && !canWorkNight(emp)) return false;
-            if (!touchesNight && !canWorkDay(emp)) return false;
-            if (isBlocked(emp.id, day.dateStr)) return false;
-            if (restDays.has(`${emp.id}_${day.dateStr}`)) return false;
-            if (hasShiftOnDay(emp.id, day.dateStr)) return false;
-
-            const maxWeek = getMaxHoursFor(emp);
-            if (getWeeklyHours(emp.id, day.date) + shiftHrs > maxWeek) return false;
-            const maxDay = getMaxDailyHours(emp);
-            if (getDailyHours(emp.id, day.dateStr) + shiftHrs > maxDay) return false;
-            if (touchesNight && getWeeklyNightHours(emp.id, day.date) + shiftHrs * 0.7 > getMaxNightHours(emp))
-              return false;
-
-            const lastEnd = getLastShiftEndTime(emp.id, day.dateStr);
-            if (lastEnd) {
-              const gapHrs = (new Date(`${day.dateStr}T${startTimeStr}`) - new Date(lastEnd)) / 3600000;
-              if (gapHrs < limits.minHorasEntreJornadas) return false;
+          const scored = [];
+          for (const start of allCandidateStarts) {
+            const tope = Math.min(start + maxSlots, dayWindowEnd);
+            let score = 0;
+            for (let s = start; s < tope; s++) {
+              score += defVec[s];
+              if (covVec[s] >= effDem(s)) score -= 0.3;
             }
-            return true;
-          })
-          .sort((a, b) => {
-            // Estrategia: COVERAGE_FIRST prioriza llenar demanda,
-            //              BALANCED prioriza igualar horas,
-            //              EMPLOYEE_PREF prioriza respetar preferencias.
-            if (estrategia === 'EMPLOYEE_PREF') {
-              // Cualquiera con preferencia específica gana
-              if (a.solo_nocturno !== b.solo_nocturno) return a.solo_nocturno ? -1 : 1;
-              if (a.solo_diurno !== b.solo_diurno)     return a.solo_diurno ? -1 : 1;
+            // Bonus por start canónico (preferir horarios naturales sobre snapSlots intermedios)
+            if (canonicalSlots.includes(start)) score += 0.5;
+            if (start < 9 * slotsPorHora && earlyDeficit > 0) score += earlyDeficit * 0.5;
+            if (start >= 16 * slotsPorHora && lateDeficit > 0) score += lateDeficit * 0.5;
+            if (score > 0) scored.push({ start, score });
+          }
+          scored.sort((a, b) => b.score - a.score);
+
+          // Colocar en el mejor start FACTIBLE. No romper al primero sin
+          // candidato: probar los siguientes y, si el turno toca la franja
+          // nocturna y no hay quien la cubra, truncarlo al borde (solo-diurno).
+          const nightStartLegal = NOCTURNA_INICIO_H * slotsPorHora;
+          let placed = false;
+          for (const { start } of scored) {
+            const tope = Math.min(start + maxSlots, dayWindowEnd);
+            let duration = minSlots;
+            for (let s = start + minSlots; s < tope; s += snapSlots) {
+              let def = 0;
+              for (let k = 0; k < snapSlots && (s + k) < tope; k++) def += defVec[s + k];
+              if (def > 0) duration = s - start + snapSlots;
             }
-            // En todos los casos, desempata por horas acumuladas
-            return getWeeklyHours(a.id, day.date) - getWeeklyHours(b.id, day.date);
-          });
+            duration = Math.max(minSlots, Math.min(duration, tope - start));
 
-        if (candidates.length === 0) break; // No hay más candidatos para este día
+            const variants = [duration];
+            if (start + duration > nightStartLegal && start < nightStartLegal && (nightStartLegal - start) >= minSlots) {
+              variants.push(nightStartLegal - start); // versión que NO toca la noche
+            }
 
-        // Si rotar_slots está activo, en EMPLOYEE_PREF cogemos al último
-        // que cubrió un slot similar (más equitativo en el día).
-        // Por simplicidad, cogemos al primero del sort.
-        const candidate = candidates[0];
+            for (const dur of variants) {
+              const startTimeStr = slotToTime(start, slotsPorHora);
+              const endTimeStr = slotToTime(start + dur, slotsPorHora);
+              const shiftHrs = dur / slotsPorHora;
+              const proposed = {
+                start_time: `${day.dateStr}T${startTimeStr}`,
+                end_time: `${day.dateStr}T${endTimeStr}`,
+              };
+              const nightHrs = shiftNightHours(proposed);
+              const touchesNight = nightHrs > 0;
+              const candidate = pickCandidate(dayPool, {
+                startDateStr: day.dateStr, startDateObj: day.date, startTimeStr,
+                shiftHrs, nightHrs, touchesNight,
+              }, day.date);
+              if (!candidate) continue;
 
-        generatedShifts.push({
-          employee_id: candidate.id,
-          template_id: null,
-          start_time: proposedShift.start_time,
-          end_time: proposedShift.end_time,
-          shift_type: 'custom',
-          periodo: periodoStr,
-          break_minutes: shiftHrs >= 6 ? 30 : 0,
-          shift_kind: touchesNight ? 'NOCTURNO' : 'STANDARD',
-          bloque: 1,
-          disponibilidad: false,
-          recargo_porcentaje: 0,
-          observaciones: `Auto-asignado v4 · Slot ${startTimeStr}-${endTimeStr}${touchesNight ? ' (cruza horario nocturno)' : ''} · ${estrategia}`,
-        });
-
-        changed = true;
-        // Continuar intentando colocar más turnos en este día
-        // (el bucle while interno sigue). El bucle while externo reevaluará
-        // déficit al inicio de cada iteración.
+              generatedShifts.push({
+                employee_id: candidate.id,
+                template_id: null,
+                start_time: proposed.start_time,
+                end_time: proposed.end_time,
+                shift_type: 'custom',
+                periodo: periodoStr,
+                break_minutes: shiftHrs >= 6 ? 30 : 0,
+                shift_kind: touchesNight ? 'NOCTURNO' : 'STANDARD',
+                bloque: 1,
+                disponibilidad: false,
+                recargo_porcentaje: 0,
+                observaciones: `Auto-asignado v4.1 · Slot ${startTimeStr}-${endTimeStr}${touchesNight ? ' (cruza horario nocturno)' : ''} · ${estrategia}`,
+              });
+              changed = true;
+              placed = true;
+              break;
+            }
+            if (placed) break;
+          }
+          if (!placed) break;
         }
       }
     }
   }
 
-  // ── FASE 3: Refill con templates (PARTIDO, ROTATIVO, etc.) ──────────
-  if (templates.length > 0) {
+  // ── FASE 3: Refill con templates (PARTIDO, ROTATIVO, etc.) ───────────
+  if (Array.isArray(templates) && templates.length > 0) {
     let tplChanged = true;
     let tplIter = 0;
-    while (tplChanged && tplIter < employees.length * days.length) {
+    const MAX_TPL_ITER = employees.length * days.length + 10;
+    while (tplChanged && tplIter < MAX_TPL_ITER) {
       tplChanged = false;
       tplIter++;
       for (const day of days) {
         for (const tpl of templates) {
           if (!tpl.hora_inicio || !tpl.hora_fin) continue;
           if (tpl.shift_kind === 'PARTIDO' && !permitePartidos) continue;
-          if (tpl.shift_kind === 'NOCTURNO' && !canWorkDay) {} // mixed puede
 
           const covVec = getCoverageVector(day.dateStr);
-          const demVec = dayDemandCache[day.dateStr];
+          const demVec = getDemandVecFor(day.date);
           const tplStart = timeToSlot(tpl.hora_inicio, slotsPorHora);
-          const tplEnd   = tpl.cruza_medianoche ? slotsPerDay : timeToSlot(tpl.hora_fin, slotsPorHora);
+          const tplEnd = tpl.cruza_medianoche ? slotsPerDay : timeToSlot(tpl.hora_fin, slotsPorHora);
 
-          let totalDeficit = demVec.slice(tplStart, tplEnd)
-            .reduce((s, d, i) => s + Math.max(0, d - covVec[tplStart + i]), 0);
+          let totalDeficit = 0;
+          for (let s = tplStart; s < tplEnd; s++) totalDeficit += Math.max(0, demVec[s] - covVec[s]);
           if (tpl.shift_kind === 'PARTIDO' && tpl.hora_inicio_2 && tpl.hora_fin_2) {
-            const tpl2Start = timeToSlot(tpl.hora_inicio_2, slotsPorHora);
-            const tpl2End   = timeToSlot(tpl.hora_fin_2, slotsPorHora);
-            totalDeficit += demVec.slice(tpl2Start, tpl2End)
-              .reduce((s, d, i) => s + Math.max(0, d - covVec[tpl2Start + i]), 0);
+            const t2s = timeToSlot(tpl.hora_inicio_2, slotsPorHora);
+            const t2e = timeToSlot(tpl.hora_fin_2, slotsPorHora);
+            for (let s = t2s; s < t2e; s++) totalDeficit += Math.max(0, demVec[s] - covVec[s]);
           }
           if (totalDeficit <= 0) continue;
 
-          // Calcular horas totales del template
           let tplHrs = (tplEnd - tplStart) / slotsPorHora;
           if (tpl.shift_kind === 'PARTIDO' && tpl.hora_inicio_2 && tpl.hora_fin_2) {
             tplHrs += (timeToSlot(tpl.hora_fin_2, slotsPorHora) - timeToSlot(tpl.hora_inicio_2, slotsPorHora)) / slotsPorHora;
@@ -920,29 +931,17 @@ export function generateAutomaticShifts({
           if (tplHrs < limits.minHorasTurno) continue;
 
           const tplIsNight = shiftPagaNocturno(tpl);
-
-          // Pool: cualquier empleado que pueda trabajar este template
-          const candidatePool = employees.filter(e => {
-            if (isBlocked(e.id, day.dateStr)) return false;
-            if (restDays.has(`${e.id}_${day.dateStr}`)) return false;
-            if (hasShiftOnDay(e.id, day.dateStr)) return false;
-            if (tplIsNight && !canWorkNight(e)) return false;
-            if (!tplIsNight && !canWorkDay(e)) return false;
-
-            const maxWeek = getMaxHoursFor(e);
-            if (getWeeklyHours(e.id, day.date) + tplHrs > maxWeek) return false;
-            if (tplIsNight && getWeeklyNightHours(e.id, day.date) + tplHrs > getMaxNightHours(e)) return false;
-            return true;
-          });
-
-          const candidate = [...candidatePool].sort((a, b) =>
-            getWeeklyHours(a.id, day.date) - getWeeklyHours(b.id, day.date)
-          )[0];
-
-          if (!candidate) continue;
-
           const nextDay = dateToStr(addDays(day.date, 1));
           const blocks = expandTemplateToShifts(tpl, day.dateStr, nextDay);
+          const nightHrs = blocks.reduce((a, b) => a + shiftNightHours(b), 0);
+
+          const candidate = pickCandidate(employees, {
+            startDateStr: day.dateStr, startDateObj: day.date,
+            startTimeStr: tpl.hora_inicio, shiftHrs: tplHrs, nightHrs,
+            touchesNight: tplIsNight || nightHrs > 0,
+          }, day.date);
+          if (!candidate) continue;
+
           blocks.forEach(b => {
             generatedShifts.push({
               employee_id: candidate.id,
@@ -956,40 +955,119 @@ export function generateAutomaticShifts({
               bloque: b.bloque,
               disponibilidad: b.disponibilidad,
               recargo_porcentaje: b.recargo_porcentaje,
-              observaciones: `Auto-asignado v4 · ${tpl.nombre} (${tpl.shift_kind})`,
+              observaciones: `Auto-asignado v4.1 · ${tpl.nombre} (${tpl.shift_kind})`,
             });
           });
           tplChanged = true;
-          break;
         }
-        if (tplChanged) break;
       }
     }
   }
 
-  // ── FASE 4: Balanceo de carga semanal ───────────────────────────────
-  // Si está activado, intenta mover turnos cortos entre empleados con
-  // menos horas hacia empleados con más horas (para que todos queden
-  // cerca de la media).
+  // ── FASE 4: Balanceo de carga SEMANAL (reasignación real) ────────────
+  // v4.2: En lugar de solo advertir, intenta MOVER turnos de empleados
+  // sobrecargados a empleados subcargados compatibles. Si no puede mover,
+  // emite advertencia como antes.
   if (balancearCarga && generatedShifts.length > 0) {
-    const avgHours = generatedShifts.reduce((a, s) => a + shiftHours(s), 0) / employees.length;
-    const maxDiff = 4; // horas de diferencia máxima permitida
+    const maxDiff = 4;      // tolerancia en horas sobre la media semanal
+    const MAX_REBALANCE_PASSES = 3; // máx intentos de rebalanceo por semana
 
-    employees.forEach(emp => {
-      const wHours = getWeeklyHours(emp.id, days[0].date);
-      if (wHours > avgHours + maxDiff) {
-        // Tiene más horas que la media + tolerancia
-        // (Aquí iría lógica de mover turnos; por ahora solo advertimos)
-        warnings.push(`${emp.nombre || 'Empleado'}: ${wHours.toFixed(1)}h acumuladas (media ${avgHours.toFixed(1)}h). Considera reasignar manualmente.`);
+    const weekKeys = new Set();
+    days.forEach(day => weekKeys.add(dateToStr(weekBounds(day.date).monday)));
+
+    weekKeys.forEach(weekKey => {
+      const refDate = parseLocalDate(weekKey);
+      const { monday, sunday } = weekBounds(refDate);
+
+      for (let pass = 0; pass < MAX_REBALANCE_PASSES; pass++) {
+        const horasPorEmp = employees
+          .map(emp => ({ emp, h: getWeeklyHours(emp.id, refDate) }))
+          .filter(x => x.h > 0)
+          .sort((a, b) => b.h - a.h); // mayor a menor
+
+        if (horasPorEmp.length < 2) break;
+        const avg = horasPorEmp.reduce((a, x) => a + x.h, 0) / horasPorEmp.length;
+
+        const sobrecargados = horasPorEmp.filter(x => x.h > avg + maxDiff);
+        if (sobrecargados.length === 0) break; // ya balanceado
+
+        let huboCambio = false;
+
+        for (const { emp: empSobre } of sobrecargados) {
+          // Buscar turnos generados de este empleado en esta semana
+          const turnosSobre = generatedShifts.filter(s => {
+            if (s.employee_id !== empSobre.id) return false;
+            const sd = new Date(s.start_time);
+            return sd >= monday && sd <= sunday;
+          });
+
+          for (const turno of turnosSobre) {
+            // Calcular horas del turno
+            const turnoHrs = shiftHours(turno);
+            const turnoIsNight = shiftNightHours(turno) > 0;
+            const turnoDateStr = String(turno.start_time).slice(0, 10);
+            const turnoStartStr = String(turno.start_time).slice(11, 16);
+
+            // Buscar receptor: empleado con menos horas, que pueda hacer este turno
+            const subcargados = employees
+              .filter(e => e.id !== empSobre.id)
+              .map(e => ({ e, h: getWeeklyHours(e.id, refDate) }))
+              .filter(({ h }) => h < avg - 1) // solo si realmente tiene menos horas
+              .sort((a, b) => a.h - b.h);    // menor primero
+
+            let receptor = null;
+            for (const { e } of subcargados) {
+              // Verificar que el receptor pueda hacer este turno
+              if (!employeeEligible(e, {
+                startDateStr: turnoDateStr,
+                startDateObj: new Date(turno.start_time),
+                startTimeStr: turnoStartStr,
+                shiftHrs: turnoHrs,
+                nightHrs: shiftNightHours(turno),
+                touchesNight: turnoIsNight,
+              })) continue;
+              receptor = e;
+              break;
+            }
+
+            if (receptor) {
+              // Reasignar: cambiar employee_id del turno generado
+              turno.employee_id = receptor.id;
+              turno.observaciones = (turno.observaciones || '') +
+                ` [Rebalanceado desde ${empSobre.nombre || empSobre.id} → ${receptor.nombre || receptor.id}]`;
+              huboCambio = true;
+              break; // un turno por empleado por pase, para no sobrecorregir
+            }
+          }
+          if (huboCambio) break; // reiniciar el pase con nuevas horas calculadas
+        }
+
+        if (!huboCambio) break; // no hubo progreso, salir
       }
+
+      // Advertir los casos que NO se pudieron rebalancear
+      const horasFinales = employees
+        .map(emp => ({ emp, h: getWeeklyHours(emp.id, refDate) }))
+        .filter(x => x.h > 0);
+      if (horasFinales.length === 0) return;
+      const avgFinal = horasFinales.reduce((a, x) => a + x.h, 0) / horasFinales.length;
+      horasFinales
+        .filter(x => x.h > avgFinal + maxDiff)
+        .forEach(x => {
+          warnings.push(
+            `Semana ${weekKey} · ${x.emp.nombre || 'Empleado'}: ${x.h.toFixed(1)}h ` +
+            `(media ${avgFinal.toFixed(1)}h) — desbalance residual tras rebalanceo automático.`
+          );
+        });
     });
   }
 
-  // ── Advertencias finales ─────────────────────────────────────────────
+  // ── Advertencias finales de cobertura ────────────────────────────────
   days.forEach(day => {
     const covVec = getCoverageVector(day.dateStr);
-    const demVec = dayDemandCache[day.dateStr];
-    const totalDef = demVec.reduce((s, d, i) => s + Math.max(0, d - covVec[i]), 0);
+    const demVec = getDemandVecFor(day.date);
+    let totalDef = 0;
+    for (let s = 0; s < slotsPerDay; s++) totalDef += Math.max(0, demVec[s] - covVec[s]);
     if (totalDef > 0) {
       warnings.push(`${day.dateStr}: déficit de ${Math.round(totalDef / slotsPorHora)} horas-persona sin cubrir.`);
     }

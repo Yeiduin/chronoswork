@@ -165,31 +165,178 @@ function TemplateModal({ template, areaId, onClose, onSave }) {
   );
 }
 
-// ─── Panel de empleados del área ────────────────────────────────────────────
+// ── Helpers de jornada para UI ──────────────────────────────────────
+function getJornadaBadge(emp) {
+  if (emp.solo_nocturno || emp.jornada_preferida === 'NOCTURNA') {
+    return { icon: '🌙', label: 'Nocturno', color: '#6366f1', bg: 'rgba(99,102,241,0.15)' };
+  }
+  if (emp.solo_diurno || emp.jornada_preferida === 'DIURNA') {
+    return { icon: '☀️', label: 'Diurno', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' };
+  }
+  if (emp.jornada_preferida === 'MIXTA') {
+    return { icon: '🌓', label: 'Mixto', color: '#10b981', bg: 'rgba(16,185,129,0.15)' };
+  }
+  return { icon: '🔄', label: 'Cualquiera', color: '#94a3b8', bg: 'rgba(148,163,184,0.15)' };
+}
+
+// ── Panel de empleados del área ──────────────────────────────────
 function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove }) {
   const areaEmployeeIds = area.area_employees?.map(ae => ae.employee_id) || [];
   const areaEmps = area.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
   const unassigned = allEmployees.filter(e => !areaEmployeeIds.includes(e.id));
 
+  // Contadores de jornada para visibilidad rápida
+  const nocturnoCount = areaEmps.filter(e => e.solo_nocturno || e.jornada_preferida === 'NOCTURNA').length;
+  const diurnoCount = areaEmps.filter(e => e.solo_diurno || e.jornada_preferida === 'DIURNA').length;
+  const mixtoCount = areaEmps.filter(e => e.jornada_preferida === 'MIXTA').length;
+  const cualquieraCount = areaEmps.length - nocturnoCount - diurnoCount - mixtoCount;
+  const is247 = area.modo_operacion === '24_7' || area.modo_operacion === '24_7_NIGHT_SPLIT';
+
+  // Cambiar jornada preferida de un empleado directamente desde áreas
+  const [updatingEmp, setUpdatingEmp] = useState(null);
+  const handleJornadaChange = async (empId, nuevaJornada) => {
+    setUpdatingEmp(empId);
+    try {
+      await supabase
+        .from('employees')
+        .update({
+          jornada_preferida: nuevaJornada,
+          solo_diurno:   nuevaJornada === 'DIURNA',
+          solo_nocturno: nuevaJornada === 'NOCTURNA',
+        })
+        .eq('id', empId);
+      // Refrescar la página de áreas para actualizar badges
+      window.location.reload();
+    } catch (e) {
+      console.error('Error actualizando jornada:', e);
+    } finally {
+      setUpdatingEmp(null);
+    }
+  };
+
   return (
     <div>
-      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '0.5rem', fontWeight: 600 }}>
-        👥 COLABORADORES ({areaEmps.length})
-      </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem' }}>
-        {areaEmps.map(emp => (
-          <div key={emp.id} style={{
-            display: 'flex', alignItems: 'center', gap: '0.4rem',
-            background: area.color + '20', border: `1px solid ${area.color}50`,
-            borderRadius: 20, padding: '0.25rem 0.75rem', fontSize: '0.8rem',
-          }}>
-            <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{emp.nombre}</span>
-            <button onClick={() => onRemove(emp.id)} style={{
-              background: 'none', border: 'none', color: 'var(--text-muted)',
-              cursor: 'pointer', fontSize: '0.9rem', padding: 0, lineHeight: 1,
-            }}>×</button>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+        <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+          👥 COLABORADORES ({areaEmps.length})
+        </div>
+        {/* Contador de jornadas */}
+        {areaEmps.length > 0 && (
+          <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+            {nocturnoCount > 0 && (
+              <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 4, background: 'rgba(99,102,241,0.15)', color: '#6366f1', fontWeight: 700 }}>
+                🌙 {nocturnoCount}
+              </span>
+            )}
+            {diurnoCount > 0 && (
+              <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 4, background: 'rgba(245,158,11,0.15)', color: '#d97706', fontWeight: 700 }}>
+                ☀️ {diurnoCount}
+              </span>
+            )}
+            {mixtoCount > 0 && (
+              <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 4, background: 'rgba(16,185,129,0.15)', color: '#059669', fontWeight: 700 }}>
+                🌓 {mixtoCount}
+              </span>
+            )}
+            {cualquieraCount > 0 && (
+              <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#64748b', fontWeight: 700 }}>
+                🔄 {cualquieraCount}
+              </span>
+            )}
           </div>
-        ))}
+        )}
+      </div>
+
+      {/* Alerta si área 24/7 sin empleados nocturnos */}
+      {is247 && areaEmps.length > 0 && nocturnoCount === 0 && mixtoCount === 0 && (
+        <div style={{
+          marginBottom: '0.6rem', padding: '0.5rem 0.75rem',
+          background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
+          borderRadius: 6, fontSize: '0.72rem', color: '#fca5a5',
+        }}>
+          ⚠️ Área 24/7 sin empleados nocturnos. Usa los botones 🌙 / 🌓 para asignar jornada a cada colaborador.
+        </div>
+      )}
+
+      {/* Hint para el usuario en modo 24/7 */}
+      {is247 && areaEmps.length > 0 && (
+        <div style={{
+          marginBottom: '0.6rem', padding: '0.4rem 0.75rem',
+          background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)',
+          borderRadius: 6, fontSize: '0.7rem', color: 'var(--text-muted)',
+        }}>
+          💡 Haz clic en 🌙 / 🌓 / ☀️ de cada colaborador para definir si trabaja de noche, mixto o solo de día.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '0.75rem' }}>
+        {areaEmps.map(emp => {
+          const badge = getJornadaBadge(emp);
+          const jornada = emp.jornada_preferida || 'CUALQUIERA';
+          const isUpdating = updatingEmp === emp.id;
+          return (
+            <div key={emp.id} style={{
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+              background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
+              borderRadius: 8, padding: '0.4rem 0.6rem',
+            }}>
+              {/* Barra de color del área */}
+              <div style={{ width: 4, height: 28, borderRadius: 2, background: area.color, flexShrink: 0 }} />
+
+              {/* Nombre */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {emp.nombre}
+                </div>
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{emp.cargo}</div>
+              </div>
+
+              {/* Toggles de jornada — solo en modo 24/7 */}
+              {is247 && (
+                <div style={{ display: 'flex', gap: '0.2rem', flexShrink: 0 }}>
+                  {[['NOCTURNA','🌙','rgba(99,102,241,0.2)','#6366f1'],
+                    ['MIXTA','🌓','rgba(16,185,129,0.2)','#059669'],
+                    ['DIURNA','☀️','rgba(245,158,11,0.2)','#d97706'],
+                  ].map(([tipo, icon, bg, color]) => (
+                    <button
+                      key={tipo}
+                      title={`${icon} ${tipo}`}
+                      disabled={isUpdating}
+                      onClick={() => handleJornadaChange(emp.id, jornada === tipo ? 'CUALQUIERA' : tipo)}
+                      style={{
+                        fontSize: '0.78rem', padding: '0.2rem 0.35rem', borderRadius: 6,
+                        border: `1.5px solid ${jornada === tipo ? color : 'var(--border-subtle)'}`,
+                        background: jornada === tipo ? bg : 'transparent',
+                        cursor: isUpdating ? 'not-allowed' : 'pointer',
+                        opacity: isUpdating ? 0.5 : 1,
+                        transition: 'all 0.15s',
+                        transform: jornada === tipo ? 'scale(1.1)' : 'scale(1)',
+                      }}
+                    >
+                      {icon}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Badge jornada (modo no-247) */}
+              {!is247 && (
+                <span title={`Jornada: ${badge.label}`} style={{
+                  fontSize: '0.7rem', padding: '0.1rem 0.35rem', borderRadius: 4,
+                  background: badge.bg, color: badge.color, fontWeight: 700, flexShrink: 0,
+                }}>
+                  {badge.icon}
+                </span>
+              )}
+
+              {/* Quitar empleado del área */}
+              <button onClick={() => onRemove(emp.id)} style={{
+                background: 'none', border: 'none', color: 'var(--text-muted)',
+                cursor: 'pointer', fontSize: '1rem', padding: '0 0.1rem', lineHeight: 1, flexShrink: 0,
+              }}>×</button>
+            </div>
+          );
+        })}
         {areaEmps.length === 0 && (
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
             Sin colaboradores asignados. Regístralos en Personal y asígnalos aquí.
@@ -301,6 +448,64 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
     const map = { STANDARD: '⏰', PARTIDO: '⏸️', ROTATIVO: '🔄', NOCTURNO: '🌙', DISPONIBILIDAD: '🛎️', CUSTOM: '🛠️' };
     return map[kind] || '⏰';
   };
+
+  const is247Area = area.modo_operacion === '24_7' || area.modo_operacion === '24_7_NIGHT_SPLIT';
+
+  // En áreas 24/7: el algoritmo genera turnos dinámicos — las franjas horarias
+  // son opcionales (se usan como guia de color en la grilla pero no limitan la asignación)
+  if (is247Area) {
+    return (
+      <div style={{ marginTop: '1.25rem' }}>
+        <div style={{
+          padding: '0.875rem 1rem',
+          background: 'rgba(245,158,11,0.06)',
+          border: '1px solid rgba(245,158,11,0.25)',
+          borderRadius: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+            <span style={{ fontSize: '1.4rem', flexShrink: 0 }}>🤖</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#d97706', marginBottom: '0.4rem' }}>
+                Asignación dinámica (Algoritmo v4)
+              </div>
+              <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+                Esta área opera en modo <strong>24/7</strong>. El algoritmo genera los turnos automáticamente
+                basado en la <strong>curva de demanda horaria</strong> y la <strong>jornada preferida</strong> de cada colaborador.
+                No es necesario definir franjas manualmente.
+              </div>
+              <div style={{ marginTop: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div style={{ fontSize: '0.7rem', padding: '0.25rem 0.6rem', borderRadius: 6, background: 'rgba(99,102,241,0.12)', color: '#818cf8', fontWeight: 600 }}>
+                  🌙 Nocturnos → 22:00 a 06:00
+                </div>
+                <div style={{ fontSize: '0.7rem', padding: '0.25rem 0.6rem', borderRadius: 6, background: 'rgba(245,158,11,0.12)', color: '#fbbf24', fontWeight: 600 }}>
+                  ☀️ Diurnos → 06:00 a 22:00
+                </div>
+                <div style={{ fontSize: '0.7rem', padding: '0.25rem 0.6rem', borderRadius: 6, background: 'rgba(16,185,129,0.12)', color: '#34d399', fontWeight: 600 }}>
+                  🌓 Mixtos → Ambas franjas según déficit
+                </div>
+              </div>
+              {templates.length > 0 && (
+                <div style={{ marginTop: '0.75rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                  Tienes {templates.length} franja{templates.length !== 1 ? 's' : ''} configurada{templates.length !== 1 ? 's' : ''} — se usarán
+                  como referencia de color en la vista de grilla, pero el algoritmo puede generar turnos fuera de ellas.
+                </div>
+              )}
+              <button
+                className="cw-btn cw-btn--primary"
+                style={{ marginTop: '0.75rem', fontSize: '0.8rem', padding: '0.45rem 1rem' }}
+                disabled={autoAssignLoading}
+                onClick={() => onAutoAssign(area)}
+              >
+                {autoAssignLoading
+                  ? <><span className="cw-spinner cw-spinner--sm" /> Asignando...</>
+                  : <>🤖 Auto-asignar turnos</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ marginTop: '1.25rem' }}>
@@ -625,7 +830,11 @@ export default function AreasPage() {
         }
       }
 
-      const nightShiftConfig = (area.modo_operacion === '24_7' && area.night_shift_enabled)
+      // v4.2: Activar config nocturna para CUALQUIER modo 24/7, igual que
+      // SchedulingPage. Antes se requireía night_shift_enabled===true, lo que
+      // dejaba áreas en modo 24_7 sin cobertura nocturna si el checkbox no estaba marcado.
+      const areaEs247 = area.modo_operacion === '24_7' || area.modo_operacion === '24_7_NIGHT_SPLIT';
+      const nightShiftConfig = areaEs247
         ? {
             enabled: true,
             start: area.night_shift_start || '22:00',
@@ -640,7 +849,7 @@ export default function AreasPage() {
         absences: areaAbsences,
         existingShifts: areaShifts,
         year, month,
-        diasTrabajo: area.modo_operacion === '24_7' ? [1, 2, 3, 4, 5, 6, 7] : (area.dias_trabajo || [1, 2, 3, 4, 5]),
+        diasTrabajo: areaEs247 ? [1, 2, 3, 4, 5, 6, 7] : (area.dias_trabajo || [1, 2, 3, 4, 5]),
         strategyOptions,
         diasToProcess: processedDays,
         modoOperacion: area.modo_operacion || 'OFICINA',

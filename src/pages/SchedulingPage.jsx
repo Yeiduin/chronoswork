@@ -696,6 +696,9 @@ export default function SchedulingPage() {
           continue;
         }
 
+        // ¿El área opera 24/7? (incluye el modo call-center con noche dedicada)
+        const areaEs247 = area.modo_operacion === '24_7' || area.modo_operacion === '24_7_NIGHT_SPLIT';
+
         // Cargar plantillas del área
         const { data: templates, error: tplErr } = await supabase
           .from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
@@ -705,7 +708,9 @@ export default function SchedulingPage() {
           continue;
         }
 
-        if (!templates || templates.length === 0) {
+        // En 24/7 el algoritmo genera turnos dinámicos sin necesidad de franjas.
+        // Solo OFICINA exige al menos una franja configurada.
+        if (!areaEs247 && (!templates || templates.length === 0)) {
           erroresValidacion.push(`${area.nombre}: sin franjas horarias. Agrega al menos una en Áreas → Franjas.`);
           continue;
         }
@@ -733,8 +738,10 @@ export default function SchedulingPage() {
           }
         }
 
-        // Construir config nocturna desde los datos del área
-        const nightShiftConfig = (area.modo_operacion === '24_7' && area.night_shift_enabled)
+        // Construir config nocturna desde los datos del área. En cualquier
+        // modo 24/7 hay franja nocturna (el algoritmo la cubre aunque
+        // night_shift_enabled no esté marcado explícitamente).
+        const nightShiftConfig = areaEs247
           ? {
               enabled:     true,
               start:       area.night_shift_start  || '22:00',
@@ -751,7 +758,7 @@ export default function SchedulingPage() {
             absences: absences.filter(a => empIds.includes(a.employee_id)),
             existingShifts: shifts.filter(s => empIds.includes(s.employee_id)),
             year: anio, month: mes,
-            diasTrabajo: area.modo_operacion === '24_7'
+            diasTrabajo: areaEs247
               ? [1, 2, 3, 4, 5, 6, 7]
               : (area.dias_trabajo || [1, 2, 3, 4, 5]),
             strategyOptions,
@@ -1186,9 +1193,21 @@ export default function SchedulingPage() {
                             <div style={{ width: 7, height: 32, borderRadius: 4, background: empArea.color, flexShrink: 0 }} />
                           )}
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div className="shift-grid__employee-name" title={emp.nombre}
-                              style={{ fontSize: '0.8rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {emp.nombre}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                              {/* Badge de jornada preferida — visibilidad rápida para 24/7 */}
+                              {(emp.solo_nocturno || emp.jornada_preferida === 'NOCTURNA') && (
+                                <span title="Turno Nocturno" style={{ fontSize: '0.6rem', flexShrink: 0 }}>🌙</span>
+                              )}
+                              {(emp.solo_diurno || emp.jornada_preferida === 'DIURNA') && (
+                                <span title="Turno Diurno" style={{ fontSize: '0.6rem', flexShrink: 0 }}>☀️</span>
+                              )}
+                              {(!emp.solo_nocturno && !emp.solo_diurno && emp.jornada_preferida === 'MIXTA') && (
+                                <span title="Turno Mixto" style={{ fontSize: '0.6rem', flexShrink: 0 }}>🌓</span>
+                              )}
+                              <div className="shift-grid__employee-name" title={emp.nombre}
+                                style={{ fontSize: '0.8rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {emp.nombre}
+                              </div>
                             </div>
                             <div className="shift-grid__employee-cargo" style={{ fontSize: '0.68rem' }}>{emp.cargo}</div>
                             {/* Barra de horas */}
@@ -1197,6 +1216,7 @@ export default function SchedulingPage() {
                               <div style={{ width: `${porcentajeHoras}%`, height: '100%', background: horasColor, borderRadius: 2, transition: 'width 0.3s' }} />
                             </div>
                           </div>
+
                         </div>
                       </td>
 

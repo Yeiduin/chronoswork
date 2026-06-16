@@ -217,7 +217,7 @@ export const SECTORES = [
   { value: 'TECNOLOGIA', label: 'Tecnología / Software', icono: '💻',
     defaults: { modo: 'OFICINA', contrato: 'INDEFINIDO', salario: 20000 } },
   { value: 'CALL_CENTER', label: 'Call Center / BPO', icono: '📞',
-    defaults: { modo: 'OFICINA', contrato: 'INDEFINIDO', salario: 13000 } },
+    defaults: { modo: '24_7_NIGHT_SPLIT', contrato: 'INDEFINIDO', salario: 13000 } },
   { value: 'OTRO', label: 'Otro', icono: '🔹',
     defaults: { modo: 'OFICINA', contrato: 'INDEFINIDO', salario: 12500 } },
 ];

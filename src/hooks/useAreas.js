@@ -20,7 +20,13 @@ export function useAreas() {
           area_employees(
             id,
             employee_id,
-            employees(id, nombre, cedula, cargo, valor_hora, tipo_contrato, es_especial)
+            employees(
+              id, nombre, cedula, cargo, valor_hora, tipo_contrato, es_especial,
+              activo, horas_semanales_contrato, dias_descanso_semana,
+              jornada_preferida, solo_diurno, solo_nocturno, permite_partido,
+              horas_max_diarias, horas_nocturnas_max_semana, horas_max_semana,
+              dias_descanso_fijos, turno_predeterminado_id
+            )
           )
         `)
         .eq('tenant_id', tenant.id)
@@ -37,9 +43,34 @@ export function useAreas() {
 
   useEffect(() => { fetchAreas(); }, [fetchAreas]);
 
+  // ─── Helper: sanitizar campos numéricos vacíos → null ──────────────────
+  // Si mandamos "" a una columna DECIMAL/INT, Postgres falla con
+  // "invalid input syntax for type numeric".
+  const sanitizeNumeric = (raw) => {
+    const NUMERIC_FIELDS = [
+      'min_empleados_noche', 'min_horas_turno_override', 'max_horas_turno_override',
+      'slots_por_hora', 'snap_turnos_minutos', 'valor_hora_default',
+      'duracion_jornada_horas', 'dias_descanso', 'dias_descanso_default',
+      'horas_extras_max_dia', 'horas_extras_max_semana',
+      'descanso_min_entre_jornadas', 'dotacion_periodicidad_meses',
+      'break_minutos', 'nivel_riesgo_arl',
+    ];
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (NUMERIC_FIELDS.includes(k)) {
+        const empty = v === '' || v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+        out[k] = empty ? null : (isNaN(Number(v)) ? null : Number(v));
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  };
+
   // ─── Crear área con TODOS los campos laborales ──────────────────────────
   const createArea = async (areaData) => {
-    const { franjas_iniciales, ...dataToInsert } = areaData;
+    const { franjas_iniciales, ...raw } = areaData;
+    const dataToInsert = sanitizeNumeric(raw);
     // 1. Insertar el área
     const { data, error } = await supabase
       .from('areas')
@@ -87,7 +118,8 @@ export function useAreas() {
 
   // ─── Actualizar área ─────────────────────────────────────────────────────
   const updateArea = async (id, updates) => {
-    const { franjas_iniciales, ...dataToUpdate } = updates;
+    const { franjas_iniciales, ...raw } = updates;
+    const dataToUpdate = sanitizeNumeric(raw);
     const { data, error } = await supabase
       .from('areas')
       .update(dataToUpdate)

@@ -117,7 +117,9 @@ function buildDemandSlots() {
 
 // ── 3. Setup: 7 días (una semana completa) ───────────────────────────────
 function buildDias() {
-  const start = new Date('2026-06-15'); // lunes
+  // Fecha LOCAL (no new Date('2026-06-15') que se parsea como UTC y desfasa
+  // un día en zonas horarias negativas como Colombia UTC-5).
+  const start = new Date(2026, 5, 15); // lunes 15-jun-2026
   const days = [];
   for (let i = 0; i < 7; i++) {
     days.push(addDays(start, i));
@@ -223,15 +225,22 @@ const tooLong  = allDurations.filter(h => h > 9).length;
 assert(tooShort === 0, `Ningún turno < 4h (encontrados: ${tooShort})`);
 assert(tooLong === 0,  `Ningún turno > 9h (encontrados: ${tooLong})`);
 
-// ── F. Respeto del 42h/sem por empleado ──────────────────────────────────
+// ── F. Respeto del 42h/sem por empleado (POR SEMANA ISO, lun-dom) ─────────
 console.log('\nF. Horas semanales por empleado:');
-const hoursByEmp = {};
+const hoursByEmp = {};   // total del período (solo para la distribución)
+const hoursByEmpWeek = {}; // clave: emp|lunesISO  → horas de esa semana
 shifts.forEach(s => {
   const hrs = (new Date(s.end_time) - new Date(s.start_time)) / 3600000 - (s.break_minutes || 0) / 60;
   hoursByEmp[s.employee_id] = (hoursByEmp[s.employee_id] || 0) + hrs;
+  const sd = new Date(s.start_time);
+  const dow = sd.getDay() || 7;
+  const mon = new Date(sd);
+  mon.setDate(mon.getDate() - dow + 1);
+  const wkKey = `${s.employee_id}|${format(mon, 'yyyy-MM-dd')}`;
+  hoursByEmpWeek[wkKey] = (hoursByEmpWeek[wkKey] || 0) + hrs;
 });
-const overworked = Object.entries(hoursByEmp).filter(([_, h]) => h > 42);
-assert(overworked.length === 0, `Ningún empleado > 42h/sem (sobrepasados: ${overworked.length})`);
+const overworked = Object.entries(hoursByEmpWeek).filter(([_, h]) => h > 42.01);
+assert(overworked.length === 0, `Ningún empleado > 42h en ninguna semana ISO (sobrepasados: ${overworked.length})`);
 
 const distrib = Object.entries(hoursByEmp)
   .map(([_, h]) => h)
