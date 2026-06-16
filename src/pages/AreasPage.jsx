@@ -180,7 +180,7 @@ function getJornadaBadge(emp) {
 }
 
 // ── Panel de empleados del área ──────────────────────────────────
-function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove }) {
+function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove, onJornadaUpdate }) {
   const areaEmployeeIds = area.area_employees?.map(ae => ae.employee_id) || [];
   const areaEmps = area.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
   const unassigned = allEmployees.filter(e => !areaEmployeeIds.includes(e.id));
@@ -205,8 +205,8 @@ function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove }) {
           solo_nocturno: nuevaJornada === 'NOCTURNA',
         })
         .eq('id', empId);
-      // Refrescar la página de áreas para actualizar badges
-      window.location.reload();
+      // Refrescar los datos reactivamente sin recargar
+      if (onJornadaUpdate) await onJornadaUpdate();
     } catch (e) {
       console.error('Error actualizando jornada:', e);
     } finally {
@@ -1116,6 +1116,7 @@ export default function AreasPage() {
                   allEmployees={employees}
                   onAssign={assignEmployee}
                   onRemove={removeEmployee}
+                  onJornadaUpdate={fetchAreas}
                 />
 
                 {/* Franjas horarias */}
