@@ -100,7 +100,7 @@ ALTER TABLE areas
   ));
 
 -- ─────────────────────────────────────────────────────────────
--- 🔧 3. AREAS: modo_operacion (ya estaba bien, pero por si acaso)
+-- 🔧 3. AREAS: modo_operacion (incluye 24_7_NIGHT_SPLIT)
 -- ─────────────────────────────────────────────────────────────
 DO $$
 DECLARE r RECORD;
@@ -117,7 +117,7 @@ END $$;
 
 ALTER TABLE areas
   ADD CONSTRAINT areas_modo_operacion_check
-  CHECK (modo_operacion IS NULL OR modo_operacion IN ('OFICINA', '24_7'));
+  CHECK (modo_operacion IS NULL OR modo_operacion IN ('OFICINA', '24_7', '24_7_NIGHT_SPLIT'));
 
 -- ─────────────────────────────────────────────────────────────
 -- 🔧 4. AREAS: jornada_tipo

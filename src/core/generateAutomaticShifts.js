@@ -918,10 +918,16 @@ export function generateAutomaticShifts({
           const covVec = getCoverageVector(day.dateStr);
           const demVec = getDemandVecFor(day.date);
           const tplStart = timeToSlot(tpl.hora_inicio, slotsPorHora);
-          const tplEnd = tpl.cruza_medianoche ? slotsPerDay : timeToSlot(tpl.hora_fin, slotsPorHora);
+          // FIX: calcular correctamente el end slot para templates que cruzan medianoche
+          const tplEnd = tpl.cruza_medianoche
+            ? slotsPerDay + timeToSlot(tpl.hora_fin, slotsPorHora)
+            : timeToSlot(tpl.hora_fin, slotsPorHora);
 
           let totalDeficit = 0;
-          for (let s = tplStart; s < tplEnd; s++) totalDeficit += Math.max(0, demVec[s] - covVec[s]);
+          for (let s = tplStart; s < tplEnd && s < slotsPerDay; s++) {
+            const slotIdx = s >= slotsPerDay ? s - slotsPerDay : s;
+            totalDeficit += Math.max(0, demVec[slotIdx] - covVec[slotIdx]);
+          }
           if (tpl.shift_kind === 'PARTIDO' && tpl.hora_inicio_2 && tpl.hora_fin_2) {
             const t2s = timeToSlot(tpl.hora_inicio_2, slotsPorHora);
             const t2e = timeToSlot(tpl.hora_fin_2, slotsPorHora);
@@ -929,7 +935,13 @@ export function generateAutomaticShifts({
           }
           if (totalDeficit <= 0) continue;
 
-          let tplHrs = (tplEnd - tplStart) / slotsPorHora;
+          // Calcular horas del template considerando cruce de medianoche
+          let tplHrs;
+          if (tpl.cruza_medianoche) {
+            tplHrs = ((slotsPerDay - tplStart) + timeToSlot(tpl.hora_fin, slotsPorHora)) / slotsPorHora;
+          } else {
+            tplHrs = (tplEnd - tplStart) / slotsPorHora;
+          }
           if (tpl.shift_kind === 'PARTIDO' && tpl.hora_inicio_2 && tpl.hora_fin_2) {
             tplHrs += (timeToSlot(tpl.hora_fin_2, slotsPorHora) - timeToSlot(tpl.hora_inicio_2, slotsPorHora)) / slotsPorHora;
           }
