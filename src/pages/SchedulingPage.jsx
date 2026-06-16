@@ -8,11 +8,12 @@ import { getDiasMes, formatFecha, getNombreMes, getDatesByOption } from '../core
 import { formatCOP } from '../core/validators';
 import {
   MdClose, MdInfo, MdCalendarMonth, MdChevronLeft, MdChevronRight,
-  MdBolt, MdDelete, MdDeleteSweep, MdWarning, MdCheckCircle, MdDownload,
+  MdBolt, MdDelete, MdDeleteSweep, MdWarning, MdCheckCircle, MdDownload, MdAccessTime,
 } from 'react-icons/md';
 import { format } from 'date-fns';
 import { AutoAssignModal } from '../components/AutoAssignModal';
 import { ExportShiftsModal } from '../components/ExportShiftsModal';
+import { HourlyCoverageView } from '../components/HourlyCoverageView';
 
 // ─── Modal Asignar / Editar Turno ────────────────────────────────────────────
 function ShiftModal({ employee, fecha, areaId, areaTemplates, onClose, onSave, onDelete, existingShift }) {
@@ -445,6 +446,7 @@ export default function SchedulingPage() {
   const [anio, setAnio] = useState(now.getFullYear());
   const [mes, setMes] = useState(now.getMonth() + 1);
   const [selectedAreaId, setSelectedAreaId] = useState('all');
+  const [viewType, setViewType] = useState('grid'); // 'grid' | 'coverage'
   const [viewMode, setViewMode] = useState(() => {
     const today = new Date();
     const d = today.getDate();
@@ -976,6 +978,14 @@ export default function SchedulingPage() {
             <option value="salario_desc">💰 Mayor Salario</option>
           </select>
 
+          {/* Toggle vista */}
+          <button className={`cw-btn ${viewType === 'coverage' ? 'cw-btn--primary' : 'cw-btn--secondary'}`}
+            onClick={() => setViewType(t => t === 'grid' ? 'coverage' : 'grid')}
+            style={{ fontSize: '0.78rem', padding: '0.4rem 0.7rem' }}
+            title={viewType === 'grid' ? 'Ver cobertura por hora' : 'Ver rejilla de turnos'}>
+            <MdAccessTime /> {viewType === 'grid' ? 'Cobertura por Hora' : 'Rejilla'}
+          </button>
+
           <div style={{ width: 1, height: 28, background: 'var(--border-subtle)', margin: '0 0.25rem' }} />
 
           {/* Auto-asignar */}
@@ -1091,10 +1101,16 @@ export default function SchedulingPage() {
       )}
 
       {/* ── Leyenda plantillas del área ─────────────────────────────────────── */}
-      {areaTemplates.length > 0 && <TemplatesLegend templates={areaTemplates} />}
+      {areaTemplates.length > 0 && viewType === 'grid' && <TemplatesLegend templates={areaTemplates} />}
 
-      {/* ── Rejilla ────────────────────────────────────────────────────────── */}
-      {filteredEmployees.length === 0 ? (
+      {/* ── Vista de cobertura por hora ────────────────────────────────────── */}
+      {viewType === 'coverage' ? (
+        <HourlyCoverageView
+          shifts={shifts}
+          employees={filteredEmployees}
+          demandSlots={[]}
+        />
+      ) : filteredEmployees.length === 0 ? (
         <div className="cw-card">
           <div className="empty-state">
             <div className="empty-state__icon"><MdCalendarMonth /></div>
@@ -1261,7 +1277,7 @@ export default function SchedulingPage() {
       )}
 
       {/* ── Modal turno ──────────────────────────────────────────────────────── */}
-      {shiftModal && (
+      {viewType === 'grid' && shiftModal && (
         <ShiftModal
           employee={shiftModal.employee}
           fecha={shiftModal.fecha}
