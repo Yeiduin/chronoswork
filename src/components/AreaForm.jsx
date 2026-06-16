@@ -122,7 +122,6 @@ export default function AreaFormModal({ area, onClose }) {
         requiere_epp: area.requiere_epp || false,
         descripcion_epp: area.descripcion_epp || '',
         break_minutos: area.break_minutos || 0,
-        permite_turno_partido: area.permite_turno_partido ?? true,
         notas_operativas: area.notas_operativas || '',
         // Para crear franjas
         franjas_iniciales: [],

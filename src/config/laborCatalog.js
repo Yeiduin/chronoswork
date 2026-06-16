@@ -130,7 +130,7 @@ export const PATRONES_ROTATIVOS = [
     label: '2x1 — Trabaja 2, Descansa 1',
     desc: '42h/sem promedio, respeta límite. Usado en vigilancia, hotelería.',
     diasPorSemana: 4.67, // 7/3 * 2
-    diasTrabajo: 4, diasDescanso: 2,
+    diasTrabajo: 2, diasDescanso: 1,
   },
   {
     value: '3x2',

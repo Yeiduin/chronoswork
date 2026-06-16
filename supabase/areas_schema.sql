@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS areas (
   cobertura_minima_diaria INT DEFAULT 1,
   cobertura_maxima_diaria INT DEFAULT 10,
   cobertura_por_turno     JSONB DEFAULT '{}'::jsonb,
-  modo_operacion          VARCHAR(10) DEFAULT 'OFICINA' CHECK (modo_operacion IN ('OFICINA', '24_7')),
+  modo_operacion          VARCHAR(30) DEFAULT 'OFICINA' CHECK (modo_operacion IN ('OFICINA', '24_7', '24_7_NIGHT_SPLIT')),
   activo       BOOLEAN DEFAULT true,
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );

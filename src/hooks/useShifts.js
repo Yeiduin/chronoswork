@@ -162,7 +162,7 @@ export function useShifts(periodo = null) {
   const autoAssignShifts = async (params) => {
     const {
       employees, templates, absences, existingShifts,
-      year, month, diasTrabajo, strategyOptions,
+      year, month, diasTrabajo,
       diasToProcess, areaId, modoOperacion,
       laborLimits, nightShiftConfig, patronRotativo,
     } = params;
@@ -174,12 +174,11 @@ export function useShifts(periodo = null) {
       return { error: 'No hay empleados en el área para programar.', inserted: 0, alertaDias: [] };
     }
     // v4: En modo 24/7 el algoritmo puede generar slots dinámicos sin templates
-    if (modoOperacion === 'OFICINA' && (!Array.isArray(templates) || !templates.length)) {
-      return {
-        error: 'El área no tiene franjas horarias configuradas. Agrega al menos una en Áreas → Franjas.',
-        inserted: 0,
-        alertaDias: [],
-      };
+    // En OFICINA también puede (FASE 2 genera slots sin templates), pero advertimos
+    if (!Array.isArray(templates) || !templates.length) {
+      if (modoOperacion === 'OFICINA') {
+        console.warn('[autoAssign] Área OFICINA sin franjas — el algoritmo generará slots dinámicos, pero no hay control de cobertura por turno.');
+      }
     }
 
     // Cargar curva de demanda horaria si el área la tiene configurada
@@ -229,14 +228,14 @@ export function useShifts(periodo = null) {
       nightShiftConfig: nightShiftConfig || null,
       patronRotativo: patronRotativo || null,
       // ── v4: parámetros nuevos del área ──
-      estrategia: areaConfig.estrategia_asignacion || 'COVERAGE_FIRST',
-      minEmpleadosNoche: areaConfig.min_empleados_noche || 1,
+      estrategia: areaConfig.estrategia_asignacion ?? 'COVERAGE_FIRST',
+      minEmpleadosNoche: areaConfig.min_empleados_noche ?? 1,
       nocheSoloDedicados: areaConfig.noche_solo_empleados_dedicados ?? true,
       permiteDiaCubrirNoche: areaConfig.permite_dia_cubrir_noche ?? false,
       balancearCarga: areaConfig.balancear_carga ?? true,
       rotarSlots: areaConfig.rotar_slots_entre_asesores ?? false,
-      slotsPorHora: areaConfig.slots_por_hora || 4,
-      snapMinutos: areaConfig.snap_turnos_minutos || 15,
+      slotsPorHora: areaConfig.slots_por_hora ?? 4,
+      snapMinutos: areaConfig.snap_turnos_minutos ?? 15,
       minHorasTurnoOverride: areaConfig.min_horas_turno_override || null,
       maxHorasTurnoOverride: areaConfig.max_horas_turno_override || null,
       permiteExtras: areaConfig.permitir_horas_extras ?? false,

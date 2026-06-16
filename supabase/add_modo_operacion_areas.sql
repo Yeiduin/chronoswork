@@ -5,8 +5,8 @@
 
 -- Agrega el tipo de operación al área
 ALTER TABLE areas
-  ADD COLUMN IF NOT EXISTS modo_operacion VARCHAR(10) DEFAULT 'OFICINA'
-  CHECK (modo_operacion IN ('OFICINA', '24_7'));
+  ADD COLUMN IF NOT EXISTS modo_operacion VARCHAR(30) DEFAULT 'OFICINA'
+  CHECK (modo_operacion IN ('OFICINA', '24_7', '24_7_NIGHT_SPLIT'));
 
 -- Comentario explicativo
 COMMENT ON COLUMN areas.modo_operacion IS

@@ -308,6 +308,7 @@ export function generateAutomaticShifts({
         minStaff: Math.max(1, parseInt(minEmpleadosNoche, 10) || 1),
         soloDedicados: !!nocheSoloDedicados,
         permiteDiaCubrir: !!permiteDiaCubrirNoche,
+        employeeIds: nightShiftConfig?.employeeIds || [],
       }
     : null;
 
@@ -626,12 +627,19 @@ export function generateAutomaticShifts({
   // Greedy de bloques nocturnos de duración variable. Cubre el valle y el
   // pico de madrugada con el MENOR número de personas, garantizando minStaff.
   if (nightConfig) {
-    // Pool nocturno: dedicados primero. Fallback a ANY si no son
+    // Pool nocturno: prioridad a lista explícita del área, luego
+    // dedicados (NIGHT_ONLY + MIXED). Fallback a ANY si no son
     // suficientes o si el área NO exige dedicados (para no dejar la noche
     // descubierta en 24/7).
+    const nightPool = [];
+    if (nightConfig.employeeIds?.length) {
+      employees.forEach(e => {
+        if (nightConfig.employeeIds.includes(e.id) && !nightPool.includes(e)) nightPool.push(e);
+      });
+    }
     const dedicados = [...empByClass.NIGHT_ONLY, ...empByClass.MIXED];
-    const nightPool = [...dedicados];
-    const baseInsuficiente = dedicados.length < nightConfig.minStaff || dedicados.length === 0;
+    dedicados.forEach(e => { if (!nightPool.includes(e)) nightPool.push(e); });
+    const baseInsuficiente = nightPool.length < nightConfig.minStaff || nightPool.length === 0;
     if (nightConfig.permiteDiaCubrir || !nightConfig.soloDedicados || baseInsuficiente) {
       empByClass.ANY.forEach(e => { if (!nightPool.includes(e)) nightPool.push(e); });
     }
@@ -768,23 +776,20 @@ export function generateAutomaticShifts({
       changed = false;
       iterations++;
 
-      // Déficit total para ordenar días (más déficit primero) y para cortar.
-      let totalDefAcrossDays = 0;
-      const daysSorted = [...days].sort((a, b) => {
-        const defOf = (day) => {
-          const dem = getDemandVecFor(day.date);
-          const cov = getCoverageVector(day.dateStr);
-          let t = 0;
-          for (let s = dayWindowStart; s < dayWindowEnd; s++) {
-            const d = Math.max(dem[s], s >= dayWindowStart && s < dayWindowEnd ? dayMinFloor : 0);
-            t += Math.max(0, d - cov[s]);
-          }
-          return t;
-        };
-        const dA = defOf(a), dB = defOf(b);
-        totalDefAcrossDays += dA;
-        return dB - dA;
-      });
+      // Precompute déficit por día (evita O(n²) recalculando vectores en cada comparación del sort)
+      const dayDeficits = new Map();
+      for (const day of days) {
+        const dem = getDemandVecFor(day.date);
+        const cov = getCoverageVector(day.dateStr);
+        let t = 0;
+        for (let s = dayWindowStart; s < dayWindowEnd; s++) {
+          const d = Math.max(dem[s], s >= dayWindowStart && s < dayWindowEnd ? dayMinFloor : 0);
+          t += Math.max(0, d - cov[s]);
+        }
+        dayDeficits.set(day.dateStr, t);
+      }
+      const totalDefAcrossDays = [...dayDeficits.values()].reduce((s, v) => s + v, 0);
+      const daysSorted = [...days].sort((a, b) => dayDeficits.get(b.dateStr) - dayDeficits.get(a.dateStr));
       if (totalDefAcrossDays === 0) break;
 
       for (const day of daysSorted) {
@@ -838,7 +843,7 @@ export function generateAutomaticShifts({
           // Colocar en el mejor start FACTIBLE. No romper al primero sin
           // candidato: probar los siguientes y, si el turno toca la franja
           // nocturna y no hay quien la cubra, truncarlo al borde (solo-diurno).
-          const nightStartLegal = NOCTURNA_INICIO_H * slotsPorHora;
+          const nightStartLegal = dayWindowEnd;
           let placed = false;
           for (const { start } of scored) {
             const tope = Math.min(start + maxSlots, dayWindowEnd);

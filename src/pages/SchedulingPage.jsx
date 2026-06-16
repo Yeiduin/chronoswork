@@ -4,7 +4,7 @@ import { useEmployees } from '../hooks/useEmployees';
 import { useAbsences } from '../hooks/useAbsences';
 import { useAreas } from '../hooks/useAreas';
 import { supabase } from '../config/supabaseClient';
-import { getDiasMes, formatFecha, getNombreMes } from '../core/dateUtils';
+import { getDiasMes, formatFecha, getNombreMes, getDatesByOption } from '../core/dateUtils';
 import { formatCOP } from '../core/validators';
 import {
   MdClose, MdInfo, MdCalendarMonth, MdChevronLeft, MdChevronRight,
@@ -644,35 +644,7 @@ export default function SchedulingPage() {
       const erroresValidacion = [];
       const areasProcesadas = [];
 
-      let processedDays = diasTodos;
-      if (strategyOptions.dateRangeOption === 'current_view') {
-        processedDays = dias;
-      } else if (strategyOptions.dateRangeOption === 'next_week') {
-        const hoy = new Date();
-        const nextMonday = new Date(hoy);
-        nextMonday.setDate(hoy.getDate() + ((1 + 7 - hoy.getDay()) % 7 || 7));
-        const nextSunday = new Date(nextMonday);
-        nextSunday.setDate(nextMonday.getDate() + 6);
-        const nwDays = [];
-        for (let d = new Date(nextMonday); d <= nextSunday; d.setDate(d.getDate() + 1)) {
-           nwDays.push(new Date(d));
-        }
-        processedDays = nwDays;
-      } else if (strategyOptions.dateRangeOption === 'custom') {
-        if (!strategyOptions.customStart || !strategyOptions.customEnd) {
-          throw new Error('Selecciona el rango de fechas personalizado (desde y hasta).');
-        }
-        const dStart = new Date(strategyOptions.customStart + 'T00:00:00');
-        const dEnd = new Date(strategyOptions.customEnd + 'T00:00:00');
-        if (dEnd < dStart) {
-          throw new Error('La fecha "Hasta" debe ser posterior a "Desde".');
-        }
-        const customDays = [];
-        for (let d = new Date(dStart); d <= dEnd; d.setDate(d.getDate() + 1)) {
-           customDays.push(new Date(d));
-        }
-        processedDays = customDays;
-      }
+      const processedDays = getDatesByOption(strategyOptions.dateRangeOption, strategyOptions.customStart, strategyOptions.customEnd);
 
       if (processedDays.length === 0) {
         throw new Error('El rango seleccionado no tiene días. Ajusta los días laborables del área o cambia el rango.');
@@ -761,10 +733,10 @@ export default function SchedulingPage() {
             diasTrabajo: areaEs247
               ? [1, 2, 3, 4, 5, 6, 7]
               : (area.dias_trabajo || [1, 2, 3, 4, 5]),
-            strategyOptions,
             diasToProcess: processedDays,
             areaId: area.id,
             modoOperacion: area.modo_operacion,
+            laborLimits: area.labor_limits || null,
             nightShiftConfig,
             patronRotativo: area.patron_rotativo || null,
           });

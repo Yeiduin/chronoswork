@@ -748,7 +748,7 @@ export default function AreasPage() {
   const { employees } = useEmployees();
   const { absences } = useAbsences();
   const periodoActual = getPeriodoActual();
-  const { shifts, autoAssignShifts } = useShifts(periodoActual);
+  const { shifts, autoAssignShifts, clearShiftsByDateRange } = useShifts(periodoActual);
 
   const [selectedArea, setSelectedArea] = useState(null);
   const [showAreaModal, setShowAreaModal] = useState(false);
@@ -794,7 +794,6 @@ export default function AreasPage() {
         .from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
 
       const areaAbsences = absences.filter(a => empIds.includes(a.employee_id));
-      const areaShifts = shifts.filter(s => empIds.includes(s.employee_id));
 
       const processedDays = getDatesByOption(strategyOptions.dateRangeOption, strategyOptions.customStart, strategyOptions.customEnd);
 
@@ -822,13 +821,11 @@ export default function AreasPage() {
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
         if (empIds.length > 0) {
-          await supabase.from('shifts')
-            .delete()
-            .in('employee_id', empIds)
-            .gte('start_time', dStartStr + 'T00:00:00')
-            .lte('start_time', dEndStr + 'T23:59:59');
+          await clearShiftsByDateRange(dStartStr, dEndStr, empIds);
         }
       }
+
+      const areaShifts = shifts.filter(s => empIds.includes(s.employee_id));
 
       // v4.2: Activar config nocturna para CUALQUIER modo 24/7, igual que
       // SchedulingPage. Antes se requireía night_shift_enabled===true, lo que
@@ -850,7 +847,6 @@ export default function AreasPage() {
         existingShifts: areaShifts,
         year, month,
         diasTrabajo: areaEs247 ? [1, 2, 3, 4, 5, 6, 7] : (area.dias_trabajo || [1, 2, 3, 4, 5]),
-        strategyOptions,
         diasToProcess: processedDays,
         modoOperacion: area.modo_operacion || 'OFICINA',
         laborLimits: area.labor_limits || null,
