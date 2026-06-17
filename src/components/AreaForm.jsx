@@ -103,6 +103,10 @@ export default function AreaFormModal({ area, onClose }) {
         night_shift_enabled: area.night_shift_enabled || false,
         night_shift_start: area.night_shift_start || '22:00',
         night_shift_end: area.night_shift_end || '06:00',
+        // v5: headcount objetivo por día
+        min_empleados_dia: area.min_empleados_dia ?? '',
+        max_empleados_dia: area.max_empleados_dia ?? '',
+        hora_inicio_dia: area.hora_inicio_dia ? String(area.hora_inicio_dia).slice(0, 5) : '04:00',
         // v4: Estrategia de asignación
         estrategia_asignacion: area.estrategia_asignacion || 'COVERAGE_FIRST',
         min_empleados_noche: area.min_empleados_noche || 1,
@@ -155,6 +159,10 @@ export default function AreaFormModal({ area, onClose }) {
       night_shift_enabled: false,
       night_shift_start: '22:00',
       night_shift_end: '06:00',
+      // v5: headcount objetivo por día
+      min_empleados_dia: '',
+      max_empleados_dia: '',
+      hora_inicio_dia: '04:00',
       requiere_dotacion: false,
       dotacion_periodicidad_meses: 4,
       requiere_epp: false,
@@ -564,6 +572,47 @@ export default function AreaFormModal({ area, onClose }) {
             <h4 style={{ fontSize: '0.9rem', color: 'var(--text-primary)', marginBottom: '0.75rem' }}>
               Operación, dotaciones y turno nocturno
             </h4>
+
+            {/* v5: Headcount objetivo por día */}
+            <div style={{
+              marginBottom: '1rem', padding: '0.875rem', background: 'rgba(59, 130, 246, 0.06)',
+              border: '1px solid rgba(59, 130, 246, 0.25)', borderRadius: 10,
+            }}>
+              <h5 style={{ fontSize: '0.85rem', color: '#2563eb', marginBottom: '0.5rem', fontWeight: 700 }}>
+                👥 Personas por día (objetivo de cobertura)
+              </h5>
+              <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.4 }}>
+                Cuántas personas quieres programar por día. El algoritmo reparte ese total
+                durante el día usando la curva de demanda (más gente en horas pico, menos en valle)
+                y empezando a la hora de inicio que definas. La noche se toma de "Mín. personas en la noche".
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Mín. personas/día (piso)</label>
+                  <input type="number" min="0" className="cw-input" placeholder="opcional"
+                    value={form.min_empleados_dia}
+                    onChange={e => setForm(p => ({ ...p, min_empleados_dia: e.target.value }))} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx. personas/día (objetivo)</label>
+                  <input type="number" min="0" className="cw-input" placeholder="ej. 50"
+                    value={form.max_empleados_dia}
+                    onChange={e => setForm(p => ({ ...p, max_empleados_dia: e.target.value }))} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Hora inicio del día</label>
+                  <input type="time" className="cw-input"
+                    value={form.hora_inicio_dia}
+                    onChange={e => setForm(p => ({ ...p, hora_inicio_dia: e.target.value }))} />
+                </div>
+              </div>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.4rem', lineHeight: 1.4 }}>
+                💡 El <strong>máximo</strong> es también el objetivo (intenta llegar a ese número, nunca lo supera).
+                Si un día no alcanza el <strong>mínimo</strong> con el personal disponible, se deja
+                completo sin cubrir y se avisa, en vez de dejar huecos en varios días.
+                Deja en blanco para usar la curva de demanda tal cual (sin objetivo de headcount).
+              </div>
+            </div>
 
             {/* 24/7 - Turno nocturno */}
             {(form.modo_operacion === '24_7' || form.modo_operacion === '24_7_NIGHT_SPLIT') && (

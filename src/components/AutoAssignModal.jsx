@@ -33,6 +33,12 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
   const [conflictLoading, setConflictLoading] = useState(false);
   const [resolutionMode, setResolutionMode] = useState('only_new'); // 'reprogram' | 'only_new'
 
+  // v5: overrides puntuales de headcount (no se guardan en el área)
+  const [overrideHeadcount, setOverrideHeadcount] = useState(false);
+  const [ovMaxDia, setOvMaxDia] = useState('');
+  const [ovMinDia, setOvMinDia] = useState('');
+  const [ovNoche, setOvNoche] = useState('');
+
   // ── Resumen de empleados del área seleccionada ───────────────────────────
   const [empSummary, setEmpSummary] = useState(null);
   const [empSummaryLoading, setEmpSummaryLoading] = useState(false);
@@ -171,13 +177,22 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
       return;
     }
 
+    const parseOv = (v) => {
+      const n = parseInt(v, 10);
+      return (!isNaN(n) && n >= 0) ? n : null;
+    };
+
     setLoading(true);
     await onConfirm(targetScope, {
       reprogramar: hasExistingShifts ? resolutionMode === 'reprogram' : false,
       onlyNewEmployees: hasExistingShifts ? resolutionMode === 'only_new' : false,
       dateRangeOption,
       customStart,
-      customEnd
+      customEnd,
+      // v5: overrides puntuales de headcount (solo si el usuario los activó)
+      minEmpleadosDia: overrideHeadcount ? parseOv(ovMinDia) : null,
+      maxEmpleadosDia: overrideHeadcount ? parseOv(ovMaxDia) : null,
+      minEmpleadosNoche: overrideHeadcount ? parseOv(ovNoche) : null,
     });
     setLoading(false);
     onClose();
@@ -236,6 +251,52 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
             </div>
           </div>
         )}
+
+        {/* ── v5: Override puntual de headcount ── */}
+        <div style={{
+          marginBottom: '1rem', padding: '0.75rem 0.875rem',
+          background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.22)',
+          borderRadius: 8,
+        }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontWeight: 600, fontSize: '0.82rem', color: 'var(--text-primary)' }}>
+            <input type="checkbox" checked={overrideHeadcount}
+              onChange={e => {
+                const on = e.target.checked;
+                setOverrideHeadcount(on);
+                if (on && selectedArea) {
+                  setOvMaxDia(selectedArea.max_empleados_dia ?? '');
+                  setOvMinDia(selectedArea.min_empleados_dia ?? '');
+                  setOvNoche(selectedArea.min_empleados_noche ?? '');
+                }
+              }} />
+            👥 Personalizar personas/día para esta corrida
+          </label>
+          {overrideHeadcount && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginTop: '0.6rem' }}>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.7rem' }}>Personas/día (máx-objetivo)</label>
+                  <input type="number" min="0" className="cw-input" placeholder="ej. 50"
+                    value={ovMaxDia} onChange={e => setOvMaxDia(e.target.value)} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.7rem' }}>Mín. personas/día</label>
+                  <input type="number" min="0" className="cw-input" placeholder="opcional"
+                    value={ovMinDia} onChange={e => setOvMinDia(e.target.value)} />
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.7rem' }}>En la noche</label>
+                  <input type="number" min="0" className="cw-input" placeholder="ej. 3"
+                    value={ovNoche} onChange={e => setOvNoche(e.target.value)} />
+                </div>
+              </div>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.4rem', lineHeight: 1.4 }}>
+                Solo para esta corrida (no cambia la configuración del área). El total/día incluye la noche;
+                el resto se reparte durante el día según la curva de demanda.
+              </div>
+            </>
+          )}
+        </div>
 
         {/* ── Panel informativo del área seleccionada ── */}
         {selectedArea && !empSummaryLoading && empSummary && (

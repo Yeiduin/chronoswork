@@ -799,6 +799,9 @@ export default function AreasPage() {
 
       let finalEmployees = [...areaEmps];
       if (strategyOptions.onlyNewEmployees && processedDays.length > 0) {
+        if (!(processedDays[0] instanceof Date) || isNaN(processedDays[0].getTime())) {
+          throw new Error('Invalid time value: processedDays[0] is Invalid Date (onlyNewEmployees in AreasPage)');
+        }
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
 
@@ -818,6 +821,9 @@ export default function AreasPage() {
       }
 
       if (strategyOptions.reprogramar && processedDays.length > 0) {
+        if (!(processedDays[0] instanceof Date) || isNaN(processedDays[0].getTime())) {
+          throw new Error('Invalid time value: processedDays[0] is Invalid Date (reprogramar in AreasPage)');
+        }
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
         if (empIds.length > 0) {

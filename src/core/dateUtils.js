@@ -32,6 +32,25 @@ export function buildISO(fecha, hora) {
 }
 
 /**
+ * Genera un timestamp ISO con el offset local (ej. -05:00) para evitar desfases de zona horaria al guardar en BD.
+ */
+export function getLocalISOString(dateStr, timeStr) {
+  if (!dateStr || !timeStr) {
+    throw new Error(`Invalid time value: getLocalISOString received empty dateStr (${dateStr}) or timeStr (${timeStr})`);
+  }
+  const cleanTimeStr = String(timeStr).slice(0, 5);
+  const d = new Date(`${dateStr}T${cleanTimeStr}:00`);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Invalid time value: getLocalISOString generated Invalid Date for ${dateStr}T${cleanTimeStr}:00`);
+  }
+  const offset = -d.getTimezoneOffset();
+  const sign = offset >= 0 ? '+' : '-';
+  const pad = num => String(Math.abs(num)).padStart(2, '0');
+  const tz = `${sign}${pad(Math.floor(offset / 60))}:${pad(offset % 60)}`;
+  return `${dateStr}T${cleanTimeStr}:00${tz}`;
+}
+
+/**
  * Obtiene el inicio y fin de la semana para una fecha dada
  */
 export function getSemana(fecha = new Date()) {

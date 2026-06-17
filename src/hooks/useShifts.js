@@ -165,6 +165,8 @@ export function useShifts(periodo = null) {
       year, month, diasTrabajo,
       diasToProcess, areaId, modoOperacion,
       laborLimits, nightShiftConfig, patronRotativo,
+      // v5: overrides opcionales desde el modal (puntuales, no se guardan)
+      overrideMinEmpleadosDia, overrideMaxEmpleadosDia, overrideMinEmpleadosNoche,
     } = params;
 
     if (!tenant) {
@@ -211,6 +213,20 @@ export function useShifts(periodo = null) {
       } catch (e) {
         console.warn('[autoAssign] areaConfig no se pudo cargar:', e.message);
       }
+
+      // v5: columnas de headcount/día en consulta separada y defensiva, para
+      // no perder TODA la config si la migración add_headcount_dia_areas.sql
+      // aún no se ha aplicado.
+      try {
+        const { data: hcData } = await supabase
+          .from('areas')
+          .select('min_empleados_dia, max_empleados_dia, hora_inicio_dia')
+          .eq('id', areaId)
+          .single();
+        if (hcData) areaConfig = { ...areaConfig, ...hcData };
+      } catch (e) {
+        console.warn('[autoAssign] columnas headcount/día no disponibles (¿falta migración?):', e.message);
+      }
     }
 
     const { shifts: shiftsToInsert, warnings } = generateAutomaticShifts({
@@ -229,7 +245,7 @@ export function useShifts(periodo = null) {
       patronRotativo: patronRotativo || null,
       // ── v4: parámetros nuevos del área ──
       estrategia: areaConfig.estrategia_asignacion ?? 'COVERAGE_FIRST',
-      minEmpleadosNoche: areaConfig.min_empleados_noche ?? 1,
+      minEmpleadosNoche: overrideMinEmpleadosNoche ?? areaConfig.min_empleados_noche ?? 1,
       nocheSoloDedicados: areaConfig.noche_solo_empleados_dedicados ?? true,
       permiteDiaCubrirNoche: areaConfig.permite_dia_cubrir_noche ?? false,
       balancearCarga: areaConfig.balancear_carga ?? true,
@@ -240,6 +256,10 @@ export function useShifts(periodo = null) {
       maxHorasTurnoOverride: areaConfig.max_horas_turno_override || null,
       permiteExtras: areaConfig.permitir_horas_extras ?? false,
       permitePartidos: areaConfig.permitir_turno_partido ?? false,
+      // ── v5: headcount objetivo por día (override del modal > área) ──
+      minEmpleadosDia: overrideMinEmpleadosDia ?? areaConfig.min_empleados_dia ?? null,
+      maxEmpleadosDia: overrideMaxEmpleadosDia ?? areaConfig.max_empleados_dia ?? null,
+      horaInicioDia: areaConfig.hora_inicio_dia ?? '04:00',
     });
 
     if (!Array.isArray(shiftsToInsert) || shiftsToInsert.length === 0) {

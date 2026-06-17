@@ -17,6 +17,7 @@ export function useAreas() {
         .from('areas')
         .select(`
           *,
+          area_demand_slots(*),
           area_employees(
             id,
             employee_id,
@@ -48,7 +49,8 @@ export function useAreas() {
   // "invalid input syntax for type numeric".
   const sanitizeNumeric = (raw) => {
     const NUMERIC_FIELDS = [
-      'min_empleados_noche', 'min_horas_turno_override', 'max_horas_turno_override',
+      'min_empleados_noche', 'min_empleados_dia', 'max_empleados_dia',
+      'min_horas_turno_override', 'max_horas_turno_override',
       'slots_por_hora', 'snap_turnos_minutos', 'valor_hora_default',
       'duracion_jornada_horas', 'dias_descanso', 'dias_descanso_default',
       'horas_extras_max_dia', 'horas_extras_max_semana',

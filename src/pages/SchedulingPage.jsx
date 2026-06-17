@@ -4,7 +4,7 @@ import { useEmployees } from '../hooks/useEmployees';
 import { useAbsences } from '../hooks/useAbsences';
 import { useAreas } from '../hooks/useAreas';
 import { supabase } from '../config/supabaseClient';
-import { getDiasMes, formatFecha, getNombreMes, getDatesByOption } from '../core/dateUtils';
+import { getDiasMes, formatFecha, getNombreMes, getDatesByOption, getLocalISOString } from '../core/dateUtils';
 import { formatCOP } from '../core/validators';
 import {
   MdClose, MdInfo, MdCalendarMonth, MdChevronLeft, MdChevronRight,
@@ -56,14 +56,14 @@ function ShiftModal({ employee, fecha, areaId, areaTemplates, onClose, onSave, o
     setLoading(true);
     try {
       const dateStr = format(fecha, 'yyyy-MM-dd');
-      let startISO = `${dateStr}T${tpl.hora_inicio}:00`;
+      let startISO = getLocalISOString(dateStr, tpl.hora_inicio);
       let endISO;
       if (tpl.cruza_medianoche) {
         const nextDay = new Date(fecha);
         nextDay.setDate(nextDay.getDate() + 1);
-        endISO = `${format(nextDay, 'yyyy-MM-dd')}T${tpl.hora_fin}:00`;
+        endISO = getLocalISOString(format(nextDay, 'yyyy-MM-dd'), tpl.hora_fin);
       } else {
-        endISO = `${dateStr}T${tpl.hora_fin}:00`;
+        endISO = getLocalISOString(dateStr, tpl.hora_fin);
       }
       const confirmed = window.confirm('¿Estás seguro de que deseas asignar/modificar este turno?');
       if (!confirmed) {
@@ -653,6 +653,9 @@ export default function SchedulingPage() {
       }
 
       if (strategyOptions.reprogramar && processedDays.length > 0) {
+        if (!(processedDays[0] instanceof Date) || isNaN(processedDays[0].getTime())) {
+          throw new Error('Invalid time value: processedDays[0] is Invalid Date (reprogramar)');
+        }
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
         const empIdsToClear = areasToProcess.flatMap(a => a.area_employees?.map(ae => ae.employee_id) || []);
@@ -693,6 +696,9 @@ export default function SchedulingPage() {
         let finalEmployees = [...areaEmps];
 
         if (strategyOptions.onlyNewEmployees && processedDays.length > 0) {
+          if (!(processedDays[0] instanceof Date) || isNaN(processedDays[0].getTime())) {
+            throw new Error('Invalid time value: processedDays[0] is Invalid Date (onlyNewEmployees)');
+          }
           const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
           const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
 
@@ -741,6 +747,10 @@ export default function SchedulingPage() {
             laborLimits: area.labor_limits || null,
             nightShiftConfig,
             patronRotativo: area.patron_rotativo || null,
+            // v5: overrides puntuales de headcount desde el modal (si se indicaron)
+            overrideMinEmpleadosDia: strategyOptions.minEmpleadosDia ?? null,
+            overrideMaxEmpleadosDia: strategyOptions.maxEmpleadosDia ?? null,
+            overrideMinEmpleadosNoche: strategyOptions.minEmpleadosNoche ?? null,
           });
         } catch (innerErr) {
           erroresValidacion.push(`${area.nombre}: ${innerErr.message || 'error desconocido'}`);
@@ -1108,7 +1118,9 @@ export default function SchedulingPage() {
         <HourlyCoverageView
           shifts={shifts}
           employees={filteredEmployees}
-          demandSlots={[]}
+          demandSlots={selectedArea ? (selectedArea.area_demand_slots || []) : areas.flatMap(a => a.area_demand_slots || [])}
+          areas={areas}
+          selectedAreaId={selectedAreaId}
         />
       ) : filteredEmployees.length === 0 ? (
         <div className="cw-card">

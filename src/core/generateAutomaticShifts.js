@@ -258,6 +258,11 @@ function dateToStr(d) {
   return format(d, 'yyyy-MM-dd');
 }
 
+const DIAS_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+function nombreDia(dateObj) {
+  return DIAS_ES[dateObj.getDay()] || '';
+}
+
 // ── FUNCIÓN PRINCIPAL DE GENERACIÓN ──────────────────────────────────────
 /**
  * @param {Object} params  (ver README V4_ALGORITHM_UPGRADE.md)
@@ -290,6 +295,10 @@ export function generateAutomaticShifts({
   maxHorasTurnoOverride = null,
   permiteExtras = false,
   permitePartidos = false,
+  // ── v5 nuevos parámetros: headcount objetivo por día ──
+  minEmpleadosDia = null,   // piso: si no se alcanza, el día se deja vacío y se avisa
+  maxEmpleadosDia = null,   // techo + objetivo de personas distintas/día (incluye noche)
+  horaInicioDia = '04:00',  // hora a la que puede empezar el primer turno diurno
 }) {
   const generatedShifts = [];
   const warnings = [];
@@ -327,6 +336,27 @@ export function generateAutomaticShifts({
   const slotsPerDay = getSlotsPerDay(slotsPorHora);
   const minSlots = Math.max(1, Math.round(limits.minHorasTurno * slotsPorHora));
   const maxSlots = Math.max(minSlots, Math.round(limits.maxHorasTurno * slotsPorHora));
+
+  // ── v5: Headcount objetivo por día ───────────────────────────────────
+  // minDia = piso (si no se alcanza, el día se deja vacío y se avisa).
+  // maxDia = techo y objetivo (cuántas personas distintas queremos por día).
+  // objetivoNoche = personas distintas reservadas a la franja nocturna.
+  const parseHeadcount = (v) => {
+    const n = parseInt(v, 10);
+    return (!isNaN(n) && n > 0) ? n : null;
+  };
+  const minDia = parseHeadcount(minEmpleadosDia);
+  const maxDia = parseHeadcount(maxEmpleadosDia);
+  const objetivoNoche = nightConfig ? Math.max(0, nightConfig.minStaff || 0) : 0;
+  // Objetivo de personas DIURNAS = techo del día menos las de la noche.
+  const objetivoDia = maxDia != null ? Math.max(0, maxDia - objetivoNoche) : null;
+  const usaHeadcount = maxDia != null; // si hay techo, usamos la curva como FORMA
+
+  // ── v5: Hora a la que arranca el día (default 04:00, configurable) ────
+  const dayStartSlot = Math.max(
+    0,
+    Math.min(timeToSlot(horaInicioDia || '04:00', slotsPorHora), slotsPerDay - minSlots)
+  );
 
   // ── Días laborables del mes a procesar ───────────────────────────────
   const days = (Array.isArray(diasToProcess) ? diasToProcess : [])
@@ -485,16 +515,99 @@ export function generateAutomaticShifts({
     return vec;
   };
 
-  // ── Cache de demanda por fecha (sirve para cualquier día, incl. D+1) ─
+  // ── v5: Turno "típico" en slots (para traducir personas↔person-slots) ──
+  // Asumimos que cada persona trabaja una jornada cercana a 8h (acotada por
+  // los topes legales). Sirve para repartir el headcount objetivo entre horas.
+  const typicalShiftSlots = Math.max(
+    minSlots,
+    Math.min(maxSlots, Math.round(8 * slotsPorHora))
+  );
+
+  // Ventana diurna efectiva (donde aplica el headcount objetivo del día).
+  const dayWindowStartGlobal = dayStartSlot;
+  const dayWindowEndGlobal = nightConfig ? nightStartSlot : slotsPerDay;
+
+  // ── Cache de demanda CRUDA (curva tal cual, antes de escalar a headcount) ─
+  const rawDemandCache = {};
+  const getRawDemandVecFor = (dateObj) => {
+    const ds = dateToStr(dateObj);
+    if (rawDemandCache[ds]) return rawDemandCache[ds];
+    const dow = dateObj.getDay() === 0 ? 7 : dateObj.getDay();
+    const isWk = dateObj.getDay() === 0 || dateObj.getDay() === 6;
+    const raw = buildDemandVector(dow, demandSlots, employees.length, isWk, slotsPorHora);
+    rawDemandCache[ds] = raw;
+    return raw;
+  };
+
+  // Suma de la FORMA diurna cruda de un día (person-slots que pide la curva).
+  const rawDayShapeSum = (dateObj) => {
+    const raw = getRawDemandVecFor(dateObj);
+    let s = 0;
+    for (let i = dayWindowStartGlobal; i < dayWindowEndGlobal; i++) s += raw[i];
+    return s;
+  };
+
+  // v5: Escala GLOBAL para headcount. El día de MAYOR demanda cruda alcanza el
+  // objetivo (objetivoDia personas); los demás días reciben personal en
+  // proporción a SU demanda. Así un día con la mitad de demanda recibe ~la
+  // mitad de gente (preserva diferencias entre días, p.ej. fines de semana),
+  // y el pico nunca supera el techo. Si la curva es plana entre días, todos
+  // los días reciben el mismo objetivo.
+  let headcountScale = null;
+  if (usaHeadcount && objetivoDia > 0) {
+    let peakShape = 0;
+    for (const day of days) peakShape = Math.max(peakShape, rawDayShapeSum(day.date));
+    if (peakShape > 0) headcountScale = (objetivoDia * typicalShiftSlots) / peakShape;
+  }
+
+  // ── Cache de demanda EFECTIVA por fecha (escalada si hay headcount) ─────
   const demandVecCache = {};
   const getDemandVecFor = (dateObj) => {
     const ds = dateToStr(dateObj);
     if (demandVecCache[ds]) return demandVecCache[ds];
-    const dow = dateObj.getDay() === 0 ? 7 : dateObj.getDay();
-    const isWk = dateObj.getDay() === 0 || dateObj.getDay() === 6;
-    const v = buildDemandVector(dow, demandSlots, employees.length, isWk, slotsPorHora);
+    const raw = getRawDemandVecFor(dateObj);
+
+    // Sin headcount objetivo → curva absoluta (comportamiento clásico).
+    if (!usaHeadcount || headcountScale == null) {
+      // objetivoDia === 0 ⇒ todo el día va a la noche; vaciar la franja diurna.
+      if (usaHeadcount && objetivoDia === 0) {
+        const z = raw.slice();
+        for (let s = dayWindowStartGlobal; s < dayWindowEndGlobal; s++) z[s] = 0;
+        demandVecCache[ds] = z;
+        return z;
+      }
+      demandVecCache[ds] = raw;
+      return raw;
+    }
+
+    // Con headcount: curva como FORMA, escalada por el factor global.
+    const v = raw.slice();
+    for (let s = dayWindowStartGlobal; s < dayWindowEndGlobal; s++) {
+      v[s] = Math.max(0, Math.round(raw[s] * headcountScale));
+    }
     demandVecCache[ds] = v;
     return v;
+  };
+
+  // ── v5: Peso de demanda total de un día (para ordenar días por prioridad) ─
+  const dayDemandWeight = (dateObj) => {
+    const vec = getDemandVecFor(dateObj);
+    let sum = 0;
+    for (let s = 0; s < slotsPerDay; s++) {
+      const h = Math.floor(s / slotsPorHora);
+      const floor = (nightConfig && isNightHour(h)) ? objetivoNoche : 0;
+      sum += Math.max(vec[s] || 0, floor);
+    }
+    return sum;
+  };
+
+  // ── v5: Personas DISTINTAS ya programadas en un día (para el techo maxDia) ─
+  const distinctPeopleOnDay = (dateStr) => {
+    const ids = new Set();
+    [...safeExisting, ...generatedShifts].forEach(s => {
+      if (String(s.start_time).startsWith(dateStr)) ids.add(s.employee_id);
+    });
+    return ids.size;
   };
 
   // ── Eligibilidad por jornada ─────────────────────────────────────────
@@ -698,6 +811,11 @@ export function generateAutomaticShifts({
       const endDateStr = endExt >= slotsPerDay ? dNextStr : day.dateStr;
       const endTimeStr = slotToTime(endExt % slotsPerDay, slotsPorHora);
       const shiftHrs = best.dur / slotsPorHora;
+
+      // v5: Techo de personas/día. No superar maxEmpleadosDia en el día donde
+      // se contabiliza al trabajador (su fecha de inicio).
+      if (maxDia != null && distinctPeopleOnDay(startDateStr) >= maxDia) return false;
+
       const proposed = { start_time: `${startDateStr}T${startTimeStr}`, end_time: `${endDateStr}T${endTimeStr}` };
       const nightHrs = shiftNightHours(proposed);
 
@@ -723,17 +841,20 @@ export function generateAutomaticShifts({
       return true;
     };
 
-    // Round-robin: en cada vuelta colocamos a lo sumo 1 bloque por noche.
-    // Así garantizamos primero la cobertura mínima de TODAS las noches
-    // (amplitud) antes de saturar una sola (profundidad), evitando que las
-    // primeras noches consuman toda la capacidad y dejen las últimas vacías.
+    // v5: Cobertura nocturna BREADTH-FIRST por demanda. En cada vuelta
+    // colocamos a lo sumo 1 bloque por noche, recorriendo los días de MAYOR a
+    // MENOR demanda. Así garantizamos el PISO nocturno (minStaff) en TODAS las
+    // noches antes de saturar una sola — la noche es un mínimo que no debe
+    // concentrarse. Si la capacidad se agota, las noches de MENOR demanda son
+    // las que quedan descubiertas (mismo criterio que el día).
+    const nightDaysSorted = [...days].sort((a, b) => dayDemandWeight(b.date) - dayDemandWeight(a.date));
     let progress = true;
     let rounds = 0;
     const MAX_ROUNDS = 60;
     while (progress && rounds < MAX_ROUNDS) {
       progress = false;
       rounds++;
-      for (const day of days) {
+      for (const day of nightDaysSorted) {
         if (placeOneNightBlock(day)) progress = true;
       }
     }
@@ -759,58 +880,49 @@ export function generateAutomaticShifts({
     }
   }
 
-  // ── FASE 2: Cobertura DIURNA (06:00 → nightStart, o jornada de oficina) ─
+  // ── FASE 2: Cobertura DIURNA (horaInicioDia → nightStart, o jornada oficina) ─
   if (modoOperacion === 'OFICINA' || is24x7) {
     const dayPool = [...empByClass.DAY_ONLY, ...empByClass.MIXED, ...empByClass.ANY];
 
-    // Demanda efectiva diurna: en 24/7 garantizamos al menos 1 entre 06:00 y nightStart.
+    // Demanda efectiva diurna: en 24/7 garantizamos al menos 1 en la ventana diurna.
     const dayMinFloor = is24x7 ? 1 : 0;
-    const dayWindowStart = 6 * slotsPorHora;
+    // v5: la ventana diurna arranca en horaInicioDia (default 04:00, configurable).
+    const dayWindowStart = dayStartSlot;
     const dayWindowEnd = nightConfig ? nightStartSlot : slotsPerDay;
+
+    // v5: BREADTH-FIRST por demanda. En cada vuelta añadimos a lo sumo 1 turno
+    // por día, recorriendo los días de MAYOR a MENOR demanda. Reparte la
+    // capacidad finita (acotada por topes semanales) de forma eficiente y, si
+    // escasea, sirve primero a los días de mayor demanda. Los días que igual
+    // queden por debajo del piso (minEmpleadosDia) se vacían por completo en la
+    // FASE 3.5 → política "mejor un día entero vacío que muchos días con huecos".
+    const daysSorted = [...days].sort((a, b) => dayDemandWeight(b.date) - dayDemandWeight(a.date));
 
     let changed = true;
     let iterations = 0;
-    const MAX_ITER = days.length * 25;
+    const MAX_ITER = days.length * 45 + 10;
 
     while (changed && iterations < MAX_ITER) {
       changed = false;
       iterations++;
 
-      // Precompute déficit por día (evita O(n²) recalculando vectores en cada comparación del sort)
-      const dayDeficits = new Map();
-      for (const day of days) {
-        const dem = getDemandVecFor(day.date);
-        const cov = getCoverageVector(day.dateStr);
-        let t = 0;
-        for (let s = dayWindowStart; s < dayWindowEnd; s++) {
-          const d = Math.max(dem[s], s >= dayWindowStart && s < dayWindowEnd ? dayMinFloor : 0);
-          t += Math.max(0, d - cov[s]);
-        }
-        dayDeficits.set(day.dateStr, t);
-      }
-      const totalDefAcrossDays = [...dayDeficits.values()].reduce((s, v) => s + v, 0);
-      const daysSorted = [...days].sort((a, b) => dayDeficits.get(b.dateStr) - dayDeficits.get(a.dateStr));
-      if (totalDefAcrossDays === 0) break;
-
       for (const day of daysSorted) {
-        let dayTurnos = 0;
-        const MAX_TURNOS_POR_DIA = 25;
-        while (dayTurnos < MAX_TURNOS_POR_DIA) {
-          dayTurnos++;
+          // v5: no superar el techo de personas distintas/día.
+          if (maxDia != null && distinctPeopleOnDay(day.dateStr) >= maxDia) continue;
           const demVec = getDemandVecFor(day.date);
           const covVec = getCoverageVector(day.dateStr);
           const effDem = (s) => Math.max(demVec[s] || 0, (s >= dayWindowStart && s < dayWindowEnd) ? dayMinFloor : 0);
           const defVec = new Array(slotsPerDay).fill(0);
           for (let s = dayWindowStart; s < dayWindowEnd; s++) defVec[s] = Math.max(0, effDem(s) - covVec[s]);
           const totalDeficit = defVec.reduce((s, v) => s + v, 0);
-          if (totalDeficit === 0) break;
+          if (totalDeficit === 0) continue;
 
           // ── v4.2: Puntuar STARTS CANÓNICOS primero (variedad de horarios) ──
           // Convertir los starts canónicos a slots y priorizar los que tienen
           // mayor déficit. Esto genera 12+ horarios distintos vs el bucle
           // exhaustivo que producía siempre los mismos 4 horarios.
           const earlyDeficit = defVec.slice(dayWindowStart, 9 * slotsPorHora).reduce((a, b) => a + b, 0);
-          const lateDeficit = defVec.slice(Math.max(dayWindowStart, 16 * slotsPorHora), dayWindowEnd).reduce((a, b) => a + b, 0);
+          const lateDeficit = defVec.slice(Math.max(dayWindowStart, 13 * slotsPorHora), dayWindowEnd).reduce((a, b) => a + b, 0);
 
           // Candidatos: primero los starts canónicos dentro de la ventana diurna.
           const canonicalSlots = CANONICAL_DAY_STARTS
@@ -888,7 +1000,7 @@ export function generateAutomaticShifts({
                 bloque: 1,
                 disponibilidad: false,
                 recargo_porcentaje: 0,
-                observaciones: `Auto-asignado v4.1 · Slot ${startTimeStr}-${endTimeStr}${touchesNight ? ' (cruza horario nocturno)' : ''} · ${estrategia}`,
+                observaciones: `Auto-asignado v5 · Slot ${startTimeStr}-${endTimeStr}${touchesNight ? ' (cruza horario nocturno)' : ''} · ${estrategia}`,
               });
               changed = true;
               placed = true;
@@ -896,8 +1008,7 @@ export function generateAutomaticShifts({
             }
             if (placed) break;
           }
-          if (!placed) break;
-        }
+          // Si no se pudo colocar nada en este día, seguimos con el siguiente.
       }
     }
   }
@@ -976,6 +1087,41 @@ export function generateAutomaticShifts({
             });
           });
           tplChanged = true;
+        }
+      }
+    }
+  }
+
+  // ── FASE 3.5 (v5): Aplicar el PISO de personas/día (minEmpleadosDia) ──
+  // Política del usuario: preferir un día COMPLETAMENTE vacío a varios días
+  // con huecos. Si un día no alcanza el piso mínimo de personas, se vacía por
+  // completo (sus turnos generados se quitan, liberando capacidad) y se avisa
+  // con el nombre del día. Procesamos de MENOR a MAYOR demanda: los días flojos
+  // se sacrifican primero, protegiendo los días de mayor demanda.
+  const diasSinCobertura = [];
+  if (minDia != null) {
+    const daysByDemandAsc = [...days].sort((a, b) => dayDemandWeight(a.date) - dayDemandWeight(b.date));
+    let huboVaciado = true;
+    let pases = 0;
+    while (huboVaciado && pases < days.length + 1) {
+      huboVaciado = false;
+      pases++;
+      for (const day of daysByDemandAsc) {
+        if (diasSinCobertura.includes(day.dateStr)) continue;
+        const personas = distinctPeopleOnDay(day.dateStr);
+        if (personas > 0 && personas < minDia) {
+          for (let i = generatedShifts.length - 1; i >= 0; i--) {
+            if (String(generatedShifts[i].start_time).startsWith(day.dateStr)) {
+              generatedShifts.splice(i, 1);
+            }
+          }
+          diasSinCobertura.push(day.dateStr);
+          warnings.push(
+            `${day.dateStr} (${nombreDia(day.date)}): sin trabajadores disponibles — ` +
+            `no se alcanza el mínimo de ${minDia} personas (solo ${personas}). ` +
+            `Día dejado sin cubrir para priorizar los días de mayor demanda.`
+          );
+          huboVaciado = true;
         }
       }
     }
@@ -1080,7 +1226,10 @@ export function generateAutomaticShifts({
   }
 
   // ── Advertencias finales de cobertura ────────────────────────────────
+  // Los días vaciados a propósito por el piso (minEmpleadosDia) ya tienen su
+  // aviso "sin trabajadores disponibles"; no repetir el déficit horario.
   days.forEach(day => {
+    if (diasSinCobertura.includes(day.dateStr)) return;
     const covVec = getCoverageVector(day.dateStr);
     const demVec = getDemandVecFor(day.date);
     let totalDef = 0;
