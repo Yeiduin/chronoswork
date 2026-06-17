@@ -176,5 +176,57 @@ console.log('\n── TEST 4: 24/7 — 50/día, 3 noche ──');
   ok(nightShifts.length >= 1, `hay cobertura nocturna el día 0 (${nightShifts.length} bloques)`);
 }
 
+// ── TEST 5: Oficina 8-18, 2 personas (caso Administración y Gerencia) ────
+console.log('\n── TEST 5: OFICINA 08:00-18:00, 2 personas ──');
+{
+  const employees = [
+    { id: 'A', nombre: 'Admin', horas_semanales_contrato: 42, horas_max_diarias: 9, jornada_preferida: 'DIURNA', solo_diurno: true },
+    { id: 'G', nombre: 'Gerente', horas_semanales_contrato: 42, horas_max_diarias: 9, jornada_preferida: 'DIURNA', solo_diurno: true },
+  ];
+  const officeDays = Array.from({ length: 5 }, (_, i) => addDays(new Date(2026, 5, 15), i)); // lun-vie
+  const { shifts } = generateAutomaticShifts({
+    employees, templates: [], absences: [], existingShifts: [],
+    year: 2026, month: 6,
+    diasTrabajoArea: [1, 2, 3, 4, 5],
+    diasToProcess: officeDays,
+    demandSlots: [],
+    modoOperacion: 'OFICINA',
+    estrategia: 'BALANCED',
+    balancearCarga: true,
+    minEmpleadosDia: 1,
+    maxEmpleadosDia: 2,
+    minEmpleadosNoche: 0,
+    horaInicioDia: '08:00',
+    horaFinDia: '18:00',
+  });
+
+  ok(shifts.length > 0, `se generaron turnos de oficina (${shifts.length})`);
+
+  // CRÍTICO: ningún turno con end_time <= start_time (constraint check_shift_times).
+  const invalid = shifts.filter(s => new Date(s.end_time) <= new Date(s.start_time));
+  ok(invalid.length === 0, `0 turnos inválidos end<=start (encontrados: ${invalid.length})`);
+
+  // Ningún turno empieza antes de las 08:00 ni termina después de las 18:00.
+  const outOfHours = shifts.filter(s => {
+    const sh = parseInt(String(s.start_time).slice(11, 13), 10);
+    const crosses = String(s.end_time).slice(0, 10) !== String(s.start_time).slice(0, 10);
+    const eh = parseInt(String(s.end_time).slice(11, 13), 10);
+    const em = parseInt(String(s.end_time).slice(14, 16), 10);
+    return sh < 8 || crosses || eh > 18 || (eh === 18 && em > 0);
+  });
+  ok(outOfHours.length === 0, `todos los turnos dentro de 08:00-18:00 (fuera: ${outOfHours.length})`);
+
+  // Máx 2 personas por día.
+  let maxPpl = 0;
+  for (const d of officeDays) maxPpl = Math.max(maxPpl, distinctPeople(shifts, dStr(d)));
+  ok(maxPpl <= 2, `nunca más de 2 personas por día (máx: ${maxPpl})`);
+
+  // Las jornadas largas (≥8h) llevan descanso de almuerzo (>0 min).
+  const longShifts = shifts.filter(s => (new Date(s.end_time) - new Date(s.start_time)) / 3600000 >= 8);
+  const longWithBreak = longShifts.filter(s => (s.break_minutes || 0) > 0);
+  ok(longShifts.length === 0 || longWithBreak.length === longShifts.length,
+    `las jornadas largas llevan almuerzo (${longWithBreak.length}/${longShifts.length})`);
+}
+
 console.log(`\n══════════════════════════════════\nRESULTADO: ${pass} ✅  |  ${fail} ❌\n══════════════════════════════════`);
 if (fail > 0) process.exit(1);

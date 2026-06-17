@@ -299,6 +299,7 @@ export function generateAutomaticShifts({
   minEmpleadosDia = null,   // piso: si no se alcanza, el día se deja vacío y se avisa
   maxEmpleadosDia = null,   // techo + objetivo de personas distintas/día (incluye noche)
   horaInicioDia = '04:00',  // hora a la que puede empezar el primer turno diurno
+  horaFinDia = null,        // hora de cierre del día (oficina). null = sin tope explícito
 }) {
   const generatedShifts = [];
   const warnings = [];
@@ -357,6 +358,18 @@ export function generateAutomaticShifts({
     0,
     Math.min(timeToSlot(horaInicioDia || '04:00', slotsPorHora), slotsPerDay - minSlots)
   );
+
+  // ── v5: Hora de cierre del día (oficina). Si no se indica, el día llega
+  // hasta medianoche (slot máximo). Acotado para que siempre quepa al menos un
+  // turno mínimo después del inicio. 00:00 como cierre se interpreta como fin
+  // de día (medianoche = slotsPerDay), no como las 00:00 del mismo día.
+  let dayEndSlotCfg = slotsPerDay;
+  if (horaFinDia != null && String(horaFinDia).trim() !== '') {
+    const raw = timeToSlot(horaFinDia, slotsPorHora);
+    dayEndSlotCfg = raw <= 0 ? slotsPerDay : Math.min(raw, slotsPerDay);
+  }
+  // El cierre nunca puede ser <= inicio + 1 turno mínimo.
+  dayEndSlotCfg = Math.max(dayEndSlotCfg, dayStartSlot + minSlots);
 
   // ── Días laborables del mes a procesar ───────────────────────────────
   const days = (Array.isArray(diasToProcess) ? diasToProcess : [])
@@ -524,8 +537,9 @@ export function generateAutomaticShifts({
   );
 
   // Ventana diurna efectiva (donde aplica el headcount objetivo del día).
+  // En 24/7 la frontera es el inicio de la noche; en oficina, el cierre del día.
   const dayWindowStartGlobal = dayStartSlot;
-  const dayWindowEndGlobal = nightConfig ? nightStartSlot : slotsPerDay;
+  const dayWindowEndGlobal = nightConfig ? nightStartSlot : dayEndSlotCfg;
 
   // ── Cache de demanda CRUDA (curva tal cual, antes de escalar a headcount) ─
   const rawDemandCache = {};
@@ -892,9 +906,10 @@ export function generateAutomaticShifts({
 
     // Demanda efectiva diurna: en 24/7 garantizamos al menos 1 en la ventana diurna.
     const dayMinFloor = is24x7 ? 1 : 0;
-    // v5: la ventana diurna arranca en horaInicioDia (default 04:00, configurable).
+    // v5: ventana diurna [horaInicioDia, cierre]. En 24/7 el cierre es el inicio
+    // de la noche; en oficina, horaFinDia (default a medianoche si no se indica).
     const dayWindowStart = dayStartSlot;
-    const dayWindowEnd = nightConfig ? nightStartSlot : slotsPerDay;
+    const dayWindowEnd = nightConfig ? nightStartSlot : dayEndSlotCfg;
 
     // v5: BREADTH-FIRST por demanda. En cada vuelta añadimos a lo sumo 1 turno
     // por día, recorriendo los días de MAYOR a MENOR demanda. Reparte la
@@ -979,12 +994,22 @@ export function generateAutomaticShifts({
             }
 
             for (const dur of variants) {
-              const startTimeStr = slotToTime(start, slotsPorHora);
-              const endTimeStr = slotToTime(start + dur, slotsPorHora);
+              if (dur < minSlots) continue; // nunca por debajo del mínimo legal
+              const startSlotAbs = start;
+              const endSlotAbs = start + dur;
+              const startTimeStr = slotToTime(startSlotAbs, slotsPorHora);
+              const endTimeStr = slotToTime(endSlotAbs, slotsPorHora);
               const shiftHrs = dur / slotsPorHora;
+              // Si el turno termina en/después de medianoche, la fecha de fin es
+              // el día siguiente (evita end<=start cuando slotToTime envuelve a
+              // 00:00). slotToTime(96)→'00:00' del día D+1, no del día D.
+              const endOnNextDay = endSlotAbs >= slotsPerDay;
+              const endDateStr = endOnNextDay
+                ? dateToStr(addDays(day.date, 1))
+                : day.dateStr;
               const proposed = {
                 start_time: `${day.dateStr}T${startTimeStr}`,
-                end_time: `${day.dateStr}T${endTimeStr}`,
+                end_time: `${endDateStr}T${endTimeStr}`,
               };
               const nightHrs = shiftNightHours(proposed);
               // ¿El turno entra en la jornada nocturna DEDICADA (ventana
@@ -1007,7 +1032,9 @@ export function generateAutomaticShifts({
                 end_time: proposed.end_time,
                 shift_type: 'custom',
                 periodo: periodoStr,
-                break_minutes: shiftHrs >= 6 ? 30 : 0,
+                // Almuerzo/descanso según duración: jornadas largas (≥8h) en
+                // oficina suelen llevar 1h; 6-8h → 30 min; cortas → 0.
+                break_minutes: shiftHrs >= 8 ? 60 : (shiftHrs >= 6 ? 30 : 0),
                 shift_kind: nightHrs > 0 ? 'NOCTURNO' : 'STANDARD',
                 bloque: 1,
                 disponibilidad: false,

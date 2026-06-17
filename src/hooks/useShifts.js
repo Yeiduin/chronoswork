@@ -220,7 +220,7 @@ export function useShifts(periodo = null) {
       try {
         const { data: hcData } = await supabase
           .from('areas')
-          .select('min_empleados_dia, max_empleados_dia, hora_inicio_dia')
+          .select('min_empleados_dia, max_empleados_dia, hora_inicio_dia, hora_fin_dia')
           .eq('id', areaId)
           .single();
         if (hcData) areaConfig = { ...areaConfig, ...hcData };
@@ -260,6 +260,7 @@ export function useShifts(periodo = null) {
       minEmpleadosDia: overrideMinEmpleadosDia ?? areaConfig.min_empleados_dia ?? null,
       maxEmpleadosDia: overrideMaxEmpleadosDia ?? areaConfig.max_empleados_dia ?? null,
       horaInicioDia: areaConfig.hora_inicio_dia ?? '04:00',
+      horaFinDia: areaConfig.hora_fin_dia ?? null,
     });
 
     if (!Array.isArray(shiftsToInsert) || shiftsToInsert.length === 0) {
@@ -284,17 +285,35 @@ export function useShifts(periodo = null) {
       return clean;
     });
 
+    // Red de seguridad: descartar turnos inválidos (sin tiempos o con
+    // end_time <= start_time) para que la BD nunca rechace todo el lote por el
+    // constraint check_shift_times. Se avisa cuántos se descartaron.
+    const invalidShifts = sanitizedShifts.filter(s =>
+      !s.start_time || !s.end_time || new Date(s.end_time) <= new Date(s.start_time)
+    );
+    const validShifts = sanitizedShifts.filter(s =>
+      s.start_time && s.end_time && new Date(s.end_time) > new Date(s.start_time)
+    );
+    if (invalidShifts.length > 0) {
+      console.warn(`[autoAssign] ${invalidShifts.length} turno(s) inválido(s) descartado(s) (end<=start):`, invalidShifts);
+      warnings.push(`Se descartaron ${invalidShifts.length} turno(s) con horario inválido (revisar configuración de horas del área).`);
+    }
+    if (validShifts.length === 0) {
+      await fetchShifts();
+      return { inserted: 0, skipped: invalidShifts.length, alertaDias: warnings || [] };
+    }
+
     let inserted = 0;
     const BATCH = 250; // batches más pequeños para evitar el límite de payload
-    for (let i = 0; i < sanitizedShifts.length; i += BATCH) {
-      const chunk = sanitizedShifts.slice(i, i + BATCH);
+    for (let i = 0; i < validShifts.length; i += BATCH) {
+      const chunk = validShifts.slice(i, i + BATCH);
       const { error } = await supabase.from('shifts').insert(chunk);
       if (error) {
         // Devolver mensaje útil al usuario
         console.error('[autoAssign] Error insertando lote:', error);
         return {
           inserted,
-          skipped: sanitizedShifts.length - i,
+          skipped: validShifts.length - i,
           alertaDias: [
             ...(warnings || []),
             `Error en BD: ${error.message}` +
@@ -309,7 +328,7 @@ export function useShifts(periodo = null) {
     }
 
     await fetchShifts();
-    return { inserted, skipped: 0, alertaDias: warnings || [] };
+    return { inserted, skipped: invalidShifts.length, alertaDias: warnings || [] };
   };
 
   return {
