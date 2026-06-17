@@ -689,15 +689,21 @@ export function generateAutomaticShifts({
   });
 
   // ── Helper genérico: ¿el empleado puede tomar este turno? ────────────
-  const employeeEligible = (emp, { startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, touchesNight }) => {
-    if (touchesNight && !canWorkNight(emp)) return false;
-    if (!touchesNight && !canWorkDay(emp)) return false;
+  // `entersNight` = el turno entra en la JORNADA NOCTURNA DEDICADA (la ventana
+  // configurada, ej. 22:00-06:00), NO el simple recargo legal desde las 19:00.
+  // Así un empleado "solo diurno" SÍ puede cubrir la tarde-noche (19:00-22:00,
+  // que paga recargo) y solo la noche dedicada queda reservada al personal
+  // nocturno. `nightHrs` (horas con recargo nocturno, desde 19:00) se usa aparte
+  // para el tope de horas nocturnas y para marcar el turno como NOCTURNO.
+  const employeeEligible = (emp, { startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, entersNight }) => {
+    if (entersNight && !canWorkNight(emp)) return false;
+    if (!entersNight && !canWorkDay(emp)) return false;
     if (isBlocked(emp.id, startDateStr)) return false;
     if (restDays.has(`${emp.id}_${startDateStr}`)) return false;
     if (hasShiftOnDay(emp.id, startDateStr)) return false;
     if (getWeeklyHours(emp.id, startDateObj) + shiftHrs > getMaxHoursFor(emp)) return false;
     if (getDailyHours(emp.id, startDateStr) + shiftHrs > getMaxDailyHours(emp)) return false;
-    if (touchesNight && getWeeklyNightHours(emp.id, startDateObj) + nightHrs > getMaxNightHours(emp)) return false;
+    if (nightHrs > 0 && getWeeklyNightHours(emp.id, startDateObj) + nightHrs > getMaxNightHours(emp)) return false;
     const lastEnd = getLastShiftEndTime(emp.id, startDateStr);
     if (lastEnd) {
       const gapHrs = (new Date(`${startDateStr}T${startTimeStr}`) - new Date(lastEnd)) / 3600000;
@@ -820,7 +826,7 @@ export function generateAutomaticShifts({
       const nightHrs = shiftNightHours(proposed);
 
       const candidate = pickCandidate(nightPool, {
-        startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, touchesNight: true,
+        startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, entersNight: true,
       }, startDateObj);
       if (!candidate) return false;
 
@@ -981,10 +987,16 @@ export function generateAutomaticShifts({
                 end_time: `${day.dateStr}T${endTimeStr}`,
               };
               const nightHrs = shiftNightHours(proposed);
-              const touchesNight = nightHrs > 0;
+              // ¿El turno entra en la jornada nocturna DEDICADA (ventana
+              // configurada)? Si solo toca el recargo (19:00-nightStart), NO la
+              // entra → un diurno puede cubrir la tarde-noche. Cálculo por slots
+              // (sin Date) para evitar desfases de zona horaria.
+              const entersNight = nightConfig
+                ? (start < nightEndRaw || (start + dur) > nightStartSlot)
+                : false;
               const candidate = pickCandidate(dayPool, {
                 startDateStr: day.dateStr, startDateObj: day.date, startTimeStr,
-                shiftHrs, nightHrs, touchesNight,
+                shiftHrs, nightHrs, entersNight,
               }, day.date);
               if (!candidate) continue;
 
@@ -996,11 +1008,11 @@ export function generateAutomaticShifts({
                 shift_type: 'custom',
                 periodo: periodoStr,
                 break_minutes: shiftHrs >= 6 ? 30 : 0,
-                shift_kind: touchesNight ? 'NOCTURNO' : 'STANDARD',
+                shift_kind: nightHrs > 0 ? 'NOCTURNO' : 'STANDARD',
                 bloque: 1,
                 disponibilidad: false,
                 recargo_porcentaje: 0,
-                observaciones: `Auto-asignado v5 · Slot ${startTimeStr}-${endTimeStr}${touchesNight ? ' (cruza horario nocturno)' : ''} · ${estrategia}`,
+                observaciones: `Auto-asignado v5 · Slot ${startTimeStr}-${endTimeStr}${nightHrs > 0 ? ' (con recargo nocturno)' : ''} · ${estrategia}`,
               });
               changed = true;
               placed = true;
@@ -1058,15 +1070,18 @@ export function generateAutomaticShifts({
           }
           if (tplHrs < limits.minHorasTurno) continue;
 
-          const tplIsNight = shiftPagaNocturno(tpl);
           const nextDay = dateToStr(addDays(day.date, 1));
           const blocks = expandTemplateToShifts(tpl, day.dateStr, nextDay);
           const nightHrs = blocks.reduce((a, b) => a + shiftNightHours(b), 0);
+          // ¿La plantilla entra en la jornada nocturna DEDICADA? (no solo recargo)
+          const tplEntersNight = nightConfig
+            ? (tplStart < nightEndRaw || tplEnd > nightStartSlot)
+            : false;
 
           const candidate = pickCandidate(employees, {
             startDateStr: day.dateStr, startDateObj: day.date,
             startTimeStr: tpl.hora_inicio, shiftHrs: tplHrs, nightHrs,
-            touchesNight: tplIsNight || nightHrs > 0,
+            entersNight: tplEntersNight,
           }, day.date);
           if (!candidate) continue;
 
@@ -1167,9 +1182,16 @@ export function generateAutomaticShifts({
           for (const turno of turnosSobre) {
             // Calcular horas del turno
             const turnoHrs = shiftHours(turno);
-            const turnoIsNight = shiftNightHours(turno) > 0;
             const turnoDateStr = String(turno.start_time).slice(0, 10);
             const turnoStartStr = String(turno.start_time).slice(11, 16);
+            // ¿El turno entra en la jornada nocturna DEDICADA? (no solo recargo)
+            const tEndStr = String(turno.end_time).slice(11, 16);
+            const tCrosses = String(turno.end_time).slice(0, 10) !== turnoDateStr;
+            const tStartSlot = timeToSlot(turnoStartStr, slotsPorHora);
+            const tEndSlot = (tCrosses ? slotsPerDay : 0) + timeToSlot(tEndStr, slotsPorHora);
+            const turnoEntersNight = nightConfig
+              ? (tStartSlot < nightEndRaw || tEndSlot > nightStartSlot)
+              : false;
 
             // Buscar receptor: empleado con menos horas, que pueda hacer este turno
             const subcargados = employees
@@ -1187,7 +1209,7 @@ export function generateAutomaticShifts({
                 startTimeStr: turnoStartStr,
                 shiftHrs: turnoHrs,
                 nightHrs: shiftNightHours(turno),
-                touchesNight: turnoIsNight,
+                entersNight: turnoEntersNight,
               })) continue;
               receptor = e;
               break;

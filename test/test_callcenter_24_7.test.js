@@ -201,18 +201,27 @@ const wrongNightAssignments = shifts
   .filter(s => !nightOnly.some(n => n.id === s.employee_id));
 assert(wrongNightAssignments.length === 0, `Ningún DAY_ONLY fue asignado a la noche (${wrongNightAssignments.length} errores)`);
 
-// ── D. Ningún DAY_ONLY tiene turno que toque horario nocturno ────────────
-console.log('\nD. Empleados DAY_ONLY no tienen turno nocturno:');
+// ── D. Ningún DAY_ONLY entra en la JORNADA NOCTURNA DEDICADA (22:00-06:00) ─
+// Nota: la tarde-noche 19:00-22:00 sí la pueden cubrir empleados diurnos (paga
+// recargo nocturno, pero NO es la jornada nocturna dedicada). Lo prohibido es
+// entrar en la ventana 22:00-06:00, reservada al personal nocturno.
+// Horas leídas del STRING (sin conversión de zona horaria).
+console.log('\nD. Empleados DAY_ONLY no entran en la noche dedicada (22:00-06:00):');
+const NIGHT_START = 22, NIGHT_END = 6;
 const dayOnlyShifts = shifts.filter(s => dayOnly.some(d => d.id === s.employee_id));
 const dayOnlyWithNight = dayOnlyShifts.filter(s => {
-  const start = new Date(s.start_time);
-  const end = new Date(s.end_time);
-  const startH = start.getHours();
-  const endH = end.getHours() + (end.getDate() !== start.getDate() ? 24 : 0);
-  // Si termina después de las 19:00, está mal
-  return startH >= 19 || endH > 19 || (endH === 19 && end.getMinutes() > 0);
+  const sH = parseInt(String(s.start_time).slice(11, 13), 10);
+  const crosses = String(s.end_time).slice(0, 10) !== String(s.start_time).slice(0, 10);
+  const eHraw = parseInt(String(s.end_time).slice(11, 13), 10);
+  const eM = parseInt(String(s.end_time).slice(14, 16), 10);
+  const eH = eHraw + (crosses ? 24 : 0);
+  // Entra en la noche dedicada si empieza >=22:00, o termina pasadas las 22:00,
+  // o cruza medianoche hacia la madrugada (<06:00).
+  const startsInNight = sH >= NIGHT_START || sH < NIGHT_END;
+  const endsInNight = eH > NIGHT_START || (crosses && eHraw > 0) || (crosses && eHraw === 0 && eM > 0);
+  return startsInNight || endsInNight;
 });
-assert(dayOnlyWithNight.length === 0, `0 turnos DAY_ONLY cruzan 19:00 (encontrados: ${dayOnlyWithNight.length})`);
+assert(dayOnlyWithNight.length === 0, `0 turnos DAY_ONLY entran en la noche dedicada 22:00-06:00 (encontrados: ${dayOnlyWithNight.length})`);
 
 // ── E. Duración de turnos 4-9h ───────────────────────────────────────────
 console.log('\nE. Duración de turnos:');
