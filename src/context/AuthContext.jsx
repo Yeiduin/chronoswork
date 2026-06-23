@@ -1,83 +1,144 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../config/supabaseClient';
 
 const AuthContext = createContext(null);
 
+// ── Helpers de rol ────────────────────────────────────────────────────────────
+// Los roles operativos vienen de tenant_users.rol
+// El SaaS_Admin se detecta por la tabla platform_admins (via query adicional)
+
+const ROLE_SAAS_ADMIN     = 'saas_admin';    // Dueño de la plataforma
+const ROLE_SUPER_ADMIN    = 'super_admin';   // Dueño de la empresa
+const ROLE_COORDINATOR    = 'coordinator';   // Programador de turnos (también 'admin')
+const ROLE_EMPLEADO       = 'empleado';      // Colaborador
+
+export { ROLE_SAAS_ADMIN, ROLE_SUPER_ADMIN, ROLE_COORDINATOR, ROLE_EMPLEADO };
+
+// Destino de redirección según rol
+export function getRoleRedirect(role) {
+  switch (role) {
+    case ROLE_SAAS_ADMIN:  return '/saas-dashboard';
+    case ROLE_EMPLEADO:    return '/mi-perfil';
+    default:               return '/dashboard';  // super_admin, coordinator, admin
+  }
+}
+
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+  const [user, setUser]       = useState(null);
   const [session, setSession] = useState(null);
-  const [tenant, setTenant] = useState(null);
+  const [tenant, setTenant]   = useState(null);
+  const [userRole, setUserRole] = useState(null);   // string del rol actual
   const [loading, setLoading] = useState(true);
 
-  const fetchTenant = useCallback(async (userId) => {
-    if (!userId) return;
+  // ── Función principal: cargar datos del usuario autenticado ──────────────
+  const fetchUserData = useCallback(async (userId) => {
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+
     try {
-      // Usar service-level query para evitar que RLS bloquee la carga del tenant
-      const { data, error } = await supabase
-        .from('tenant_users')
-        .select('tenant_id, rol, tenants(id, razon_social, nit, direccion, telefono, plan, activo, created_at, suscripcion_activa, plan_vigente_hasta)')
+      // 1. ¿Es Platform Admin (SaaS_Admin)?
+      const { data: platformAdmin } = await supabase
+        .from('platform_admins')
+        .select('id, nombre')
         .eq('user_id', userId)
         .maybeSingle();
 
-      if (error) {
-        console.error('RLS/tenant fetch error:', error.message);
-        // Intentar fetch directo sin join como fallback
-        const { data: tuData } = await supabase
+      if (platformAdmin) {
+        setUserRole(ROLE_SAAS_ADMIN);
+        setTenant(null);  // El SaaS_Admin no tiene tenant propio
+        return;
+      }
+
+      // 2. Buscar en tenant_users para roles operativos
+      const { data: tenantUserData, error: tuError } = await supabase
+        .from('tenant_users')
+        .select(`
+          tenant_id,
+          rol,
+          tenants (
+            id, razon_social, nit, direccion, telefono,
+            plan, activo, created_at, suscripcion_activa, plan_vigente_hasta
+          )
+        `)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (tuError) {
+        console.error('fetchUserData error:', tuError.message);
+        // Fallback sin join
+        const { data: tuBasic } = await supabase
           .from('tenant_users')
           .select('tenant_id, rol')
           .eq('user_id', userId)
           .maybeSingle();
-        if (tuData?.tenant_id) {
+
+        if (tuBasic) {
+          setUserRole(tuBasic.rol === 'admin' ? ROLE_COORDINATOR : tuBasic.rol);
           const { data: tenantData } = await supabase
-            .from('tenants')
-            .select('*')
-            .eq('id', tuData.tenant_id)
-            .maybeSingle();
+            .from('tenants').select('*').eq('id', tuBasic.tenant_id).maybeSingle();
           if (tenantData) setTenant(tenantData);
         }
-      } else if (data?.tenants) {
-        setTenant(data.tenants);
-      } else if (data?.tenant_id) {
-        // join no devolvió tenants, buscar directamente
-        const { data: tenantData } = await supabase
-          .from('tenants')
-          .select('*')
-          .eq('id', data.tenant_id)
-          .maybeSingle();
-        if (tenantData) setTenant(tenantData);
+        return;
+      }
+
+      if (tenantUserData) {
+        // Normalizar 'admin' como alias de coordinator
+        const rawRol = tenantUserData.rol;
+        const normalizedRol = rawRol === 'admin' ? ROLE_COORDINATOR : rawRol;
+        setUserRole(normalizedRol);
+
+        if (tenantUserData.tenants) {
+          setTenant(tenantUserData.tenants);
+        } else if (tenantUserData.tenant_id) {
+          // Join no devolvió datos, buscar directamente
+          const { data: tenantData } = await supabase
+            .from('tenants').select('*').eq('id', tenantUserData.tenant_id).maybeSingle();
+          if (tenantData) setTenant(tenantData);
+        }
       }
     } catch (err) {
-      console.error('Error crítico fetchTenant:', err);
+      console.error('Error crítico fetchUserData:', err);
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // ── Suscripción a cambios de sesión ──────────────────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchTenant(session.user.id);
-      } else {
-        setLoading(false);
-      }
+      fetchUserData(session?.user?.id ?? null);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchTenant(session.user.id);
+        fetchUserData(session.user.id);
       } else {
         setTenant(null);
+        setUserRole(null);
         setLoading(false);
       }
     });
 
     return () => subscription.unsubscribe();
-  }, [fetchTenant]);
+  }, [fetchUserData]);
 
+  // ── Helpers computados de rol ─────────────────────────────────────────────
+  const roleHelpers = useMemo(() => ({
+    isPlatformAdmin: userRole === ROLE_SAAS_ADMIN,
+    isSuperAdmin:    userRole === ROLE_SUPER_ADMIN,
+    isCoordinator:   userRole === ROLE_COORDINATOR,
+    isEmpleado:      userRole === ROLE_EMPLEADO,
+    isOperationalAdmin: [ROLE_SUPER_ADMIN, ROLE_COORDINATOR].includes(userRole),
+    tenantId: tenant?.id ?? null,
+  }), [userRole, tenant]);
+
+  // ── Auth Actions ──────────────────────────────────────────────────────────
   const signIn = async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
@@ -87,10 +148,25 @@ export function AuthProvider({ children }) {
   const signOut = async () => {
     await supabase.auth.signOut();
     setTenant(null);
+    setUserRole(null);
   };
 
   const signUp = async (email, password) => {
     const { data, error } = await supabase.auth.signUp({ email, password });
+    if (error) throw error;
+    return data;
+  };
+
+  // Enviar email de recuperación de contraseña
+  const resetPassword = async (email) => {
+    const redirectTo = `${window.location.origin}/reset-password`;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    if (error) throw error;
+  };
+
+  // Establecer nueva contraseña (luego de hacer clic en el link del email)
+  const updatePassword = async (newPassword) => {
+    const { data, error } = await supabase.auth.updateUser({ password: newPassword });
     if (error) throw error;
     return data;
   };
@@ -100,11 +176,17 @@ export function AuthProvider({ children }) {
       user,
       session,
       tenant,
+      userRole,
       loading,
+      // Helpers de rol
+      ...roleHelpers,
+      // Auth actions
       signIn,
       signOut,
       signUp,
-      refreshTenant: () => fetchTenant(user?.id),
+      resetPassword,
+      updatePassword,
+      refreshUserData: () => fetchUserData(user?.id),
     }}>
       {children}
     </AuthContext.Provider>

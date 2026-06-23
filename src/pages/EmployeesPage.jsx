@@ -4,7 +4,7 @@
 // para mostrar el nombre del área en la columna "ÁREA".
 // ============================================================
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { useAreas } from '../hooks/useAreas';
@@ -12,8 +12,143 @@ import EmployeeForm from '../components/EmployeeForm';
 import BulkImportModal from '../components/BulkImportModal';
 import {
   MdAdd, MdUpload, MdEdit, MdDelete, MdSearch,
-  MdRefresh, MdPeople,
+  MdRefresh, MdPeople, MdPersonAdd, MdCheckCircle, MdContentCopy,
 } from 'react-icons/md';
+
+// ── Modal de provisión de cuenta de empleado ─────────────────────────────────
+function ProvisionAccountModal({ employee, onClose }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [credentials, setCredentials] = useState(null);
+  const [copied, setCopied] = useState({});
+
+  const handleProvision = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error('No hay sesión activa.');
+
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const res = await fetch(`${supabaseUrl}/functions/v1/provision-employee`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          employee_id: employee.id,
+          cedula:      employee.cedula,
+          nombre:      employee.nombre,
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.error || json.detail || `Error HTTP: ${res.status}`);
+      }
+      setCredentials(json.credentials);
+    } catch (err) {
+      setError(err.message || 'Error al crear la cuenta.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyToClipboard = async (field, value) => {
+    await navigator.clipboard.writeText(value);
+    setCopied(p => ({ ...p, [field]: true }));
+    setTimeout(() => setCopied(p => ({ ...p, [field]: false })), 2000);
+  };
+
+  return (
+    <div className="cw-modal-overlay" onClick={(e) => e.target === e.currentTarget && !credentials && onClose()}>
+      <div className="cw-modal" style={{ maxWidth: 460 }}>
+        <div className="cw-modal__header">
+          <div className="cw-modal__title">
+            <MdPersonAdd /> Crear cuenta de acceso
+          </div>
+          <button className="cw-modal__close" onClick={onClose}>×</button>
+        </div>
+        <div className="cw-modal__body">
+          {!credentials ? (
+            <>
+              <div style={{ padding: '0.75rem 1rem', borderRadius: 8, background: 'var(--surface-2)', marginBottom: '1.25rem' }}>
+                <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)' }}>{employee.nombre}</div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>C.C. {employee.cedula} · {employee.cargo}</div>
+              </div>
+
+              <div className="cw-alert" style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1.25rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                ℹ️ Se creará una cuenta de acceso con correo institucional y contraseña temporal.
+                El colaborador podrá cambiar su contraseña al ingresar por primera vez.
+              </div>
+
+              {error && <div className="cw-alert cw-alert--error" style={{ marginBottom: '1rem' }}>🚫 {error}</div>}
+
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button type="button" className="cw-btn cw-btn--secondary" onClick={onClose} style={{ flex: 1 }}>Cancelar</button>
+                <button
+                  id={`btn-provision-${employee.id}`}
+                  type="button"
+                  className="cw-btn cw-btn--primary"
+                  style={{ flex: 2 }}
+                  onClick={handleProvision}
+                  disabled={loading}
+                >
+                  {loading ? <><span className="cw-spinner cw-spinner--sm"></span> Creando cuenta...</> : '🔑 Crear cuenta de acceso'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+                <MdCheckCircle style={{ fontSize: '3rem', color: '#22c55e' }} />
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.5rem' }}>¡Cuenta creada exitosamente!</h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Entregue estas credenciales físicamente al colaborador.</p>
+              </div>
+
+              <div className="cw-alert" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: '0.6rem 0.9rem', marginBottom: '1.25rem', fontSize: '0.75rem', color: '#ef4444', fontWeight: 600 }}>
+                ⚠️ Esta información solo se mostrará UNA VEZ. Cópiela antes de cerrar.
+              </div>
+
+              {[['Correo', 'email'], ['Contraseña', 'password']].map(([label, field]) => (
+                <div key={field} className="cw-form-group">
+                  <label className="cw-label">{label}</label>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input
+                      className="cw-input"
+                      readOnly
+                      value={credentials[field]}
+                      style={{ fontFamily: 'monospace', flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="cw-btn cw-btn--secondary"
+                      onClick={() => copyToClipboard(field, credentials[field])}
+                      style={{ flexShrink: 0, minWidth: 80, fontSize: '0.78rem' }}
+                    >
+                      {copied[field] ? <><MdCheckCircle /> Copiado</> : <><MdContentCopy /> Copiar</>}
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              <button
+                type="button"
+                className="cw-btn cw-btn--primary"
+                onClick={onClose}
+                style={{ width: '100%', marginTop: '0.5rem' }}
+              >
+                ✓ Listo, ya entregué las credenciales
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function EmployeesPage() {
   const { tenant } = useAuth();
@@ -29,6 +164,7 @@ export default function EmployeesPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [showImport, setShowImport] = useState(false);
+  const [provisioningEmployee, setProvisioningEmployee] = useState(null);
 
   // ─── Cargar empleados con su área asignada (vía JOIN) ─────────────────
   const fetchEmployees = async () => {
@@ -272,6 +408,7 @@ export default function EmployeesPage() {
                   <th style={{ textAlign: 'right' }}>VALOR / HORA</th>
                   <th>INGRESO</th>
                   <th>ESTADO</th>
+                  <th>CUENTA</th>
                   <th style={{ width: 100 }}>ACCIONES</th>
                 </tr>
               </thead>
@@ -330,6 +467,25 @@ export default function EmployeesPage() {
                         )}
                       </td>
                       <td>
+                        {emp.auth_user_id ? (
+                          <span style={{ fontSize: '0.72rem', color: '#22c55e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <MdCheckCircle /> Vinculada
+                          </span>
+                        ) : emp.activo ? (
+                          <button
+                            id={`btn-provision-emp-${emp.id}`}
+                            className="cw-btn cw-btn--secondary cw-btn--sm"
+                            onClick={() => setProvisioningEmployee(emp)}
+                            title="Crear cuenta de acceso para este empleado"
+                            style={{ fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: 4, padding: '0.25rem 0.6rem' }}
+                          >
+                            <MdPersonAdd /> Crear cuenta
+                          </button>
+                        ) : (
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>—</span>
+                        )}
+                      </td>
+                      <td>
                         <div style={{ display: 'flex', gap: '0.25rem' }}>
                           <button
                             className="cw-btn cw-btn--icon"
@@ -382,6 +538,13 @@ export default function EmployeesPage() {
             if (error) throw error;
             return data;
           }}
+        />
+      )}
+
+      {provisioningEmployee && (
+        <ProvisionAccountModal
+          employee={provisioningEmployee}
+          onClose={() => { setProvisioningEmployee(null); fetchEmployees(); }}
         />
       )}
     </div>

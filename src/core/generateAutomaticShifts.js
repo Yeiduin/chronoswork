@@ -23,6 +23,7 @@ import { format, addDays } from 'date-fns';
 import {
   PATRONES_ROTATIVOS,
 } from '../config/laborCatalog.js';
+import { getLocalISOString } from './dateUtils.js';
 
 // ── Defaults legales Colombia (Ley 2101/2021 + Ley 2466/2025) ────────────
 export const LEGAL_DEFAULTS_CO = {
@@ -182,16 +183,16 @@ export function expandTemplateToShifts(tpl, dateStr, nextDayStr) {
     return [
       {
         template_id: tpl.id,
-        start_time: `${dateStr}T${tpl.hora_inicio}`,
-        end_time: `${dateStr}T${tpl.hora_fin}`,
+        start_time: getLocalISOString(dateStr, tpl.hora_inicio),
+        end_time: getLocalISOString(dateStr, tpl.hora_fin),
         break_minutes: tpl.split_break_minutos || 60,
         shift_kind: kind, bloque: 1, disponibilidad: false,
         recargo_porcentaje: 0,
       },
       {
         template_id: tpl.id,
-        start_time: `${dateStr}T${tpl.hora_inicio_2}`,
-        end_time: `${dateStr}T${tpl.hora_fin_2}`,
+        start_time: getLocalISOString(dateStr, tpl.hora_inicio_2),
+        end_time: getLocalISOString(dateStr, tpl.hora_fin_2),
         break_minutes: 0,
         shift_kind: kind, bloque: 2, disponibilidad: false,
         recargo_porcentaje: 0,
@@ -202,10 +203,10 @@ export function expandTemplateToShifts(tpl, dateStr, nextDayStr) {
   if (kind === 'DISPONIBILIDAD') {
     return [{
       template_id: tpl.id,
-      start_time: `${dateStr}T${tpl.hora_inicio}`,
+      start_time: getLocalISOString(dateStr, tpl.hora_inicio),
       end_time: tpl.cruza_medianoche
-        ? `${nextDayStr}T${tpl.hora_fin}`
-        : `${dateStr}T${tpl.hora_fin}`,
+        ? getLocalISOString(nextDayStr, tpl.hora_fin)
+        : getLocalISOString(dateStr, tpl.hora_fin),
       break_minutes: 0,
       shift_kind: kind, bloque: 1, disponibilidad: true,
       recargo_porcentaje: tpl.disponibilidad_recargo_porcentaje || 0,
@@ -214,10 +215,10 @@ export function expandTemplateToShifts(tpl, dateStr, nextDayStr) {
 
   return [{
     template_id: tpl.id,
-    start_time: `${dateStr}T${tpl.hora_inicio}`,
+    start_time: getLocalISOString(dateStr, tpl.hora_inicio),
     end_time: tpl.cruza_medianoche
-      ? `${nextDayStr}T${tpl.hora_fin}`
-      : `${dateStr}T${tpl.hora_fin}`,
+      ? getLocalISOString(nextDayStr, tpl.hora_fin)
+      : getLocalISOString(dateStr, tpl.hora_fin),
     break_minutes: tpl.break_minutos || 0,
     shift_kind: kind, bloque: 1, disponibilidad: false,
     recargo_porcentaje: 0,
@@ -948,7 +949,7 @@ export function generateAutomaticShifts({
       // se contabiliza al trabajador (su fecha de inicio).
       if (maxDia != null && distinctPeopleOnDay(startDateStr) >= maxDia) return false;
 
-      const proposed = { start_time: `${startDateStr}T${startTimeStr}`, end_time: `${endDateStr}T${endTimeStr}` };
+      const proposed = { start_time: getLocalISOString(startDateStr, startTimeStr), end_time: getLocalISOString(endDateStr, endTimeStr) };
       const nightHrs = shiftNightHours(proposed);
 
       const candidate = pickCandidate(nightPool, {
@@ -1125,8 +1126,8 @@ export function generateAutomaticShifts({
                 ? dateToStr(addDays(day.date, 1))
                 : day.dateStr;
               const proposed = {
-                start_time: `${day.dateStr}T${startTimeStr}`,
-                end_time: `${endDateStr}T${endTimeStr}`,
+                start_time: getLocalISOString(day.dateStr, startTimeStr),
+                end_time: getLocalISOString(endDateStr, endTimeStr),
               };
               const nightHrs = shiftNightHours(proposed);
               // ¿El turno entra en la jornada nocturna DEDICADA (ventana

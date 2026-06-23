@@ -1,6 +1,10 @@
 import { Link } from 'react-router-dom';
+import { useAuth, getRoleRedirect } from '../context/AuthContext';
 
 export default function NotFoundPage() {
+  const { userRole } = useAuth();
+  const homeRoute = getRoleRedirect(userRole);
+
   return (
     <div style={{
       minHeight: '100vh', display: 'flex', flexDirection: 'column',
@@ -21,9 +25,10 @@ export default function NotFoundPage() {
       <p style={{ color: 'var(--text-muted)', marginBottom: '2rem', maxWidth: 400 }}>
         La ruta que busca no existe en ChronosWork. Verifique la URL o regrese al panel principal.
       </p>
-      <Link to="/dashboard" className="cw-btn cw-btn--primary cw-btn--lg">
-        ← Volver al Dashboard
+      <Link to={homeRoute} className="cw-btn cw-btn--primary cw-btn--lg">
+        ← Volver al inicio
       </Link>
     </div>
   );
 }
+

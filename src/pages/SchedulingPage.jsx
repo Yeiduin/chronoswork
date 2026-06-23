@@ -461,8 +461,18 @@ function ShiftCell({ employee, fecha, shift, blocked, blockedReason, template, o
     const abrev = nombreCorto.length > 8
       ? nombreCorto.split(' ').map(w => w[0]).join('').slice(0, 3).toUpperCase()
       : nombreCorto;
-    const inicio = template?.hora_inicio?.slice(0, 5) || shift.start_time?.slice(11, 16);
-    const fin = template?.hora_fin?.slice(0, 5) || shift.end_time?.slice(11, 16);
+
+    const getLocalHHMM = (str) => {
+      if (!str) return '';
+      if (!str.includes('T')) return str.slice(0, 5);
+      const d = new Date(str);
+      const h = String(d.getHours()).padStart(2, '0');
+      const m = String(d.getMinutes()).padStart(2, '0');
+      return `${h}:${m}`;
+    };
+
+    const inicio = template?.hora_inicio?.slice(0, 5) || getLocalHHMM(shift.start_time);
+    const fin = template?.hora_fin?.slice(0, 5) || getLocalHHMM(shift.end_time);
 
     const bd = getShiftBreakdown(shift);
     const esNocturno = shift.shift_kind === 'NOCTURNO';
