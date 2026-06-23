@@ -314,6 +314,7 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
   const maxSemanales = LEGAL_DEFAULTS_CO.maxHorasSemanales;
   const minEntreJornadas = LEGAL_DEFAULTS_CO.minHorasEntreJornadas;
   const snapSlots = Math.max(1, Math.round((snapMinutos / 60) * slotsPorHora));
+  const minSlots = Math.round(minHoras * slotsPorHora);
 
   const minEmpDia = minEmpleadosDia ?? null;
   const maxEmpDia = maxEmpleadosDia ?? null;
@@ -418,6 +419,16 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
     if (hasAbsence(emp.id, opts.startDateStr)) return false;
     if (emp.solo_diurno && opts.entersNight) return false;
     if (emp.solo_nocturno && !opts.entersNight) return false;
+    // 🔧 BUGFIX: Empleado nocturno dedicado solo puede tomar turnos
+    //    que EMPIECEN dentro de la ventana nocturna [nightStart, nightEnd).
+    //    Ej: start 22:00-05:59 → OK.  start 15:00-21:59 → RECHAZADO.
+    if (emp.solo_nocturno && nightConfig) {
+      const startH = parseInt(opts.startTimeStr.split(":")[0], 10);
+      const nightStartH = parseInt(nightConfig.start.split(":")[0], 10);
+      const nightEndH = parseInt(nightConfig.end.split(":")[0], 10);
+      const inNightWindow = startH >= nightStartH || startH < nightEndH;
+      if (!inNightWindow) return false;
+    }
     if (opts.shiftHrs < minHoras || opts.shiftHrs > maxHoras) return false;
     if ((getDayHours(emp.id, opts.startDateStr) + opts.shiftHrs) > maxDiarias) return false;
 
@@ -483,7 +494,6 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
     const nightEndSlot = timeToSlot(nightConfig.end, slotsPorHora);
     const nightEndRaw = nightEndSlot + (nightEndSlot <= nightStartSlot ? slotsPerDay : 0);
     const nightEndExt = nightEndSlot + slotsPerDay;
-    const minSlots = Math.round(minHoras * slotsPorHora);
 
     const placeOneNightBlock = (day: typeof dayList[0]) => {
       const dNext = addDays(day.date, 1);
@@ -542,6 +552,22 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
 
   // ─── FASE 2: Cobertura DIURNA (slots canónicos) ───────────────────────────
   const dayPool = [...empByClass.DAY_ONLY, ...empByClass.MIXED, ...empByClass.ANY];
+  const dayStartSlot = Math.max(
+    0,
+    Math.min(timeToSlot(horaInicioDia || '04:00', slotsPorHora), slotsPerDay - minSlots)
+  );
+
+  let dayEndSlotCfg = slotsPerDay;
+  if (horaFinDia != null && String(horaFinDia).trim() !== '') {
+    const raw = timeToSlot(horaFinDia, slotsPorHora);
+    dayEndSlotCfg = raw <= 0 ? slotsPerDay : Math.min(raw, slotsPerDay);
+  }
+  dayEndSlotCfg = Math.max(dayEndSlotCfg, dayStartSlot + minSlots);
+
+  const dayWindowStart = dayStartSlot;
+  const dayWindowEnd = nightConfig
+    ? timeToSlot(nightConfig.start, slotsPorHora)
+    : dayEndSlotCfg;
 
   validDays.forEach(day => {
     // Verificar piso mínimo de empleados por día
@@ -566,11 +592,14 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
       // Elegir hora de inicio canónica con más déficit
       let bestStart: number | null = null;
       let bestDef = 0;
-      for (const [h, m] of CANONICAL_DAY_STARTS) {
-        const slot = h * slotsPorHora + Math.floor(m / (60 / slotsPorHora));
-        for (let dur = Math.round(minHoras * slotsPorHora); dur <= Math.round(maxHoras * slotsPorHora); dur += snapSlots) {
+      const canonicalSlots = CANONICAL_DAY_STARTS
+        .map(([h, m]) => h * slotsPorHora + Math.floor(m / (60 / slotsPorHora)))
+        .filter(s => s >= dayWindowStart && s <= dayWindowEnd - minSlots);
+
+      for (const slot of canonicalSlots) {
+        for (let dur = minSlots; dur <= Math.round(maxHoras * slotsPorHora); dur += snapSlots) {
           const end = slot + dur;
-          if (end > slotsPerDay) continue;
+          if (end > dayWindowEnd) continue;
           let def = 0;
           for (let s = slot; s < Math.min(end, slotsPerDay); s++) {
             def += Math.max(0, (demVec[s] || 0) - (currentCov[s] || 0));
@@ -583,8 +612,8 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
       const slot = bestStart;
       let bestDur = 0;
       let bestScore = -1;
-      for (let dur = Math.round(minHoras * slotsPorHora); dur <= Math.round(maxHoras * slotsPorHora); dur += snapSlots) {
-        if (slot + dur > slotsPerDay) continue;
+      for (let dur = minSlots; dur <= Math.round(maxHoras * slotsPorHora); dur += snapSlots) {
+        if (slot + dur > dayWindowEnd) continue;
         let covered = 0;
         for (let s = slot; s < slot + dur; s++) covered += Math.max(0, demVec[s] - (currentCov[s] || 0));
         const score = covered - dur * 0.1;
@@ -596,7 +625,13 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
       const startIso = getLocalISOString(day.dateStr, hhmm);
       const endIso = getLocalISOString(day.dateStr, slotToTime(slot + bestDur, slotsPorHora));
       const shiftHrs = (bestDur / slotsPorHora);
-      const entersNight = isNightHour(Math.floor(slot / slotsPorHora)) || isNightHour(Math.floor((slot + bestDur - 1) / slotsPorHora));
+      
+      const nightStartLegal = nightConfig ? timeToSlot(nightConfig.start, slotsPorHora) : 0;
+      const nightEndRaw = nightConfig ? timeToSlot(nightConfig.end, slotsPorHora) : 0;
+      const entersNight = nightConfig
+        ? (slot < nightEndRaw || (slot + bestDur) > nightStartLegal)
+        : (isNightHour(Math.floor(slot / slotsPorHora)) || isNightHour(Math.floor((slot + bestDur - 1) / slotsPorHora)));
+
       const nightHrs = entersNight ? shiftNightHours({ start_time: startIso, end_time: endIso }) : 0;
 
       const candidate = [...dayPool].sort(() => Math.random() - 0.5).find(e =>
@@ -633,7 +668,14 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
 
         const shiftHrs = blockHours(tplShift);
         const hhmm = tplShift.start_time.slice(11, 16);
-        const entersNight = isNightHour(Math.floor(tplStartSlot / slotsPorHora));
+        // 🔧 BUGFIX: entersNight usa la ventana nocturna dedicada (22-06),
+        //    no el horario nocturno legal (19-06). Así un template que cruza
+        //    las 22:00 marca entersNight=true aunque empiece en hora diurna.
+        const tplDuration = actualEnd - tplStartSlot;
+        const entersNight = nightConfig
+          ? (tplStartSlot < timeToSlot(nightConfig.end, slotsPorHora) ||
+             (tplStartSlot + tplDuration) > timeToSlot(nightConfig.start, slotsPorHora))
+          : isNightHour(Math.floor(tplStartSlot / slotsPorHora));
         const nightHrs = entersNight ? shiftNightHours(tplShift) : 0;
 
         const candidate = [...dayPool].sort(() => Math.random() - 0.5).find(e =>

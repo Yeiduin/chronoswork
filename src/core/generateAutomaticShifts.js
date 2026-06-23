@@ -825,6 +825,16 @@ export function generateAutomaticShifts({
   const employeeEligible = (emp, { startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, entersNight }) => {
     if (entersNight && !canWorkNight(emp)) return false;
     if (!entersNight && !canWorkDay(emp)) return false;
+    // 🔧 BUGFIX: Empleado nocturno dedicado solo puede tomar turnos
+    //    que EMPIECEN dentro de la ventana nocturna [nightStart, nightEnd).
+    //    Ej: start 22:00-05:59 → OK.  start 15:00-21:59 → RECHAZADO.
+    if (canWorkDay(emp) === false && nightConfig) {
+      const startH = parseInt(startTimeStr.split(':')[0], 10);
+      const nightStartH = parseInt(nightConfig.start.split(':')[0], 10);
+      const nightEndH = parseInt(nightConfig.end.split(':')[0], 10);
+      const inNightWindow = startH >= nightStartH || startH < nightEndH;
+      if (!inNightWindow) return false;
+    }
     if (isBlocked(emp.id, startDateStr)) return false;
     if (restDays.has(`${emp.id}_${startDateStr}`)) return false;
     if (hasShiftOnDay(emp.id, startDateStr)) return false;

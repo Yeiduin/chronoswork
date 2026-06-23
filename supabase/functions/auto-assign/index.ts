@@ -103,16 +103,42 @@ serve(async (req: Request) => {
       .eq("tenant_id", tenant_id)
       .eq("periodo", `${params.year}-${String((params.month || 1)).padStart(2, "0")}`);
 
-    // ─── Ejecutar algoritmo ──────────────────────────────────────────────────
-    const { shifts: generatedShifts, warnings } = generateAutomaticShifts({
+    // Mapear configuraciones de área y overrides para el algoritmo
+    const {
+      overrideMinEmpleadosDia,
+      overrideMaxEmpleadosDia,
+      overrideMinEmpleadosNoche,
+    } = params;
+
+    const config = {
       ...params,
       employees: employees || params.employees || [],
       templates: templates || params.templates || [],
       absences: absences || params.absences || [],
       existingShifts: existingShifts || [],
       demandSlots: demandSlots || params.demandSlots || [],
-      breakPolicy: areaConfig?.break_policy || params.breakPolicy || null,
-    });
+      
+      estrategia: params.estrategia ?? areaConfig?.estrategia_asignacion ?? "COVERAGE_FIRST",
+      minEmpleadosNoche: overrideMinEmpleadosNoche ?? areaConfig?.min_empleados_noche ?? 1,
+      nocheSoloDedicados: areaConfig?.noche_solo_empleados_dedicados ?? true,
+      permiteDiaCubrirNoche: areaConfig?.permite_dia_cubrir_noche ?? false,
+      balancearCarga: areaConfig?.balancear_carga ?? true,
+      rotarSlots: areaConfig?.rotar_slots_entre_asesores ?? false,
+      slotsPorHora: areaConfig?.slots_por_hora ?? 4,
+      snapMinutos: areaConfig?.snap_turnos_minutos ?? 15,
+      minHorasTurnoOverride: areaConfig?.min_horas_turno_override ?? null,
+      maxHorasTurnoOverride: areaConfig?.max_horas_turno_override ?? null,
+      permiteExtras: areaConfig?.permitir_horas_extras ?? false,
+      permitePartidos: areaConfig?.permitir_turno_partido ?? false,
+      minEmpleadosDia: overrideMinEmpleadosDia ?? areaConfig?.min_empleados_dia ?? null,
+      maxEmpleadosDia: overrideMaxEmpleadosDia ?? areaConfig?.max_empleados_dia ?? null,
+      horaInicioDia: areaConfig?.hora_inicio_dia ?? "04:00",
+      horaFinDia: areaConfig?.hora_fin_dia ?? null,
+      breakPolicy: areaConfig?.break_policy ?? params.breakPolicy ?? null,
+    };
+
+    // ─── Ejecutar algoritmo ──────────────────────────────────────────────────
+    const { shifts: generatedShifts, warnings } = generateAutomaticShifts(config);
 
     if (!Array.isArray(generatedShifts) || generatedShifts.length === 0) {
       return new Response(

@@ -32,22 +32,22 @@ export function buildISO(fecha, hora) {
 }
 
 /**
- * Genera un timestamp ISO con el offset local (ej. -05:00) para evitar desfases de zona horaria al guardar en BD.
+ * Genera un timestamp ISO con la "hora de reloj" tal cual, en UTC (sufijo Z).
+ * Convención de toda la app: la hora se guarda como UTC sin conversión y las
+ * vistas la leen con string slice (start_time.slice(11,16)). Así un turno de
+ * las 22:00 se guarda como "...T22:00:00Z" y se MUESTRA a las 22:00.
+ * ⚠ No usar el offset real del navegador (-getTimezoneOffset): desplazaría
+ * todas las vistas según la zona horaria de la máquina. Igual que buildISO.
  */
 export function getLocalISOString(dateStr, timeStr) {
   if (!dateStr || !timeStr) {
     throw new Error(`Invalid time value: getLocalISOString received empty dateStr (${dateStr}) or timeStr (${timeStr})`);
   }
   const cleanTimeStr = String(timeStr).slice(0, 5);
-  const d = new Date(`${dateStr}T${cleanTimeStr}:00`);
-  if (isNaN(d.getTime())) {
-    throw new Error(`Invalid time value: getLocalISOString generated Invalid Date for ${dateStr}T${cleanTimeStr}:00`);
+  if (!/^\d{2}:\d{2}$/.test(cleanTimeStr)) {
+    throw new Error(`Invalid time value: getLocalISOString received invalid timeStr (${timeStr})`);
   }
-  const offset = -d.getTimezoneOffset();
-  const sign = offset >= 0 ? '+' : '-';
-  const pad = num => String(Math.abs(num)).padStart(2, '0');
-  const tz = `${sign}${pad(Math.floor(offset / 60))}:${pad(offset % 60)}`;
-  return `${dateStr}T${cleanTimeStr}:00${tz}`;
+  return `${dateStr}T${cleanTimeStr}:00Z`;
 }
 
 /**
