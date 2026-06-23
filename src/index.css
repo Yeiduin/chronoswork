@@ -100,7 +100,9 @@
 
 html {
   scroll-behavior: smooth;
-  font-size: 16px;
+  /* Escala base reducida (moderada) para una UI más compacta. Afecta todas
+     las medidas en rem de forma proporcional. */
+  font-size: 15px;
 }
 
 body {
@@ -178,9 +180,9 @@ code, pre {
 }
 
 .page-wrapper {
-  padding: 2rem;
+  padding: 1.5rem 1.75rem;
   flex: 1;
-  max-width: 1400px;
+  max-width: 1480px;
   width: 100%;
 }
 
@@ -396,7 +398,7 @@ code, pre {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--border-radius);
-  padding: 1.5rem;
+  padding: 1.15rem;
   box-shadow: var(--shadow-card);
   transition: var(--transition);
 }
@@ -507,11 +509,11 @@ code, pre {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1.25rem;
+  gap: 0.45rem;
+  padding: 0.45rem 1rem;
   border-radius: var(--border-radius-sm);
   font-family: var(--font-sans);
-  font-size: 0.875rem;
+  font-size: 0.84rem;
   font-weight: 600;
   border: 1px solid transparent;
   cursor: pointer;
@@ -835,7 +837,7 @@ select option {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 2rem;
+  margin-bottom: 1.35rem;
   flex-wrap: wrap;
   gap: 1rem;
 }
@@ -843,10 +845,10 @@ select option {
 .page-header__info {}
 
 .page-title {
-  font-size: 1.75rem;
+  font-size: 1.5rem;
   font-weight: 800;
   color: var(--text-primary);
-  letter-spacing: -0.5px;
+  letter-spacing: -0.4px;
 }
 
 .page-subtitle {
@@ -1026,6 +1028,110 @@ select option {
   border-color: rgba(239,68,68,0.15);
   color: #fca5a5;
   cursor: not-allowed;
+}
+
+/* ── Tarjeta de turno con desglose + popover de detalle ──────────────────── */
+/* OJO: no usar `filter` ni `transform` aquí. Cualquiera de los dos convierte la
+   tarjeta en el "containing block" de su popover position:fixed y descoloca el
+   detalle. Usamos box-shadow (no crea containing block). */
+.shift-cell-card:hover {
+  box-shadow: 0 0 0 2px rgba(255,255,255,0.18), 0 4px 14px rgba(0,0,0,0.30);
+  z-index: 30;
+}
+
+.shift-detail-popover {
+  position: fixed;
+  z-index: 1000;
+  width: 215px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-medium);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+  box-shadow: var(--shadow-md, 0 10px 30px rgba(0,0,0,0.35));
+  text-align: left;
+  white-space: normal;
+  cursor: default;
+  animation: cw-pop-fade 0.12s ease-out;
+}
+
+@keyframes cw-pop-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.shift-detail-popover__title {
+  font-size: 0.78rem;
+  font-weight: 800;
+  margin-bottom: 0.4rem;
+  letter-spacing: -0.2px;
+}
+
+.shift-detail-popover__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding: 0.12rem 0;
+}
+.shift-detail-popover__row strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+.shift-detail-popover__row--net {
+  margin-top: 0.2rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed var(--border-subtle);
+}
+.shift-detail-popover__row--net strong { color: #34d399; }
+
+.shift-detail-popover__note {
+  margin-top: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px dashed var(--border-subtle);
+  font-size: 0.64rem;
+  font-style: italic;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.shift-detail-popover__hint {
+  margin-top: 0.35rem;
+  font-size: 0.62rem;
+  text-align: center;
+  color: var(--cw-accent);
+  opacity: 0.85;
+}
+
+.shift-detail-popover__schedule {
+  margin-top: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  background: var(--bg-glass, rgba(255,255,255,0.03));
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+.shift-detail-popover__schedule-title {
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.25rem;
+}
+.shift-detail-popover__schedule-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  padding: 0.1rem 0;
+}
+.shift-detail-popover__schedule-item strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
 }
 
 /* ============================================================

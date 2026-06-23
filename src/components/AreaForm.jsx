@@ -775,11 +775,13 @@ export default function AreaFormModal({ area, onClose }) {
             </div>
 
             <div className="cw-form-group">
-              <label className="cw-label">Minutos de break / almuerzo (no se paga)</label>
-              <input type="number" min="0" max="180" className="cw-input"
-                value={form.break_minutos}
-                onChange={e => setForm(p => ({ ...p, break_minutos: parseInt(e.target.value) || 0 }))} />
-              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Por jurisprudencia, si es &gt;30 min, se descuenta del tiempo laborado.</div>
+              <div style={{
+                fontSize: '0.78rem', color: 'var(--text-secondary)', padding: '0.6rem 0.75rem',
+                background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 8,
+              }}>
+                ☕ Los breaks y el almuerzo ahora se configuran en <strong>Política de Descansos</strong> (al
+                seleccionar el área), donde defines su duración, espaciado y reglas por horas de turno.
+              </div>
             </div>
 
             <div className="cw-form-group">

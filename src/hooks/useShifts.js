@@ -227,6 +227,19 @@ export function useShifts(periodo = null) {
       } catch (e) {
         console.warn('[autoAssign] columnas headcount/día no disponibles (¿falta migración?):', e.message);
       }
+
+      // Política de descansos por área (defensivo: si falta la migración
+      // add_shift_descansos.sql, se usan los defaults legales del algoritmo).
+      try {
+        const { data: bpData } = await supabase
+          .from('areas')
+          .select('break_policy')
+          .eq('id', areaId)
+          .single();
+        if (bpData) areaConfig = { ...areaConfig, ...bpData };
+      } catch (e) {
+        console.warn('[autoAssign] break_policy no disponible (¿falta migración?):', e.message);
+      }
     }
 
     const { shifts: shiftsToInsert, warnings } = generateAutomaticShifts({
@@ -261,6 +274,8 @@ export function useShifts(periodo = null) {
       maxEmpleadosDia: overrideMaxEmpleadosDia ?? areaConfig.max_empleados_dia ?? null,
       horaInicioDia: areaConfig.hora_inicio_dia ?? '04:00',
       horaFinDia: areaConfig.hora_fin_dia ?? null,
+      // Política de descansos del área (null = defaults legales)
+      breakPolicy: areaConfig.break_policy ?? null,
     });
 
     if (!Array.isArray(shiftsToInsert) || shiftsToInsert.length === 0) {
@@ -274,7 +289,7 @@ export function useShifts(periodo = null) {
       'tenant_id', 'employee_id', 'start_time', 'end_time',
       'shift_type', 'periodo', 'break_minutes', 'template_id',
       'shift_kind', 'bloque', 'disponibilidad', 'recargo_porcentaje',
-      'observaciones',
+      'observaciones', 'almuerzo_minutos', 'breaks_15_count', 'descansos',
     ]);
 
     const sanitizedShifts = shiftsToInsert.map(s => {

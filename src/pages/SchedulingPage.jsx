@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useShifts } from '../hooks/useShifts';
 import { useEmployees } from '../hooks/useEmployees';
 import { useAbsences } from '../hooks/useAbsences';
@@ -6,6 +6,7 @@ import { useAreas } from '../hooks/useAreas';
 import { supabase } from '../config/supabaseClient';
 import { getDiasMes, formatFecha, getNombreMes, getDatesByOption, getLocalISOString } from '../core/dateUtils';
 import { formatCOP } from '../core/validators';
+import { computeBreaks, buildDescansos } from '../core/generateAutomaticShifts';
 import {
   MdClose, MdInfo, MdCalendarMonth, MdChevronLeft, MdChevronRight,
   MdBolt, MdDelete, MdDeleteSweep, MdWarning, MdCheckCircle, MdDownload, MdAccessTime,
@@ -15,8 +16,39 @@ import { AutoAssignModal } from '../components/AutoAssignModal';
 import { ExportShiftsModal } from '../components/ExportShiftsModal';
 import { HourlyCoverageView } from '../components/HourlyCoverageView';
 
+// ─── Desglose de un turno para visualización ──────────────────────────────────
+// Robusto ante turnos previos a la migración: si las columnas nuevas no existen,
+// deriva el almuerzo desde break_minutes y los breaks de 15 desde la duración.
+function getShiftBreakdown(shift) {
+  if (!shift) return null;
+  const start = new Date(shift.start_time);
+  const end = new Date(shift.end_time);
+  const grossH = Math.max(0, (end - start) / 3600000);
+  const breakMin = shift.break_minutes ?? 0;
+
+  // Lista de descansos con horario real (si la migración ya está aplicada).
+  const descansos = Array.isArray(shift.descansos) ? shift.descansos : [];
+  const tieneDetalle = descansos.length > 0;
+
+  let almuerzo, breaks15, breaks15Min;
+  if (tieneDetalle) {
+    almuerzo    = descansos.filter(d => d.tipo === 'ALMUERZO').reduce((a, b) => a + (b.minutos || 0), 0);
+    const brk   = descansos.filter(d => d.tipo === 'BREAK');
+    breaks15    = brk.length;
+    breaks15Min = brk.reduce((a, b) => a + (b.minutos || 0), 0);
+  } else {
+    // Fallback para turnos previos a la migración.
+    almuerzo    = shift.almuerzo_minutos ?? breakMin ?? 0;
+    breaks15    = (shift.breaks_15_count != null) ? shift.breaks_15_count : computeBreaks(grossH).breaks15;
+    breaks15Min = breaks15 * 15;
+  }
+  const netH = Math.max(0, grossH - breakMin / 60);   // netas = bruto − almuerzo (los breaks son pagados)
+  const descansoTotalMin = almuerzo + breaks15Min;     // tiempo total de descanso (informativo)
+  return { grossH, netH, almuerzo, breaks15, breaks15Min, descansoTotalMin, descansos, tieneDetalle };
+}
+
 // ─── Modal Asignar / Editar Turno ────────────────────────────────────────────
-function ShiftModal({ employee, fecha, areaId, areaTemplates, onClose, onSave, onDelete, existingShift }) {
+function ShiftModal({ employee, fecha, areaId, areaTemplates, breakPolicy, onClose, onSave, onDelete, existingShift }) {
   const [selected, setSelected] = useState(
     existingShift?.template_id || null
   );
@@ -71,6 +103,19 @@ function ShiftModal({ employee, fecha, areaId, areaTemplates, onClose, onSave, o
         return;
       }
 
+      // Descansos con horario real según la política del área. Si la plantilla
+      // define su propio almuerzo, se respeta (solo programamos breaks cortos).
+      const grossMin = (new Date(endISO) - new Date(startISO)) / 60000;
+      const startHHMM = tpl.hora_inicio.slice(0, 5);
+      const tplAlmuerzo = (tpl.break_minutos != null && tpl.break_minutos > 0) ? tpl.break_minutos : null;
+      const res = buildDescansos(startHHMM, grossMin, breakPolicy, { soloBreaks: tplAlmuerzo != null });
+      const descansos = [...res.descansos];
+      let almuerzo = res.almuerzoMin;
+      if (tplAlmuerzo != null) {
+        descansos.unshift({ tipo: 'ALMUERZO', inicio: null, minutos: tplAlmuerzo });
+        almuerzo = tplAlmuerzo;
+      }
+
       await onSave({
         employee_id: employee.id,
         start_time: startISO,
@@ -78,6 +123,10 @@ function ShiftModal({ employee, fecha, areaId, areaTemplates, onClose, onSave, o
         shift_type: 'custom',
         periodo: dateStr.slice(0, 7),
         template_id: tpl.id,
+        break_minutes: almuerzo,
+        almuerzo_minutos: almuerzo,
+        breaks_15_count: res.breaksCount,
+        descansos,
       });
       onClose();
     } catch (err) {
@@ -334,6 +383,35 @@ function ClearModal({ areas, employees, dias, onClose, onConfirm }) {
 // eslint-disable-next-line no-unused-vars
 function ShiftCell({ employee, fecha, shift, blocked, blockedReason, template, onAdd, isDayOff }) {
   const [showInfo, setShowInfo] = useState(false);
+  const cardRef = useRef(null);
+  // Posición del popover en coordenadas de viewport (position: fixed) para que
+  // nunca lo recorte el contenedor con scroll de la rejilla.
+  const [popPos, setPopPos] = useState(null);
+
+  // Posiciona el popover por su borde (top/left de viewport) y lo ajusta para
+  // que SIEMPRE quepa completo dentro de la ventana, sin importar dónde esté la
+  // celda (izquierda, derecha, arriba o abajo de la rejilla).
+  const openPopover = () => {
+    const el = cardRef.current;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      const POP_W = 215, POP_H = 340, M = 8; // ancho/alto estimados + margen
+      const vw = window.innerWidth, vh = window.innerHeight;
+
+      // Horizontal: centrar sobre la celda y luego acotar a [M, vw-POP_W-M].
+      let left = r.left + r.width / 2 - POP_W / 2;
+      left = Math.min(Math.max(left, M), vw - POP_W - M);
+
+      // Vertical: preferir arriba si cabe; si no, abajo. Acotar al viewport.
+      const cabeArriba = r.top >= POP_H + M;
+      let top = cabeArriba ? r.top - POP_H - 6 : r.bottom + 6;
+      top = Math.min(Math.max(top, M), vh - POP_H - M);
+
+      setPopPos({ left, top, placement: cabeArriba ? 'up' : 'down' });
+    }
+    setShowInfo(true);
+  };
+  const closePopover = () => setShowInfo(false);
 
   // Día de descanso del área
   if (isDayOff) {
@@ -385,21 +463,98 @@ function ShiftCell({ employee, fecha, shift, blocked, blockedReason, template, o
       : nombreCorto;
     const inicio = template?.hora_inicio?.slice(0, 5) || shift.start_time?.slice(11, 16);
     const fin = template?.hora_fin?.slice(0, 5) || shift.end_time?.slice(11, 16);
+
+    const bd = getShiftBreakdown(shift);
+    const esNocturno = shift.shift_kind === 'NOCTURNO';
+    const esDisponibilidad = shift.disponibilidad || shift.shift_kind === 'DISPONIBILIDAD';
+    const netoLabel = Number.isInteger(bd.netH) ? `${bd.netH}h` : `${bd.netH.toFixed(1)}h`;
+
     return (
       <td style={{ padding: '0.2rem' }}>
         <div onClick={onAdd}
-          title={`${nombreCorto} · ${inicio} a ${fin}`}
+          ref={cardRef}
+          onMouseEnter={openPopover}
+          onMouseLeave={closePopover}
+          className="shift-cell-card"
+          title={`${nombreCorto} · ${inicio}–${fin} · Netas ${bd.netH.toFixed(1)}h · Almuerzo ${bd.almuerzo}min · Breaks 15: ${bd.breaks15} · Descanso ${bd.descansoTotalMin}min`}
           style={{
-            borderRadius: 6, padding: '0.25rem 0.2rem', fontSize: '0.65rem', fontWeight: 700,
+            borderRadius: 6, padding: '0.25rem 0.2rem 0.3rem', fontSize: '0.65rem', fontWeight: 700,
             textAlign: 'center', cursor: 'pointer', minHeight: 32, display: 'flex',
             flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
             background: color + '28', border: `1.5px solid ${color}70`, color: 'var(--text-primary)',
-            transition: 'all 0.15s', position: 'relative', overflow: 'hidden',
+            transition: 'all 0.15s', position: 'relative', overflow: 'visible',
           }}>
           {/* barra superior de color */}
           <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: color, borderRadius: '6px 6px 0 0' }} />
-          <div style={{ marginTop: 2, fontWeight: 800, letterSpacing: '-0.3px', color }}>{abrev}</div>
-          <div style={{ fontSize: '0.58rem', opacity: 0.75, fontWeight: 400 }}>{inicio} - {fin}</div>
+          <div style={{ marginTop: 2, fontWeight: 800, letterSpacing: '-0.3px', color, display: 'flex', alignItems: 'center', gap: 2 }}>
+            {esNocturno && <span style={{ fontSize: '0.6rem' }}>🌙</span>}
+            {esDisponibilidad && <span style={{ fontSize: '0.6rem' }} title="Disponibilidad">📟</span>}
+            {abrev}
+          </div>
+          <div style={{ fontSize: '0.58rem', opacity: 0.78, fontWeight: 500 }}>{inicio} - {fin}</div>
+          {/* Fila de desglose: horas netas + indicadores de descanso */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 1, fontSize: '0.55rem', fontWeight: 600, opacity: 0.9 }}>
+            <span style={{ color: 'var(--text-primary)' }}>{netoLabel}</span>
+            {bd.almuerzo > 0 && <span title={`Almuerzo ${bd.almuerzo} min`}>🍴</span>}
+            {bd.breaks15 > 0 && <span title={`${bd.breaks15} break(s) de 15 min`}>☕{bd.breaks15}</span>}
+          </div>
+
+          {/* Popover de detalle al pasar el mouse (position: fixed para no
+              ser recortado por el contenedor con scroll de la rejilla) */}
+          {showInfo && popPos && (
+            <div
+              className={`shift-detail-popover shift-detail-popover--${popPos.placement}`}
+              onClick={(e) => e.stopPropagation()}
+              style={{ left: popPos.left, top: popPos.top }}>
+              <div className="shift-detail-popover__title" style={{ color }}>
+                {esNocturno && '🌙 '}{nombreCorto}
+              </div>
+              <div className="shift-detail-popover__row">
+                <span>🕐 Horario</span><strong>{inicio} – {fin}</strong>
+              </div>
+              <div className="shift-detail-popover__row">
+                <span>⏱ Duración bruta</span><strong>{bd.grossH.toFixed(1)} h</strong>
+              </div>
+              <div className="shift-detail-popover__row">
+                <span>🍴 Almuerzo</span>
+                <strong>{bd.almuerzo > 0 ? `${bd.almuerzo} min` : '—'}</strong>
+              </div>
+              <div className="shift-detail-popover__row">
+                <span>☕ Breaks cortos</span>
+                <strong>{bd.breaks15 > 0 ? `${bd.breaks15} (${bd.breaks15Min} min)` : '—'}</strong>
+              </div>
+              {/* Horario real de cada descanso (cuando está programado) */}
+              {bd.tieneDetalle && bd.descansos.some(d => d.inicio) && (
+                <div className="shift-detail-popover__schedule">
+                  <div className="shift-detail-popover__schedule-title">Horario de descansos</div>
+                  {bd.descansos.map((d, i) => (
+                    <div key={i} className="shift-detail-popover__schedule-item">
+                      <span>{d.tipo === 'ALMUERZO' ? '🍴 Almuerzo' : '☕ Break'}</span>
+                      <strong>{d.inicio ? d.inicio : '—'} · {d.minutos}m</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="shift-detail-popover__row">
+                <span>😴 Descanso total</span>
+                <strong>{bd.descansoTotalMin} min</strong>
+              </div>
+              <div className="shift-detail-popover__row shift-detail-popover__row--net">
+                <span>✅ Horas netas</span>
+                <strong>{bd.netH.toFixed(1)} h</strong>
+              </div>
+              {esDisponibilidad && (
+                <div className="shift-detail-popover__row">
+                  <span>📟 Disponibilidad</span>
+                  <strong>{shift.recargo_porcentaje ? `+${shift.recargo_porcentaje}%` : 'Sí'}</strong>
+                </div>
+              )}
+              {shift.observaciones && (
+                <div className="shift-detail-popover__note">{shift.observaciones}</div>
+              )}
+              <div className="shift-detail-popover__hint">Click para editar / quitar</div>
+            </div>
+          )}
         </div>
       </td>
     );
@@ -617,13 +772,19 @@ export default function SchedulingPage() {
     return Object.values(allTemplatesMap).filter(t => t.area_id === area.id);
   };
 
-  // Horas acumuladas por empleado en el período (para tooltip)
-  const horasPorEmpleado = useMemo(() => {
+  // Resumen acumulado por empleado en el período: bruto, neto, almuerzo, breaks
+  const resumenPorEmpleado = useMemo(() => {
     const map = {};
     shifts.forEach(s => {
       if (!s.employee_id) return;
-      const horas = (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
-      map[s.employee_id] = (map[s.employee_id] || 0) + horas;
+      const bd = getShiftBreakdown(s);
+      const r = map[s.employee_id] || { bruto: 0, neto: 0, almuerzoMin: 0, breaks15: 0, turnos: 0 };
+      r.bruto += bd.grossH;
+      r.neto += bd.netH;
+      r.almuerzoMin += bd.almuerzo;
+      r.breaks15 += bd.breaks15;
+      r.turnos += 1;
+      map[s.employee_id] = r;
     });
     return map;
   }, [shifts]);
@@ -1179,9 +1340,15 @@ export default function SchedulingPage() {
                 {filteredEmployees.map(emp => {
                   const empArea = getEmployeeArea(emp.id);
                   const empTemplates = getTemplatesForEmployee(emp.id);
-                  const horasTotal = horasPorEmpleado[emp.id] || 0;
+                  const resumen = resumenPorEmpleado[emp.id] || { bruto: 0, neto: 0, almuerzoMin: 0, breaks15: 0, turnos: 0 };
+                  const horasTotal = resumen.neto; // horas netas trabajadas en el período cargado
                   const porcentajeHoras = Math.min((horasTotal / (42 * 4)) * 100, 100); // 42h × 4 semanas
                   const horasColor = horasTotal > 160 ? '#ef4444' : horasTotal > 130 ? '#f59e0b' : '#10b981';
+                  const descansoTotalMin = resumen.almuerzoMin + resumen.breaks15 * 15;
+                  const resumenTooltip =
+                    `${resumen.turnos} turno(s) · Netas ${resumen.neto.toFixed(1)}h · ` +
+                    `Brutas ${resumen.bruto.toFixed(1)}h · Almuerzo ${resumen.almuerzoMin}min · ` +
+                    `Breaks 15: ${resumen.breaks15} · Descanso total ${descansoTotalMin}min`;
 
                   return (
                     <tr key={emp.id}>
@@ -1210,8 +1377,15 @@ export default function SchedulingPage() {
                               </div>
                             </div>
                             <div className="shift-grid__employee-cargo" style={{ fontSize: '0.68rem' }}>{emp.cargo}</div>
+                            {/* Resumen de horas netas + descansos del período */}
+                            <div title={resumenTooltip}
+                              style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginTop: '0.15rem', fontSize: '0.62rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                              <strong style={{ color: horasColor, fontFamily: 'var(--font-mono)' }}>{resumen.neto.toFixed(0)}h</strong>
+                              {resumen.almuerzoMin > 0 && <span title={`Almuerzo acumulado ${resumen.almuerzoMin} min`}>🍴{Math.round(resumen.almuerzoMin / 60)}h</span>}
+                              {resumen.breaks15 > 0 && <span title={`${resumen.breaks15} breaks de 15 min`}>☕{resumen.breaks15}</span>}
+                            </div>
                             {/* Barra de horas */}
-                            <div title={`${horasTotal.toFixed(0)}h en el período`}
+                            <div title={resumenTooltip}
                               style={{ marginTop: '0.2rem', height: 3, background: 'var(--border-subtle)', borderRadius: 2, overflow: 'hidden' }}>
                               <div style={{ width: `${porcentajeHoras}%`, height: '100%', background: horasColor, borderRadius: 2, transition: 'width 0.3s' }} />
                             </div>
@@ -1261,6 +1435,7 @@ export default function SchedulingPage() {
                               fecha: dia,
                               areaId: empArea?.id,
                               areaTemplates: empTemplates,
+                              breakPolicy: empArea?.break_policy || null,
                               existingShift: shift,
                             })}
                           />
@@ -1275,9 +1450,13 @@ export default function SchedulingPage() {
 
           {/* Leyenda inferior */}
           <div style={{ display: 'flex', gap: '1rem', marginTop: '0.875rem', fontSize: '0.72rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-            <span>🌙 Día de descanso del área</span>
-
+            <span>🌙 Turno / día nocturno</span>
             <span>🚫 Novedad (licencia/vacación)</span>
+            <span>🍴 Almuerzo</span>
+            <span>☕ Breaks de 15 min</span>
+            <span>⏱ <strong>Xh</strong> = horas netas (sin almuerzo)</span>
+            <span>📟 Disponibilidad</span>
+            <span style={{ color: 'var(--text-muted)' }}>Pasa el cursor sobre un turno para ver el detalle</span>
             <span style={{ color: '#fca5a5' }}>Dom</span>
             <span style={{ color: '#fcd34d' }}>Sáb</span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -1295,6 +1474,7 @@ export default function SchedulingPage() {
           fecha={shiftModal.fecha}
           areaId={shiftModal.areaId}
           areaTemplates={shiftModal.areaTemplates || []}
+          breakPolicy={shiftModal.breakPolicy}
           existingShift={shiftModal.existingShift}
           onClose={() => setShiftModal(null)}
           onSave={async (data) => {

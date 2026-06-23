@@ -43,7 +43,7 @@ function levelLabel(val, max) {
  * Props:
  *  area  — objeto del área con { id }
  */
-export function DemandCurveEditor({ area }) {
+export function DemandCurveEditor({ area, embedded }) {
   const { demandSlots, loading, bulkReplaceDaySlots, updateDemandSlotGroup, deleteDemandSlotGroup }
     = useDemandSlots(area.id);
 
@@ -187,16 +187,18 @@ export function DemandCurveEditor({ area }) {
   // ── UI ────────────────────────────────────────────────────────────────
   return (
     <div style={{
-      marginTop: '1.5rem',
-      borderTop: '1px solid var(--border-subtle)',
-      paddingTop: '1.25rem',
+      marginTop: embedded ? 0 : '1.5rem',
+      borderTop: embedded ? 'none' : '1px solid var(--border-subtle)',
+      paddingTop: embedded ? 0 : '1.25rem',
       fontFamily: 'var(--font-body, system-ui)',
     }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-        <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.06em' }}>
-          CURVA DE DEMANDA — ECUALIZADOR
-        </div>
+      <div style={{ display: 'flex', justifyContent: embedded ? 'flex-end' : 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+        {!embedded && (
+          <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.06em' }}>
+            CURVA DE DEMANDA — ECUALIZADOR
+          </div>
+        )}
         {/* Tabs vista */}
         <div style={{ display: 'flex', gap: '0.25rem', background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '0.2rem' }}>
           {[{ id: 'equalizer', label: '🎚 Por día' }, { id: 'week', label: '📅 Semana' }].map(t => (

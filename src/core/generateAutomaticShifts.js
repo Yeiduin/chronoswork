@@ -232,6 +232,115 @@ export function blockHours(block) {
   return Math.max(0, raw - (block.break_minutes || 0) / 60);
 }
 
+// ── Política de descansos por defecto (Colombia, configurable por área) ───
+// El empleador puede sobrescribirla por área (areas.break_policy). Diseñada
+// para tolerar cambios de ley: la duración de breaks/almuerzo, el espaciado
+// y el nº de breaks por horas son todos parametrizables.
+export const BREAK_POLICY_DEFAULTS_CO = {
+  breakMinutos: 15,      // duración de un break corto
+  almuerzoMinutos: 60,   // 30 | 45 | 60
+  gapMinHoras: 1,        // mín. horas antes del 1er descanso y entre descansos
+  gapMaxHoras: 3,        // máx. horas antes del 1er descanso y entre descansos
+  // nº de breaks y si lleva almuerzo, según la duración del turno.
+  // Se elige la regla de mayor `desdeHoras` que no supere las horas del turno.
+  reglas: [
+    { desdeHoras: 0,   breaks: 1, almuerzo: false }, // ≤6h: 1 break
+    { desdeHoras: 6.5, breaks: 2, almuerzo: false }, // >6h: 2 breaks (6.5 = 1er paso del grid sobre 6h)
+    { desdeHoras: 8,   breaks: 1, almuerzo: true  }, // 8h: 1 break + almuerzo
+    { desdeHoras: 9,   breaks: 2, almuerzo: true  }, // 9h+: 2 breaks + almuerzo
+  ],
+};
+
+// Mezcla la política del área con los defaults (defensivo ante campos faltantes).
+export function resolveBreakPolicy(policy) {
+  const p = policy && typeof policy === 'object' ? policy : {};
+  return {
+    breakMinutos:    Number(p.breakMinutos)    > 0 ? Number(p.breakMinutos)    : BREAK_POLICY_DEFAULTS_CO.breakMinutos,
+    almuerzoMinutos: Number(p.almuerzoMinutos) > 0 ? Number(p.almuerzoMinutos) : BREAK_POLICY_DEFAULTS_CO.almuerzoMinutos,
+    gapMinHoras:     Number(p.gapMinHoras)     > 0 ? Number(p.gapMinHoras)     : BREAK_POLICY_DEFAULTS_CO.gapMinHoras,
+    gapMaxHoras:     Number(p.gapMaxHoras)     > 0 ? Number(p.gapMaxHoras)     : BREAK_POLICY_DEFAULTS_CO.gapMaxHoras,
+    reglas: Array.isArray(p.reglas) && p.reglas.length > 0 ? p.reglas : BREAK_POLICY_DEFAULTS_CO.reglas,
+  };
+}
+
+// Elige la regla aplicable (mayor desdeHoras ≤ horas del turno).
+function pickBreakRule(reglas, horas) {
+  let elegida = null;
+  [...reglas]
+    .sort((a, b) => (a.desdeHoras || 0) - (b.desdeHoras || 0))
+    .forEach(r => { if (horas >= (r.desdeHoras || 0)) elegida = r; });
+  return elegida;
+}
+
+const pad2 = (n) => String(n).padStart(2, '0');
+const minutesToHHMM = (mins) => {
+  const m = ((Math.round(mins) % 1440) + 1440) % 1440;
+  return `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
+};
+
+// ── Programa los descansos de un turno con su hora exacta ─────────────────
+// Regla de espaciado: cada descanso se coloca a [gapMin, gapMax] horas del
+// inicio del turno (o del regreso del descanso anterior). Devuelve la lista
+// ordenada de descansos + totales derivados.
+//   { descansos:[{tipo,inicio,minutos}], almuerzoMin, breaksCount, breakMinutes }
+// breakMinutes = almuerzoMin (lo único que se descuenta de horas netas; los
+// breaks cortos son pagados). `soloBreaks` omite el almuerzo (turnos PARTIDO,
+// donde el intervalo ya ES el almuerzo).
+export function buildDescansos(startHHMM, grossMinutes, policy, { soloBreaks = false } = {}) {
+  const pol = resolveBreakPolicy(policy);
+  const grossH = grossMinutes / 60;
+  const rule = pickBreakRule(pol.reglas, grossH);
+  const empty = { descansos: [], almuerzoMin: 0, breaksCount: 0, breakMinutes: 0 };
+  if (!rule) return empty;
+
+  const nBreaks = Math.max(0, parseInt(rule.breaks, 10) || 0);
+  const conAlmuerzo = !!rule.almuerzo && !soloBreaks && pol.almuerzoMinutos > 0;
+  if (nBreaks === 0 && !conAlmuerzo) return empty;
+
+  // Lista ordenada de descansos: el almuerzo va hacia el centro/mediodía, con
+  // un break antes (mañana) y, si hay dos, otro después (tarde).
+  const tipos = Array(nBreaks).fill('BREAK');
+  if (conAlmuerzo) tipos.splice(Math.ceil(tipos.length / 2), 0, 'ALMUERZO');
+  const items = tipos.map(tipo => ({
+    tipo,
+    minutos: tipo === 'ALMUERZO' ? pol.almuerzoMinutos : pol.breakMinutos,
+  }));
+
+  // Espaciado de trabajo entre descansos, acotado a [gapMin, gapMax].
+  const totalRest = items.reduce((a, b) => a + b.minutos, 0);
+  const netWork = Math.max(0, grossMinutes - totalRest);
+  const gapMin = pol.gapMinHoras * 60;
+  const gapMax = pol.gapMaxHoras * 60;
+  let seg = Math.round(netWork / (items.length + 1));
+  seg = Math.min(Math.max(seg, gapMin), gapMax);
+
+  const [sh, sm] = String(startHHMM).split(':').map(Number);
+  let cursor = (sh || 0) * 60 + (sm || 0); // minutos desde medianoche
+  const SNAP = 15;                          // alinear el inicio de cada descanso a :00/:15/:30/:45
+  const descansos = [];
+  for (const it of items) {
+    cursor += seg;                          // bloque de trabajo
+    // Redondear el inicio del descanso a la grilla de 15 min, sin violar el
+    // espaciado mínimo (nunca antes de cursor − seg + gapMin).
+    let inicio = Math.round(cursor / SNAP) * SNAP;
+    const piso = (cursor - seg) + gapMin;
+    if (inicio < piso) inicio = Math.ceil(piso / SNAP) * SNAP;
+    descansos.push({ tipo: it.tipo, inicio: minutesToHHMM(inicio), minutos: it.minutos });
+    cursor = inicio + it.minutos;           // continuar desde el fin del descanso
+  }
+
+  const almuerzoMin = descansos.filter(d => d.tipo === 'ALMUERZO').reduce((a, b) => a + b.minutos, 0);
+  const breaksCount = descansos.filter(d => d.tipo === 'BREAK').length;
+  return { descansos, almuerzoMin, breaksCount, breakMinutes: almuerzoMin };
+}
+
+// Compat: desglose simple por duración (sin horarios). Usado donde solo se
+// necesitan los totales. Deriva de la política indicada (o la por defecto).
+export function computeBreaks(shiftHrs, policy = null) {
+  const r = buildDescansos('08:00', shiftHrs * 60, policy);
+  return { almuerzo: r.almuerzoMin, breaks15: r.breaksCount, breakMinutes: r.breakMinutes };
+}
+
 export function shiftPagaNocturno(tpl) {
   if (!tpl) return false;
   if (tpl.shift_kind === 'NOCTURNO') return true;
@@ -300,9 +409,12 @@ export function generateAutomaticShifts({
   maxEmpleadosDia = null,   // techo + objetivo de personas distintas/día (incluye noche)
   horaInicioDia = '04:00',  // hora a la que puede empezar el primer turno diurno
   horaFinDia = null,        // hora de cierre del día (oficina). null = sin tope explícito
+  // ── Política de descansos configurable por área (null = defaults Colombia) ──
+  breakPolicy = null,
 }) {
   const generatedShifts = [];
   const warnings = [];
+  const policyDescansos = resolveBreakPolicy(breakPolicy);
 
   // ── Validaciones tempranas ───────────────────────────────────────────
   if (!Array.isArray(employees) || employees.length === 0) {
@@ -844,6 +956,8 @@ export function generateAutomaticShifts({
       }, startDateObj);
       if (!candidate) return false;
 
+      // Almuerzo/cena + breaks con horario real según la política del área.
+      const nb = buildDescansos(startTimeStr, shiftHrs * 60, policyDescansos);
       generatedShifts.push({
         employee_id: candidate.id,
         template_id: null,
@@ -851,7 +965,10 @@ export function generateAutomaticShifts({
         end_time: proposed.end_time,
         shift_type: 'night',
         periodo: periodoStr,
-        break_minutes: 0,
+        break_minutes: nb.breakMinutes,
+        almuerzo_minutos: nb.almuerzoMin,
+        breaks_15_count: nb.breaksCount,
+        descansos: nb.descansos,
         shift_kind: 'NOCTURNO',
         bloque: 1,
         disponibilidad: false,
@@ -1025,6 +1142,8 @@ export function generateAutomaticShifts({
               }, day.date);
               if (!candidate) continue;
 
+              // Descansos con horario real según la política del área.
+              const db = buildDescansos(startTimeStr, shiftHrs * 60, policyDescansos);
               generatedShifts.push({
                 employee_id: candidate.id,
                 template_id: null,
@@ -1032,9 +1151,10 @@ export function generateAutomaticShifts({
                 end_time: proposed.end_time,
                 shift_type: 'custom',
                 periodo: periodoStr,
-                // Almuerzo/descanso según duración: jornadas largas (≥8h) en
-                // oficina suelen llevar 1h; 6-8h → 30 min; cortas → 0.
-                break_minutes: shiftHrs >= 8 ? 60 : (shiftHrs >= 6 ? 30 : 0),
+                break_minutes: db.breakMinutes,
+                almuerzo_minutos: db.almuerzoMin,
+                breaks_15_count: db.breaksCount,
+                descansos: db.descansos,
                 shift_kind: nightHrs > 0 ? 'NOCTURNO' : 'STANDARD',
                 bloque: 1,
                 disponibilidad: false,
@@ -1113,6 +1233,19 @@ export function generateAutomaticShifts({
           if (!candidate) continue;
 
           blocks.forEach(b => {
+            // En PARTIDO el intervalo entre bloques YA es el almuerzo, así que
+            // solo programamos breaks cortos sobre cada bloque. En el resto, la
+            // plantilla define su propio almuerzo (b.break_minutes).
+            const grossMin = (new Date(b.end_time) - new Date(b.start_time)) / 60000;
+            const startHHMM = String(b.start_time).slice(11, 16);
+            const esPartido = b.shift_kind === 'PARTIDO';
+            const tb = buildDescansos(startHHMM, grossMin, policyDescansos, { soloBreaks: true });
+            // Descansos a mostrar: breaks programados + el almuerzo de la
+            // plantilla (si lo define) como su propio registro informativo.
+            const descansos = [...tb.descansos];
+            if (!esPartido && b.break_minutes > 0) {
+              descansos.unshift({ tipo: 'ALMUERZO', inicio: null, minutos: b.break_minutes });
+            }
             generatedShifts.push({
               employee_id: candidate.id,
               template_id: tpl.id,
@@ -1121,6 +1254,9 @@ export function generateAutomaticShifts({
               shift_type: 'custom',
               periodo: periodoStr,
               break_minutes: b.break_minutes,
+              almuerzo_minutos: b.break_minutes,
+              breaks_15_count: tb.breaksCount,
+              descansos,
               shift_kind: b.shift_kind,
               bloque: b.bloque,
               disponibilidad: b.disponibilidad,

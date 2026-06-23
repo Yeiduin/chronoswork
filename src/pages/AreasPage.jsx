@@ -20,6 +20,8 @@ import { format } from 'date-fns';
 import { AutoAssignModal } from '../components/AutoAssignModal';
 import { DemandCurveEditor } from '../components/DemandCurveEditor';
 import { LaborLimitsConfig } from '../components/LaborLimitsConfig';
+import { BreakPolicyConfig } from '../components/BreakPolicyConfig';
+import { CollapsibleSection } from '../components/CollapsibleSection';
 import AreaForm from '../components/AreaForm';
 
 const PALETTE = [
@@ -180,7 +182,7 @@ function getJornadaBadge(emp) {
 }
 
 // ── Panel de empleados del área ──────────────────────────────────
-function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove, onJornadaUpdate }) {
+function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove, onJornadaUpdate, hideHeader }) {
   const areaEmployeeIds = area.area_employees?.map(ae => ae.employee_id) || [];
   const areaEmps = area.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
   const unassigned = allEmployees.filter(e => !areaEmployeeIds.includes(e.id));
@@ -216,6 +218,7 @@ function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove, onJornada
 
   return (
     <div>
+      {!hideHeader && (
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
         <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 600 }}>
           👥 COLABORADORES ({areaEmps.length})
@@ -246,6 +249,7 @@ function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove, onJornada
           </div>
         )}
       </div>
+      )}
 
       {/* Alerta si área 24/7 sin empleados nocturnos */}
       {is247 && areaEmps.length > 0 && nocturnoCount === 0 && mixtoCount === 0 && (
@@ -363,7 +367,7 @@ function EmployeeAssignPanel({ area, allEmployees, onAssign, onRemove, onJornada
 }
 
 // ─── Panel de plantillas de turno del área ──────────────────────────────────
-function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading }) {
+function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading, embedded }) {
   const { templates, createTemplate, updateTemplate, deleteTemplate } = useShiftTemplates(area.id);
   const { templates: globalTemplates } = useShiftTemplates('global');
   const [showModal, setShowModal] = useState(false);
@@ -455,7 +459,7 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
   // son opcionales (se usan como guia de color en la grilla pero no limitan la asignación)
   if (is247Area) {
     return (
-      <div style={{ marginTop: '1.25rem' }}>
+      <div style={{ marginTop: embedded ? 0 : '1.25rem' }}>
         <div style={{
           padding: '0.875rem 1rem',
           background: 'rgba(245,158,11,0.06)',
@@ -508,10 +512,10 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
   }
 
   return (
-    <div style={{ marginTop: '1.25rem' }}>
+    <div style={{ marginTop: embedded ? 0 : '1.25rem' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
         <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-          ⏰ FRANJAS HORARIAS ({templates.length})
+          {embedded ? `${templates.length} franja(s)` : `⏰ FRANJAS HORARIAS (${templates.length})`}
         </div>
         <div style={{ display: 'flex', gap: '0.4rem', position: 'relative' }}>
           {globalTemplates.length > 0 && (
@@ -589,7 +593,7 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
                   <MdEdit style={{ fontSize: '0.9rem' }} />
                 </button>
                 <button className="cw-btn cw-btn--danger cw-btn--sm cw-btn--icon"
-                  onClick={() => deleteTemplate(t.id)} title="Eliminar">
+                  onClick={() => { if (window.confirm(`¿Eliminar la franja "${t.nombre}"? Esta acción no se puede deshacer.`)) deleteTemplate(t.id); }} title="Eliminar">
                   <MdDelete style={{ fontSize: '0.9rem' }} />
                 </button>
               </div>
@@ -1112,23 +1116,32 @@ export default function AreasPage() {
                   </div>
                 </div>
 
-                {/* Empleados del área */}
-                <EmployeeAssignPanel
-                  area={selectedArea}
-                  allEmployees={employees}
-                  onAssign={assignEmployee}
-                  onRemove={removeEmployee}
-                  onJornadaUpdate={fetchAreas}
-                />
+                {/* Empleados del área — colapsable */}
+                <CollapsibleSection
+                  title="👥 Colaboradores"
+                  right={<span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '0.1rem 0.5rem', borderRadius: 20, background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>{selectedArea.area_employees?.length || 0}</span>}
+                >
+                  <EmployeeAssignPanel
+                    area={selectedArea}
+                    allEmployees={employees}
+                    onAssign={assignEmployee}
+                    onRemove={removeEmployee}
+                    onJornadaUpdate={fetchAreas}
+                    hideHeader
+                  />
+                </CollapsibleSection>
 
-                {/* Franjas horarias */}
-                <TemplatesPanel
-                  area={selectedArea}
-                  shifts={shifts}
-                  periodo={periodoActual}
-                  onAutoAssign={(area) => setAutoAssignModalArea(area.id)}
-                  autoAssignLoading={autoAssignLoading}
-                />
+                {/* Franjas horarias — colapsable */}
+                <CollapsibleSection title="⏰ Franjas horarias / turnos">
+                  <TemplatesPanel
+                    area={selectedArea}
+                    shifts={shifts}
+                    periodo={periodoActual}
+                    onAutoAssign={(area) => setAutoAssignModalArea(area.id)}
+                    autoAssignLoading={autoAssignLoading}
+                    embedded
+                  />
+                </CollapsibleSection>
 
                 {/* Límites de jornada laboral */}
                 <LaborLimitsConfig
@@ -1138,8 +1151,18 @@ export default function AreasPage() {
                   }}
                 />
 
-                {/* Curvas de Demanda WFM */}
-                <DemandCurveEditor area={selectedArea} />
+                {/* Política de descansos (breaks y almuerzo) */}
+                <BreakPolicyConfig
+                  value={selectedArea.break_policy}
+                  onChange={async (newPolicy) => {
+                    await updateArea(selectedArea.id, { break_policy: newPolicy });
+                  }}
+                />
+
+                {/* Curvas de Demanda WFM — colapsable */}
+                <CollapsibleSection title="📈 Curva de demanda (WFM)">
+                  <DemandCurveEditor area={selectedArea} embedded />
+                </CollapsibleSection>
               </div>
             </div>
           ) : null}
