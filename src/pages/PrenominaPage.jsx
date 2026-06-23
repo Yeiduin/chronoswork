@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useShifts } from '../hooks/useShifts';
 import { useEmployees } from '../hooks/useEmployees';
+import { useFestivos } from '../hooks/useFestivos';
 import { procesarTurnosEmpleado } from '../core/laborEngine';
 import { formatCOP } from '../core/validators';
 import { getPeriodoActual, getNombreMes } from '../core/dateUtils';
@@ -30,6 +31,7 @@ export default function PrenominaPage() {
   const periodo = `${anio}-${String(mes).padStart(2, '0')}`;
   const { shifts } = useShifts(periodo);
   const { employees } = useEmployees();
+  const { festivos } = useFestivos(anio);
 
   const handlePrevMonth = () => {
     setCalculado(false);
@@ -45,7 +47,7 @@ export default function PrenominaPage() {
   const handleCalcular = () => {
     const res = employees.map(emp => {
       const turnosEmp = shifts.filter(s => s.employee_id === emp.id);
-      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora);
+      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos);
       return { ...emp, ...calculo, turnos: turnosEmp.length };
     });
     setResultados(res);
@@ -76,7 +78,7 @@ export default function PrenominaPage() {
         <div className="page-header__info">
           <h1 className="page-title">💰 Liquidación de Prenómina</h1>
           <p className="page-subtitle">
-            Cálculo automático CST Colombia 2026 · Ley 2101/2021 + Ley 2466/2025
+            Cálculo automático CST Colombia · Ley 2101/2021 + Ley 2466/2025
           </p>
         </div>
         <div className="page-header__actions">

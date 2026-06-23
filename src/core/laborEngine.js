@@ -9,20 +9,21 @@ import {
   MAX_EXTRAS_DIARIAS,
   MAX_EXTRAS_SEMANALES,
   RECARGOS,
-  FESTIVOS_2026,
 } from '../config/constants';
 
 const INICIO_DIURNA_H = 6;   // 06:00
 const FIN_DIURNA_H = 19;     // 19:00
 
 /**
- * Determina si una fecha es domingo o festivo en Colombia 2026
+ * Determina si una fecha es domingo o festivo.
+ * @param {Date|string} fecha
+ * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' (desde BD o fallback).
  */
-export function esDominicalOFestivo(fecha) {
+export function esDominicalOFestivo(fecha, festivos = []) {
   const d = new Date(fecha);
   const esDOM = d.getDay() === 0;
   const dateStr = d.toISOString().slice(0, 10);
-  const esFestivo = FESTIVOS_2026.includes(dateStr);
+  const esFestivo = Array.isArray(festivos) ? festivos.includes(dateStr) : false;
   return esDOM || esFestivo;
 }
 
@@ -58,8 +59,9 @@ export function esNocturna(hora) {
  * @param {string} endISO - Timestamp de fin ISO 8601
  * @param {number} horasOrdinariasAcumuladas - Horas ordinarias ya acumuladas en la semana
  * @param {number} horasExtrasAcumuladas - Horas extras ya acumuladas en la semana
+ * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
  */
-export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0, horasExtrasAcumuladas = 0, breakMinutes = 0) {
+export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0, horasExtrasAcumuladas = 0, breakMinutes = 0, festivos = []) {
   const inicio = new Date(startISO);
   const fin = new Date(endISO);
 
@@ -117,7 +119,7 @@ export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0,
       t1,
       t2,
       duration: durationHours,
-      domingo: esDominicalOFestivo(mid),
+      domingo: esDominicalOFestivo(mid, festivos),
       periodo: getPeriodo2026(mid),
       nocturna: esNocturna(mid.getHours())
     });
@@ -309,9 +311,10 @@ export function calcularTotalBruto(desglose) {
  * Procesa todos los turnos de un empleado en un período dado
  * @param {Array} turnos - Array de { start_time, end_time }
  * @param {number} valorHoraBase
+ * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
  * @returns {object} - Resumen completo del empleado
  */
-export function procesarTurnosEmpleado(turnos, valorHoraBase) {
+export function procesarTurnosEmpleado(turnos, valorHoraBase, festivos = []) {
   let horasOrdAcumuladas = 0;
   let horasExtAcumuladas = 0;
 
@@ -334,7 +337,8 @@ export function procesarTurnosEmpleado(turnos, valorHoraBase) {
       turno.end_time, 
       horasOrdAcumuladas, 
       horasExtAcumuladas, 
-      turno.break_minutes || 0
+      turno.break_minutes || 0,
+      festivos
     );
 
     // Acumular resultados

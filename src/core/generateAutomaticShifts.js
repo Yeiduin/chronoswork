@@ -886,8 +886,19 @@ export function generateAutomaticShifts({
     const dedicados = [...empByClass.NIGHT_ONLY, ...empByClass.MIXED];
     dedicados.forEach(e => { if (!nightPool.includes(e)) nightPool.push(e); });
     const baseInsuficiente = nightPool.length < nightConfig.minStaff || nightPool.length === 0;
-    if (nightConfig.permiteDiaCubrir || !nightConfig.soloDedicados || baseInsuficiente) {
+    // BUGFIX: Cuando soloDedicados=true Y permiteDiaCubrir=false, NUNCA se
+    // meten empleados ANY al pool nocturno, aunque el pool dedicado sea
+    // insuficiente. La cobertura nocturna se hace con lo que hay.
+    // Si baseInsuficiente, se avisa pero se respeta la restricción.
+    if (nightConfig.permiteDiaCubrir || !nightConfig.soloDedicados) {
       empByClass.ANY.forEach(e => { if (!nightPool.includes(e)) nightPool.push(e); });
+    } else if (baseInsuficiente) {
+      warnings.push(
+        `Pool nocturno insuficiente (${nightPool.length} de ${nightConfig.minStaff} requeridos) ` +
+        `con 'solo dedicados' activado. Asignando con el personal disponible. ` +
+        `Desactiva 'Solo empleados dedicados' o marca más empleados como Nocturna/Mixta para ` +
+        `aumentar la cobertura nocturna.`
+      );
     }
     // Si NADIE puede cubrir la noche (todos marcados solo diurno), avisar de
     // forma accionable: es una operación 24/7 sin personal nocturno posible.

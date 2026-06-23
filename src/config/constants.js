@@ -1,7 +1,6 @@
 // ============================================================
 // CONSTANTES GLOBALES DEL SISTEMA ChronosWork
 // CST Colombia - Ley 2101 de 2021 + Ley 2466 de 2025
-// Año Fiscal 2026
 // ============================================================
 
 // --- LÍMITES LEGALES DE JORNADA ---
@@ -16,14 +15,14 @@ export const INICIO_NOCTURNA = 19; // 19:00
 export const FIN_NOCTURNA = 6;    // 06:00 del día siguiente
 
 // --- FACTORES DE RECARGO (sobre valor hora base = 1.0) ---
-// Período A: Enero - Junio 2026
-// Período B: Julio - Diciembre 2026
+// Período A: Enero - Junio
+// Período B: Julio - Diciembre
 
 export const RECARGOS = {
   // Ordinarios
   HON:    0.35,   // Hora Ordinaria Nocturna (+35%)
-  HOD_A:  0.80,   // Hora Ordinaria Dominical Ene-Jun 2026 (+80%)
-  HOD_B:  0.90,   // Hora Ordinaria Dominical Jul-Dic 2026 (+90%)
+  HOD_A:  0.80,   // Hora Ordinaria Dominical Ene-Jun (+80%)
+  HOD_B:  0.90,   // Hora Ordinaria Dominical Jul-Dic (+90%)
   HCDN_A: 1.15,   // Hora Compuesta Dom+Noct Ene-Jun (+115%)
   HCDN_B: 1.25,   // Hora Compuesta Dom+Noct Jul-Dic (+125%)
 
@@ -80,10 +79,8 @@ export const ROLES = {
   COORDINATOR: 'coordinator',
 };
 
-// --- FESTIVOS COLOMBIA 2026 ---
-export const FESTIVOS_2026 = [
-  '2026-01-01', '2026-01-12', '2026-03-23', '2026-04-02', '2026-04-03',
-  '2026-05-01', '2026-05-18', '2026-06-08', '2026-06-29', '2026-07-20',
-  '2026-08-07', '2026-08-17', '2026-10-12', '2026-11-02', '2026-11-16',
-  '2026-12-08', '2026-12-25',
-];
+// --- FESTIVOS: se obtienen dinámicamente de la BD ---
+// La tabla `festivos` se llena con la función `calcular_festivos_colombia(año)`.
+// Usar `fetchFestivos(año)` desde `../hooks/useFestivos.js` para obtenerlos.
+// Este array se mantiene como fallback por si la BD no está disponible.
+export const FESTIVOS_FALLBACK = [];

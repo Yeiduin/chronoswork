@@ -1,621 +1,34 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useShifts } from '../hooks/useShifts';
 import { useEmployees } from '../hooks/useEmployees';
 import { useAbsences } from '../hooks/useAbsences';
 import { useAreas } from '../hooks/useAreas';
 import { supabase } from '../config/supabaseClient';
-import { getDiasMes, formatFecha, getNombreMes, getDatesByOption, getLocalISOString } from '../core/dateUtils';
-import { formatCOP } from '../core/validators';
-import { computeBreaks, buildDescansos } from '../core/generateAutomaticShifts';
-import {
-  MdClose, MdInfo, MdCalendarMonth, MdChevronLeft, MdChevronRight,
-  MdBolt, MdDelete, MdDeleteSweep, MdWarning, MdCheckCircle, MdDownload, MdAccessTime,
-} from 'react-icons/md';
+import { getDiasMes, getNombreMes, getDatesByOption } from '../core/dateUtils';
+import { MdWarning, MdCheckCircle } from 'react-icons/md';
 import { format } from 'date-fns';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+
+import SchedulingToolbar from '../components/scheduling/SchedulingToolbar';
+import SchedulingGrid from '../components/scheduling/SchedulingGrid';
+import TemplatesLegend from '../components/scheduling/TemplatesLegend';
+import ShiftModal from '../components/scheduling/ShiftModal';
+import ClearModal from '../components/scheduling/ClearModal';
+import { getShiftBreakdown } from '../components/scheduling/getShiftBreakdown';
+
 import { AutoAssignModal } from '../components/AutoAssignModal';
 import { ExportShiftsModal } from '../components/ExportShiftsModal';
 import { HourlyCoverageView } from '../components/HourlyCoverageView';
-
-// ─── Desglose de un turno para visualización ──────────────────────────────────
-// Robusto ante turnos previos a la migración: si las columnas nuevas no existen,
-// deriva el almuerzo desde break_minutes y los breaks de 15 desde la duración.
-function getShiftBreakdown(shift) {
-  if (!shift) return null;
-  const start = new Date(shift.start_time);
-  const end = new Date(shift.end_time);
-  const grossH = Math.max(0, (end - start) / 3600000);
-  const breakMin = shift.break_minutes ?? 0;
-
-  // Lista de descansos con horario real (si la migración ya está aplicada).
-  const descansos = Array.isArray(shift.descansos) ? shift.descansos : [];
-  const tieneDetalle = descansos.length > 0;
-
-  let almuerzo, breaks15, breaks15Min;
-  if (tieneDetalle) {
-    almuerzo    = descansos.filter(d => d.tipo === 'ALMUERZO').reduce((a, b) => a + (b.minutos || 0), 0);
-    const brk   = descansos.filter(d => d.tipo === 'BREAK');
-    breaks15    = brk.length;
-    breaks15Min = brk.reduce((a, b) => a + (b.minutos || 0), 0);
-  } else {
-    // Fallback para turnos previos a la migración.
-    almuerzo    = shift.almuerzo_minutos ?? breakMin ?? 0;
-    breaks15    = (shift.breaks_15_count != null) ? shift.breaks_15_count : computeBreaks(grossH).breaks15;
-    breaks15Min = breaks15 * 15;
-  }
-  const netH = Math.max(0, grossH - breakMin / 60);   // netas = bruto − almuerzo (los breaks son pagados)
-  const descansoTotalMin = almuerzo + breaks15Min;     // tiempo total de descanso (informativo)
-  return { grossH, netH, almuerzo, breaks15, breaks15Min, descansoTotalMin, descansos, tieneDetalle };
-}
-
-// ─── Modal Asignar / Editar Turno ────────────────────────────────────────────
-function ShiftModal({ employee, fecha, areaId, areaTemplates, breakPolicy, onClose, onSave, onDelete, existingShift }) {
-  const [selected, setSelected] = useState(
-    existingShift?.template_id || null
-  );
-  const [loading, setLoading] = useState(false);
-  const [extraTemplates, setExtraTemplates] = useState([]);
-
-  // Si no hay plantillas del área, buscar globales
-  useEffect(() => {
-    if (!areaId && areaTemplates.length === 0) {
-      supabase.from('shift_templates').select('*').is('area_id', null).then(({ data }) => {
-        setExtraTemplates(data || []);
-      });
-    }
-  }, [areaId, areaTemplates]);
-
-  const allTemplates = areaTemplates.length > 0 ? areaTemplates : extraTemplates;
-
-  // Pre-seleccionar la plantilla del turno existente
-  useEffect(() => {
-    if (existingShift && !selected) {
-      // Intentar match por template_id, o por hora de inicio
-      if (existingShift.template_id) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setSelected(existingShift.template_id);
-      } else {
-        const startHour = existingShift.start_time?.slice(11, 16);
-        const match = allTemplates.find(t => t.hora_inicio.slice(0, 5) === startHour);
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        if (match) setSelected(match.id);
-      }
-    }
-  }, [existingShift, allTemplates]);
-
-  const handleSave = async () => {
-    const tpl = allTemplates.find(t => t.id === selected);
-    if (!tpl) return;
-    setLoading(true);
-    try {
-      const dateStr = format(fecha, 'yyyy-MM-dd');
-      let startISO = getLocalISOString(dateStr, tpl.hora_inicio);
-      let endISO;
-      if (tpl.cruza_medianoche) {
-        const nextDay = new Date(fecha);
-        nextDay.setDate(nextDay.getDate() + 1);
-        endISO = getLocalISOString(format(nextDay, 'yyyy-MM-dd'), tpl.hora_fin);
-      } else {
-        endISO = getLocalISOString(dateStr, tpl.hora_fin);
-      }
-      const confirmed = window.confirm('¿Estás seguro de que deseas asignar/modificar este turno?');
-      if (!confirmed) {
-        setLoading(false);
-        return;
-      }
-
-      // Descansos con horario real según la política del área. Si la plantilla
-      // define su propio almuerzo, se respeta (solo programamos breaks cortos).
-      const grossMin = (new Date(endISO) - new Date(startISO)) / 60000;
-      const startHHMM = tpl.hora_inicio.slice(0, 5);
-      const tplAlmuerzo = (tpl.break_minutos != null && tpl.break_minutos > 0) ? tpl.break_minutos : null;
-      const res = buildDescansos(startHHMM, grossMin, breakPolicy, { soloBreaks: tplAlmuerzo != null });
-      const descansos = [...res.descansos];
-      let almuerzo = res.almuerzoMin;
-      if (tplAlmuerzo != null) {
-        descansos.unshift({ tipo: 'ALMUERZO', inicio: null, minutos: tplAlmuerzo });
-        almuerzo = tplAlmuerzo;
-      }
-
-      await onSave({
-        employee_id: employee.id,
-        start_time: startISO,
-        end_time: endISO,
-        shift_type: 'custom',
-        periodo: dateStr.slice(0, 7),
-        template_id: tpl.id,
-        break_minutes: almuerzo,
-        almuerzo_minutos: almuerzo,
-        breaks_15_count: res.breaksCount,
-        descansos,
-      });
-      onClose();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Calcular horas de la plantilla seleccionada
-  const calcHoras = (tpl) => {
-    if (!tpl) return null;
-    const [h1, m1] = tpl.hora_inicio.split(':').map(Number);
-    const [h2, m2] = tpl.hora_fin.split(':').map(Number);
-    let mins = (h2 * 60 + m2) - (h1 * 60 + m1);
-    if (mins <= 0) mins += 24 * 60;
-    return (mins / 60).toFixed(1);
-  };
-
-  const selectedTpl = allTemplates.find(t => t.id === selected);
-
-  return (
-    <div className="cw-modal-overlay">
-      <div className="cw-modal animate-slide-up" style={{ maxWidth: 440 }}>
-        <div className="cw-modal__header">
-          <h3 className="cw-modal__title">📅 Asignar Turno</h3>
-          <button className="cw-modal__close" onClick={onClose}><MdClose /></button>
-        </div>
-
-        {/* Info empleado/fecha */}
-        <div style={{
-          marginBottom: '1.25rem', padding: '0.875rem', background: 'var(--bg-glass)',
-          borderRadius: 10, border: '1px solid var(--border-subtle)',
-        }}>
-          <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.95rem' }}>{employee.nombre}</div>
-          <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginTop: '0.2rem' }}>
-            📅 {formatFecha(fecha)} &nbsp;·&nbsp; {employee.cargo}
-          </div>
-        </div>
-
-        <div className="cw-form-group">
-          <label className="cw-label">Franja Horaria <span className="required">*</span></label>
-          {allTemplates.length === 0 ? (
-            <div style={{
-              fontSize: '0.82rem', color: 'var(--text-muted)', padding: '1rem',
-              background: 'var(--bg-glass)', borderRadius: 8, textAlign: 'center',
-            }}>
-              ℹ️ No hay franjas configuradas para esta área.<br />
-              <a href="/areas" style={{ color: 'var(--cw-accent)' }}>Configúralas en Áreas →</a>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {allTemplates.map(t => {
-                const horas = calcHoras(t);
-                const isSelected = selected === t.id;
-                return (
-                  <button key={t.id} type="button"
-                    onClick={() => setSelected(t.id)}
-                    style={{
-                      padding: '0.875rem 1rem', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
-                      border: `2px solid ${isSelected ? t.color : 'var(--border-subtle)'}`,
-                      background: isSelected ? t.color + '18' : 'var(--bg-glass)',
-                      color: 'var(--text-primary)', transition: 'all 0.15s',
-                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                      <div style={{
-                        width: 32, height: 32, borderRadius: 8,
-                        background: t.color + '30', border: `1.5px solid ${t.color}`,
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontSize: '0.7rem', fontWeight: 800, color: t.color,
-                      }}>
-                        {t.hora_inicio.slice(0, 5)}
-                      </div>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: '0.88rem' }}>{t.nombre}</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
-                          {t.hora_inicio.slice(0, 5)} — {t.hora_fin.slice(0, 5)}
-                          {t.cruza_medianoche && <span style={{ color: '#fbbf24', marginLeft: 4 }}> ☾ +1 día</span>}
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '0.82rem', fontWeight: 700, color: isSelected ? t.color : 'var(--text-muted)' }}>
-                        {horas}h
-                      </div>
-                      {isSelected && <div style={{ fontSize: '0.7rem', color: t.color }}>✓ seleccionado</div>}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Preview del turno seleccionado */}
-        {selectedTpl && (
-          <div style={{
-            marginBottom: '1rem', padding: '0.625rem 0.875rem',
-            background: selectedTpl.color + '12', border: `1px solid ${selectedTpl.color}40`,
-            borderRadius: 8, fontSize: '0.8rem', color: 'var(--text-secondary)',
-          }}>
-            ⏱ Duración: <strong style={{ color: 'var(--text-primary)' }}>{calcHoras(selectedTpl)} horas</strong>
-            {' · '}Valor estimado: <strong style={{ color: 'var(--cw-success)', fontFamily: 'var(--font-mono)' }}>
-              {formatCOP((parseFloat(calcHoras(selectedTpl)) || 0) * (employee.valor_hora || 0))}
-            </strong>
-          </div>
-        )}
-
-        <div className="cw-modal__footer">
-          {existingShift && (
-            <button className="cw-btn cw-btn--danger cw-btn--sm"
-              onClick={() => {
-                if (window.confirm('¿Estás seguro de que deseas eliminar este turno?')) {
-                  onDelete(existingShift.id);
-                  onClose();
-                }
-              }}>
-              <MdDelete /> Quitar turno
-            </button>
-          )}
-          <button className="cw-btn cw-btn--secondary" onClick={onClose}>Cancelar</button>
-          <button className="cw-btn cw-btn--primary" onClick={handleSave}
-            disabled={!selected || loading}>
-            {loading ? <><span className="cw-spinner cw-spinner--sm"></span> Guardando...</> : '✅ Asignar'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Modal confirmación limpiar período ──────────────────────────────────────
-function ClearModal({ areas, employees, dias, onClose, onConfirm }) {
-  const [loading, setLoading] = useState(false);
-  const [scopeType, setScopeType] = useState('all'); // 'all', 'area', 'employee'
-  const [scopeId, setScopeId] = useState('');
-  const [rangeType, setRangeType] = useState('current_view'); // 'current_view', 'custom'
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
-
-  const handleConfirm = async () => {
-    if (rangeType === 'custom' && (!customStart || !customEnd)) {
-      alert('Por favor selecciona la fecha de inicio y fin.');
-      return;
-    }
-    if (scopeType !== 'all' && !scopeId) {
-      alert('Por favor selecciona el área o trabajador.');
-      return;
-    }
-
-    if (!window.confirm('⚠️ ¿Estás COMPLETAMENTE SEGURO de querer limpiar estos turnos? Esta acción eliminará permanentemente la programación seleccionada y NO se puede deshacer.')) {
-      return;
-    }
-
-    setLoading(true);
-    await onConfirm({ scopeType, scopeId, rangeType, customStart, customEnd });
-    setLoading(false);
-    onClose();
-  };
-
-  return (
-    <div className="cw-modal-overlay">
-      <div className="cw-modal animate-slide-up" style={{ maxWidth: 460 }}>
-        <div className="cw-modal__header">
-          <h3 className="cw-modal__title" style={{ color: '#fca5a5' }}>
-            <MdDeleteSweep style={{ marginRight: '0.5rem', fontSize: '1.25rem' }} />
-            Limpiar Programación
-          </h3>
-          <button className="cw-modal__close" onClick={onClose}><MdClose /></button>
-        </div>
-
-        <div className="cw-form-group">
-          <label className="cw-label">¿A quiénes aplicar?</label>
-          <select className="cw-select" value={scopeType} onChange={e => { setScopeType(e.target.value); setScopeId(''); }}>
-            <option value="all">Toda la empresa</option>
-            <option value="area">Un área específica</option>
-            <option value="employee">Un trabajador específico</option>
-          </select>
-        </div>
-
-        {scopeType === 'area' && (
-          <div className="cw-form-group">
-            <label className="cw-label">Seleccionar Área</label>
-            <select className="cw-select" value={scopeId} onChange={e => setScopeId(e.target.value)}>
-              <option value="">-- Elige un área --</option>
-              {areas.map(a => <option key={a.id} value={a.id}>{a.nombre}</option>)}
-            </select>
-          </div>
-        )}
-
-        {scopeType === 'employee' && (
-          <div className="cw-form-group">
-            <label className="cw-label">Seleccionar Trabajador</label>
-            <select className="cw-select" value={scopeId} onChange={e => setScopeId(e.target.value)}>
-              <option value="">-- Elige un trabajador --</option>
-              {[...employees].sort((a,b) => a.nombre.localeCompare(b.nombre)).map(e => <option key={e.id} value={e.id}>{e.nombre}</option>)}
-            </select>
-          </div>
-        )}
-
-        <div className="cw-form-group">
-          <label className="cw-label">Rango de fechas a limpiar</label>
-          <select className="cw-select" value={rangeType} onChange={e => setRangeType(e.target.value)}>
-            <option value="current_view">Vista actual ({dias.length > 0 ? `${formatFecha(dias[0])} al ${formatFecha(dias[dias.length-1])}` : '...'})</option>
-            <option value="custom">Rango personalizado...</option>
-          </select>
-        </div>
-
-        {rangeType === 'custom' && (
-          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.25rem' }}>
-            <div className="cw-form-group" style={{ flex: 1, marginBottom: 0 }}>
-              <label className="cw-label">Desde</label>
-              <input type="date" className="cw-input" value={customStart} onChange={e => setCustomStart(e.target.value)} />
-            </div>
-            <div className="cw-form-group" style={{ flex: 1, marginBottom: 0 }}>
-              <label className="cw-label">Hasta</label>
-              <input type="date" className="cw-input" value={customEnd} onChange={e => setCustomEnd(e.target.value)} />
-            </div>
-          </div>
-        )}
-
-        <div style={{
-          background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
-          borderRadius: 10, padding: '1rem', marginBottom: '1.25rem', marginTop: '1rem'
-        }}>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-            <MdWarning style={{ color: '#fca5a5', fontSize: '1.2rem', flexShrink: 0, marginTop: 2 }} />
-            <div>
-              <p style={{ color: '#fca5a5', fontWeight: 600, marginBottom: '0.35rem', fontSize: '0.875rem' }}>
-                Atención: Esta acción es permanente
-              </p>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
-                Se eliminarán todos los turnos que coincidan con tus selecciones. No se podrán recuperar.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="cw-modal__footer">
-          <button className="cw-btn cw-btn--secondary" onClick={onClose}>Cancelar</button>
-          <button className="cw-btn cw-btn--danger" onClick={handleConfirm} disabled={loading}>
-            {loading ? <><span className="cw-spinner cw-spinner--sm"></span></> : <><MdDeleteSweep /> Eliminar Turnos</>}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-
-// ─── Celda de la rejilla ─────────────────────────────────────────────────────
-// eslint-disable-next-line no-unused-vars
-function ShiftCell({ employee, fecha, shift, blocked, blockedReason, template, onAdd, isDayOff }) {
-  const [showInfo, setShowInfo] = useState(false);
-  const cardRef = useRef(null);
-  // Posición del popover en coordenadas de viewport (position: fixed) para que
-  // nunca lo recorte el contenedor con scroll de la rejilla.
-  const [popPos, setPopPos] = useState(null);
-
-  // Posiciona el popover por su borde (top/left de viewport) y lo ajusta para
-  // que SIEMPRE quepa completo dentro de la ventana, sin importar dónde esté la
-  // celda (izquierda, derecha, arriba o abajo de la rejilla).
-  const openPopover = () => {
-    const el = cardRef.current;
-    if (el) {
-      const r = el.getBoundingClientRect();
-      const POP_W = 215, POP_H = 340, M = 8; // ancho/alto estimados + margen
-      const vw = window.innerWidth, vh = window.innerHeight;
-
-      // Horizontal: centrar sobre la celda y luego acotar a [M, vw-POP_W-M].
-      let left = r.left + r.width / 2 - POP_W / 2;
-      left = Math.min(Math.max(left, M), vw - POP_W - M);
-
-      // Vertical: preferir arriba si cabe; si no, abajo. Acotar al viewport.
-      const cabeArriba = r.top >= POP_H + M;
-      let top = cabeArriba ? r.top - POP_H - 6 : r.bottom + 6;
-      top = Math.min(Math.max(top, M), vh - POP_H - M);
-
-      setPopPos({ left, top, placement: cabeArriba ? 'up' : 'down' });
-    }
-    setShowInfo(true);
-  };
-  const closePopover = () => setShowInfo(false);
-
-  // Día de descanso del área
-  if (isDayOff) {
-    return (
-      <td style={{ padding: '0.2rem' }}>
-        <div style={{
-          minHeight: 32, borderRadius: 6, opacity: 0.25,
-          background: 'repeating-linear-gradient(-45deg, var(--border-subtle), var(--border-subtle) 2px, transparent 2px, transparent 8px)',
-          border: '1px dashed var(--border-subtle)',
-        }} title="Día de descanso" />
-      </td>
-    );
-  }
-
-  // Novedad activa
-  if (blocked) {
-    return (
-      <td style={{ padding: '0.2rem' }}>
-        <div className="shift-cell shift-cell--blocked"
-          onClick={() => setShowInfo(!showInfo)}
-          title={blockedReason}
-          style={{ position: 'relative', minHeight: 32, fontSize: '0.85rem' }}>
-          🚫
-          {showInfo && (
-            <div style={{
-              position: 'absolute', zIndex: 100, top: '110%', left: '50%', transform: 'translateX(-50%)',
-              background: 'var(--bg-secondary)', border: '1px solid var(--border-medium)',
-              borderRadius: 8, padding: '0.6rem', fontSize: '0.72rem', color: 'var(--text-secondary)',
-              width: 190, boxShadow: 'var(--shadow-md)', whiteSpace: 'normal', textAlign: 'left',
-            }}>
-              <span style={{ color: '#fca5a5', fontWeight: 700, display: 'block', marginBottom: '0.25rem' }}>
-                <MdInfo style={{ verticalAlign: 'middle' }} /> Novedad
-              </span>
-              {blockedReason}
-            </div>
-          )}
-        </div>
-      </td>
-    );
-  }
-
-  // Turno asignado
-  if (shift) {
-    const color = template?.color || '#6366f1';
-    const nombreCorto = template?.nombre || 'Turno';
-    // Abreviatura: primeras 2 palabras o primeras 4 letras
-    const abrev = nombreCorto.length > 8
-      ? nombreCorto.split(' ').map(w => w[0]).join('').slice(0, 3).toUpperCase()
-      : nombreCorto;
-
-    const getLocalHHMM = (str) => {
-      if (!str) return '';
-      if (!str.includes('T')) return str.slice(0, 5);
-      const d = new Date(str);
-      const h = String(d.getHours()).padStart(2, '0');
-      const m = String(d.getMinutes()).padStart(2, '0');
-      return `${h}:${m}`;
-    };
-
-    const inicio = template?.hora_inicio?.slice(0, 5) || getLocalHHMM(shift.start_time);
-    const fin = template?.hora_fin?.slice(0, 5) || getLocalHHMM(shift.end_time);
-
-    const bd = getShiftBreakdown(shift);
-    const esNocturno = shift.shift_kind === 'NOCTURNO';
-    const esDisponibilidad = shift.disponibilidad || shift.shift_kind === 'DISPONIBILIDAD';
-    const netoLabel = Number.isInteger(bd.netH) ? `${bd.netH}h` : `${bd.netH.toFixed(1)}h`;
-
-    return (
-      <td style={{ padding: '0.2rem' }}>
-        <div onClick={onAdd}
-          ref={cardRef}
-          onMouseEnter={openPopover}
-          onMouseLeave={closePopover}
-          className="shift-cell-card"
-          title={`${nombreCorto} · ${inicio}–${fin} · Netas ${bd.netH.toFixed(1)}h · Almuerzo ${bd.almuerzo}min · Breaks 15: ${bd.breaks15} · Descanso ${bd.descansoTotalMin}min`}
-          style={{
-            borderRadius: 6, padding: '0.25rem 0.2rem 0.3rem', fontSize: '0.65rem', fontWeight: 700,
-            textAlign: 'center', cursor: 'pointer', minHeight: 32, display: 'flex',
-            flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            background: color + '28', border: `1.5px solid ${color}70`, color: 'var(--text-primary)',
-            transition: 'all 0.15s', position: 'relative', overflow: 'visible',
-          }}>
-          {/* barra superior de color */}
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: color, borderRadius: '6px 6px 0 0' }} />
-          <div style={{ marginTop: 2, fontWeight: 800, letterSpacing: '-0.3px', color, display: 'flex', alignItems: 'center', gap: 2 }}>
-            {esNocturno && <span style={{ fontSize: '0.6rem' }}>🌙</span>}
-            {esDisponibilidad && <span style={{ fontSize: '0.6rem' }} title="Disponibilidad">📟</span>}
-            {abrev}
-          </div>
-          <div style={{ fontSize: '0.58rem', opacity: 0.78, fontWeight: 500 }}>{inicio} - {fin}</div>
-          {/* Fila de desglose: horas netas + indicadores de descanso */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 1, fontSize: '0.55rem', fontWeight: 600, opacity: 0.9 }}>
-            <span style={{ color: 'var(--text-primary)' }}>{netoLabel}</span>
-            {bd.almuerzo > 0 && <span title={`Almuerzo ${bd.almuerzo} min`}>🍴</span>}
-            {bd.breaks15 > 0 && <span title={`${bd.breaks15} break(s) de 15 min`}>☕{bd.breaks15}</span>}
-          </div>
-
-          {/* Popover de detalle al pasar el mouse (position: fixed para no
-              ser recortado por el contenedor con scroll de la rejilla) */}
-          {showInfo && popPos && (
-            <div
-              className={`shift-detail-popover shift-detail-popover--${popPos.placement}`}
-              onClick={(e) => e.stopPropagation()}
-              style={{ left: popPos.left, top: popPos.top }}>
-              <div className="shift-detail-popover__title" style={{ color }}>
-                {esNocturno && '🌙 '}{nombreCorto}
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>🕐 Horario</span><strong>{inicio} – {fin}</strong>
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>⏱ Duración bruta</span><strong>{bd.grossH.toFixed(1)} h</strong>
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>🍴 Almuerzo</span>
-                <strong>{bd.almuerzo > 0 ? `${bd.almuerzo} min` : '—'}</strong>
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>☕ Breaks cortos</span>
-                <strong>{bd.breaks15 > 0 ? `${bd.breaks15} (${bd.breaks15Min} min)` : '—'}</strong>
-              </div>
-              {/* Horario real de cada descanso (cuando está programado) */}
-              {bd.tieneDetalle && bd.descansos.some(d => d.inicio) && (
-                <div className="shift-detail-popover__schedule">
-                  <div className="shift-detail-popover__schedule-title">Horario de descansos</div>
-                  {bd.descansos.map((d, i) => (
-                    <div key={i} className="shift-detail-popover__schedule-item">
-                      <span>{d.tipo === 'ALMUERZO' ? '🍴 Almuerzo' : '☕ Break'}</span>
-                      <strong>{d.inicio ? d.inicio : '—'} · {d.minutos}m</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="shift-detail-popover__row">
-                <span>😴 Descanso total</span>
-                <strong>{bd.descansoTotalMin} min</strong>
-              </div>
-              <div className="shift-detail-popover__row shift-detail-popover__row--net">
-                <span>✅ Horas netas</span>
-                <strong>{bd.netH.toFixed(1)} h</strong>
-              </div>
-              {esDisponibilidad && (
-                <div className="shift-detail-popover__row">
-                  <span>📟 Disponibilidad</span>
-                  <strong>{shift.recargo_porcentaje ? `+${shift.recargo_porcentaje}%` : 'Sí'}</strong>
-                </div>
-              )}
-              {shift.observaciones && (
-                <div className="shift-detail-popover__note">{shift.observaciones}</div>
-              )}
-              <div className="shift-detail-popover__hint">Click para editar / quitar</div>
-            </div>
-          )}
-        </div>
-      </td>
-    );
-  }
-
-  // Celda vacía (se puede asignar)
-  return (
-    <td style={{ padding: '0.2rem' }}>
-      <div className="shift-cell shift-cell--empty" onClick={onAdd}
-        title="Click para asignar turno"
-        style={{ minHeight: 32, fontSize: '1rem', opacity: 0.4 }}>
-        +
-      </div>
-    </td>
-  );
-}
-
-// ─── Leyenda de plantillas ────────────────────────────────────────────────────
-function TemplatesLegend({ templates }) {
-  if (!templates.length) return null;
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.75rem', alignItems: 'center' }}>
-      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>TURNOS:</span>
-      {templates.map(t => (
-        <div key={t.id} style={{
-          display: 'flex', alignItems: 'center', gap: '0.35rem',
-          background: t.color + '18', border: `1px solid ${t.color}50`,
-          borderRadius: 100, padding: '0.2rem 0.6rem', fontSize: '0.72rem',
-        }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: t.color }} />
-          <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{t.nombre}</span>
-          <span style={{ color: 'var(--text-muted)' }}>{t.hora_inicio.slice(0, 5)}–{t.hora_fin.slice(0, 5)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Página principal ────────────────────────────────────────────────────────
-const DIAS_LABELS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
 export default function SchedulingPage() {
   const now = new Date();
   const [anio, setAnio] = useState(now.getFullYear());
   const [mes, setMes] = useState(now.getMonth() + 1);
   const [selectedAreaId, setSelectedAreaId] = useState('all');
-  const [viewType, setViewType] = useState('grid'); // 'grid' | 'coverage'
+  const [viewType, setViewType] = useState('grid');
   const [viewMode, setViewMode] = useState(() => {
-    const today = new Date();
-    const d = today.getDate();
-    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+    const d = now.getDate();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
     const startDow = firstDay.getDay() === 0 ? 7 : firstDay.getDay();
     const weekIndex = Math.floor(((startDow - 1) + (d - 1)) / 7) + 1;
     return `weekly_${weekIndex}`;
@@ -623,7 +36,7 @@ export default function SchedulingPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('alfabetico');
   const [shiftModal, setShiftModal] = useState(null);
-  const [autoAssignModal, setAutoAssignModal] = useState(null); // Modal para opciones de auto-asignación
+  const [autoAssignModal, setAutoAssignModal] = useState(null);
   const [autoAssignLoading, setAutoAssignLoading] = useState(false);
   const [autoResult, setAutoResult] = useState(null);
   const [showClearModal, setShowClearModal] = useState(false);
@@ -641,20 +54,18 @@ export default function SchedulingPage() {
     ];
   }, [mes, anio]);
 
-  const { shifts, createShift, updateShift, deleteShift, autoAssignShifts, clearShiftsByPeriodo, clearShiftsByDateRange } = useShifts(periodos);
+  const { shifts, createShift, updateShift, deleteShift, autoAssignShifts, clearShiftsByDateRange } = useShifts(periodos);
   const { employees } = useEmployees();
   const { absences, tieneNovedad, getNovedad } = useAbsences();
   const { areas } = useAreas();
 
   const diasTodos = getDiasMes(anio, mes);
-  
-  // Agrupar por semanas naturales (terminan en domingo, siempre 7 días)
+
   const naturalWeeks = useMemo(() => {
     const weeks = [];
     let currentWeek = [];
     diasTodos.forEach(d => {
-      // pad missing days at start of month
-      if (currentWeek.length === 0 && d.getDay() !== 1) { // 1 = Lunes
+      if (currentWeek.length === 0 && d.getDay() !== 1) {
         const prevDaysCount = (d.getDay() === 0 ? 7 : d.getDay()) - 1;
         for (let i = prevDaysCount; i > 0; i--) {
           const prevDay = new Date(d);
@@ -664,14 +75,13 @@ export default function SchedulingPage() {
       }
       currentWeek.push(d);
       if (d.getDay() === 0 || d.getDate() === diasTodos[diasTodos.length - 1].getDate()) {
-        // pad missing days at end of month
         if (currentWeek[currentWeek.length - 1].getDay() !== 0) {
           const lastDow = currentWeek[currentWeek.length - 1].getDay();
           const nextDaysCount = 7 - (lastDow === 0 ? 7 : lastDow);
           for (let i = 1; i <= nextDaysCount; i++) {
-             const nextDay = new Date(currentWeek[currentWeek.length - 1]);
-             nextDay.setDate(nextDay.getDate() + 1);
-             currentWeek.push(nextDay);
+            const nextDay = new Date(currentWeek[currentWeek.length - 1]);
+            nextDay.setDate(nextDay.getDate() + 1);
+            currentWeek.push(nextDay);
           }
         }
         weeks.push([...currentWeek]);
@@ -691,31 +101,20 @@ export default function SchedulingPage() {
     dias = naturalWeeks[weekIdx] || diasTodos;
   }
 
-  // Área seleccionada (objeto completo)
   const selectedArea = selectedAreaId !== 'all' ? areas.find(a => a.id === selectedAreaId) : null;
-
-  // Días de trabajo del área seleccionada (1=Lun...7=Dom)
   const diasTrabajoArea = selectedArea?.dias_trabajo || [1, 2, 3, 4, 5, 6, 7];
 
-  // Plantillas del área seleccionada — cargadas reactivamente
   const [areaTemplates, setAreaTemplates] = useState([]);
   useEffect(() => {
     if (selectedAreaId && selectedAreaId !== 'all') {
-      supabase.from('shift_templates')
-        .select('*')
-        .eq('area_id', selectedAreaId)
-        .eq('activo', true)
-        .order('hora_inicio')
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        .then(({ data }) => setAreaTemplates(data || []));
+      supabase.from('shift_templates').select('*').eq('area_id', selectedAreaId).eq('activo', true)
+        .order('hora_inicio').then(({ data }) => setAreaTemplates(data || []));
     } else {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAreaTemplates([]);
     }
-  }, [selectedAreaId, shifts]); // re-fetch cuando cambian turnos (post auto-asignar)
+  }, [selectedAreaId, shifts]);
 
-  // Caché de todas las plantillas de todas las áreas para resolver colores
-  const [allTemplatesMap, setAllTemplatesMap] = useState({}); // id -> template
+  const [allTemplatesMap, setAllTemplatesMap] = useState({});
   useEffect(() => {
     supabase.from('shift_templates').select('*').eq('activo', true).then(({ data }) => {
       const map = {};
@@ -724,11 +123,8 @@ export default function SchedulingPage() {
     });
   }, []);
 
-  // Empleados filtrados por área, búsqueda y ordenamiento
   const filteredEmployees = useMemo(() => {
     let result = employees;
-    
-    // 1. Filtrar por área
     if (selectedAreaId !== 'all') {
       const area = areas.find(a => a.id === selectedAreaId);
       if (area) {
@@ -736,53 +132,23 @@ export default function SchedulingPage() {
         result = result.filter(e => areaEmpIds.includes(e.id));
       }
     }
-
-    // 2. Filtrar por búsqueda
     if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
-      result = result.filter(e => 
-        e.nombre?.toLowerCase().includes(term) || 
-        e.cedula?.toLowerCase().includes(term)
-      );
+      result = result.filter(e => e.nombre?.toLowerCase().includes(term) || e.cedula?.toLowerCase().includes(term));
     }
-
-    // 3. Ordenar
     result = [...result].sort((a, b) => {
-      if (sortBy === 'alfabetico') {
-        return (a.nombre || '').localeCompare(b.nombre || '');
-      } else if (sortBy === 'salario_desc') {
-        return (b.valor_hora || 0) - (a.valor_hora || 0);
-      } else if (sortBy === 'area') {
+      if (sortBy === 'alfabetico') return (a.nombre || '').localeCompare(b.nombre || '');
+      if (sortBy === 'salario_desc') return (b.valor_hora || 0) - (a.valor_hora || 0);
+      if (sortBy === 'area') {
         const getAreaName = (empId) => areas.find(a => a.area_employees?.some(ae => ae.employee_id === empId))?.nombre || '';
-        const areaA = getAreaName(a.id);
-        const areaB = getAreaName(b.id);
-        if (areaA === areaB) {
-          return (a.nombre || '').localeCompare(b.nombre || '');
-        }
-        return areaA.localeCompare(areaB);
+        const areaA = getAreaName(a.id), areaB = getAreaName(b.id);
+        return areaA === areaB ? (a.nombre || '').localeCompare(b.nombre || '') : areaA.localeCompare(areaB);
       }
       return 0;
     });
-
     return result;
   }, [selectedAreaId, areas, employees, searchTerm, sortBy]);
 
-  // Turno de un empleado en una fecha
-  const getShiftForEmployeeDate = (empId, dateStr) =>
-    shifts.find(s => s.employee_id === empId && s.start_time.startsWith(dateStr));
-
-  // Área de un empleado
-  const getEmployeeArea = (empId) =>
-    areas.find(a => a.area_employees?.some(ae => ae.employee_id === empId));
-
-  // Plantillas del área de un empleado
-  const getTemplatesForEmployee = (empId) => {
-    const area = getEmployeeArea(empId);
-    if (!area) return [];
-    return Object.values(allTemplatesMap).filter(t => t.area_id === area.id);
-  };
-
-  // Resumen acumulado por empleado en el período: bruto, neto, almuerzo, breaks
   const resumenPorEmpleado = useMemo(() => {
     const map = {};
     shifts.forEach(s => {
@@ -804,157 +170,97 @@ export default function SchedulingPage() {
     setAutoAssignLoading(true);
     setAutoResult(null);
     try {
-      const areasToProcess = scope === 'all'
-        ? areas
-        : areas.filter(a => a.id === scope);
-
-      if (!areasToProcess.length) {
-        throw new Error('No hay áreas para procesar.');
-      }
+      const areasToProcess = scope === 'all' ? areas : areas.filter(a => a.id === scope);
+      if (!areasToProcess.length) throw new Error('No hay áreas para procesar.');
 
       let totalInserted = 0;
       const allAlertaDias = [];
       const erroresValidacion = [];
       const areasProcesadas = [];
-
       const processedDays = getDatesByOption(strategyOptions.dateRangeOption, strategyOptions.customStart, strategyOptions.customEnd);
-
-      if (processedDays.length === 0) {
-        throw new Error('El rango seleccionado no tiene días. Ajusta los días laborables del área o cambia el rango.');
-      }
+      if (processedDays.length === 0) throw new Error('El rango seleccionado no tiene días.');
 
       if (strategyOptions.reprogramar && processedDays.length > 0) {
-        if (!(processedDays[0] instanceof Date) || isNaN(processedDays[0].getTime())) {
-          throw new Error('Invalid time value: processedDays[0] is Invalid Date (reprogramar)');
-        }
         const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
         const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
         const empIdsToClear = areasToProcess.flatMap(a => a.area_employees?.map(ae => ae.employee_id) || []);
-        if (empIdsToClear.length > 0) {
-          await clearShiftsByDateRange(dStartStr, dEndStr, empIdsToClear);
-        }
+        if (empIdsToClear.length > 0) await clearShiftsByDateRange(dStartStr, dEndStr, empIdsToClear);
       }
 
       for (const area of areasToProcess) {
-        // Filtrar empleados activos asignados al área
         const areaEmpsRaw = area.area_employees?.map(ae => ae.employees).filter(Boolean) || [];
         const areaEmps = areaEmpsRaw.filter(e => e.activo !== false);
-        if (!areaEmps.length) {
-          erroresValidacion.push(`${area.nombre}: sin empleados activos asignados.`);
-          continue;
-        }
+        if (!areaEmps.length) { erroresValidacion.push(`${area.nombre}: sin empleados activos.`); continue; }
 
-        // ¿El área opera 24/7? (incluye el modo call-center con noche dedicada)
         const areaEs247 = area.modo_operacion === '24_7' || area.modo_operacion === '24_7_NIGHT_SPLIT';
-
-        // Cargar plantillas del área
-        const { data: templates, error: tplErr } = await supabase
-          .from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
-
-        if (tplErr) {
-          erroresValidacion.push(`${area.nombre}: error al cargar franjas — ${tplErr.message}`);
-          continue;
-        }
-
-        // En 24/7 el algoritmo genera turnos dinámicos sin necesidad de franjas.
-        // Solo OFICINA exige al menos una franja configurada.
+        const { data: templates } = await supabase.from('shift_templates').select('*').eq('area_id', area.id).eq('activo', true);
         if (!areaEs247 && (!templates || templates.length === 0)) {
-          erroresValidacion.push(`${area.nombre}: sin franjas horarias. Agrega al menos una en Áreas → Franjas.`);
-          continue;
+          erroresValidacion.push(`${area.nombre}: sin franjas horarias.`); continue;
         }
 
         const empIds = areaEmps.map(e => e.id);
         let finalEmployees = [...areaEmps];
 
         if (strategyOptions.onlyNewEmployees && processedDays.length > 0) {
-          if (!(processedDays[0] instanceof Date) || isNaN(processedDays[0].getTime())) {
-            throw new Error('Invalid time value: processedDays[0] is Invalid Date (onlyNewEmployees)');
-          }
           const dStartStr = format(processedDays[0], 'yyyy-MM-dd');
           const dEndStr = format(processedDays[processedDays.length - 1], 'yyyy-MM-dd');
-
-          const { data: existing } = await supabase
-            .from('shifts')
-            .select('employee_id')
-            .in('employee_id', empIds)
-            .gte('start_time', `${dStartStr}T00:00:00`)
-            .lte('start_time', `${dEndStr}T23:59:59`);
-
+          const { data: existing } = await supabase.from('shifts').select('employee_id')
+            .in('employee_id', empIds).gte('start_time', `${dStartStr}T00:00:00`).lte('start_time', `${dEndStr}T23:59:59`);
           const empIdsWithShifts = new Set(existing?.map(s => s.employee_id) || []);
           finalEmployees = finalEmployees.filter(emp => !empIdsWithShifts.has(emp.id));
-
-          if (!finalEmployees.length) {
-            erroresValidacion.push(`${area.nombre}: todos los colaboradores ya tienen turnos en este período.`);
-            continue;
-          }
+          if (!finalEmployees.length) { erroresValidacion.push(`${area.nombre}: todos ya tienen turnos.`); continue; }
         }
 
-        // Construir config nocturna desde los datos del área. En cualquier
-        // modo 24/7 hay franja nocturna (el algoritmo la cubre aunque
-        // night_shift_enabled no esté marcado explícitamente).
-        const nightShiftConfig = areaEs247
-          ? {
-              enabled:     true,
-              start:       area.night_shift_start  || '22:00',
-              end:         area.night_shift_end    || '06:00',
-              employeeIds: area.night_shift_employee_ids || [],
-            }
-          : null;
-
-        let result;
+        const areaConfig = {};
         try {
-          result = await autoAssignShifts({
-            employees: finalEmployees,
-            templates,
-            absences: absences.filter(a => empIds.includes(a.employee_id)),
+          const { data: ad } = await supabase.from('areas')
+            .select('modo_operacion, estrategia_asignacion, min_empleados_noche, noche_solo_empleados_dedicados, permite_dia_cubrir_noche, slots_por_hora, snap_turnos_minutos, balancear_carga, rotar_slots_entre_asesores, permitir_horas_extras, permitir_turno_partido, min_horas_turno_override, max_horas_turno_override')
+            .eq('id', area.id).single();
+          Object.assign(areaConfig, ad || {});
+        } catch (e) { /* continuar sin config */ }
+        try {
+          const { data: hc } = await supabase.from('areas')
+            .select('min_empleados_dia, max_empleados_dia, hora_inicio_dia, hora_fin_dia').eq('id', area.id).single();
+          if (hc) Object.assign(areaConfig, hc);
+        } catch (e) { /* ok */ }
+        try {
+          const { data: bp } = await supabase.from('areas').select('break_policy').eq('id', area.id).single();
+          if (bp) Object.assign(areaConfig, bp);
+        } catch (e) { /* ok */ }
+
+        const nightShiftConfig = areaEs247 ? {
+          enabled: true,
+          start: area.night_shift_start || '22:00',
+          end: area.night_shift_end || '06:00',
+          employeeIds: area.night_shift_employee_ids || [],
+        } : null;
+
+        try {
+          const result = await autoAssignShifts({
+            employees: finalEmployees, templates, absences: absences.filter(a => empIds.includes(a.employee_id)),
             existingShifts: shifts.filter(s => empIds.includes(s.employee_id)),
             year: anio, month: mes,
-            diasTrabajo: areaEs247
-              ? [1, 2, 3, 4, 5, 6, 7]
-              : (area.dias_trabajo || [1, 2, 3, 4, 5]),
-            diasToProcess: processedDays,
-            areaId: area.id,
-            modoOperacion: area.modo_operacion,
-            laborLimits: area.labor_limits || null,
-            nightShiftConfig,
+            diasTrabajo: areaEs247 ? [1,2,3,4,5,6,7] : (area.dias_trabajo || [1,2,3,4,5]),
+            diasToProcess: processedDays, areaId: area.id, modoOperacion: area.modo_operacion,
+            laborLimits: area.labor_limits || null, nightShiftConfig,
             patronRotativo: area.patron_rotativo || null,
-            // v5: overrides puntuales de headcount desde el modal (si se indicaron)
             overrideMinEmpleadosDia: strategyOptions.minEmpleadosDia ?? null,
             overrideMaxEmpleadosDia: strategyOptions.maxEmpleadosDia ?? null,
             overrideMinEmpleadosNoche: strategyOptions.minEmpleadosNoche ?? null,
           });
-        } catch (innerErr) {
-          erroresValidacion.push(`${area.nombre}: ${innerErr.message || 'error desconocido'}`);
-          continue;
-        }
-
-        if (result?.error) {
-          // Si es error de schema cache, abortamos todo y avisamos claro
-          if (result.error.includes('schema cache') || result.error.includes('column')) {
-            throw new Error(
-              `La tabla 'shifts' no tiene las columnas requeridas. ` +
-              `Aplica la migración supabase/fix_shifts_shift_kind.sql en el SQL Editor de Supabase. ` +
-              `Detalle: ${result.error}`
-            );
+          if (result?.error) {
+            if (result.error.includes('schema cache') || result.error.includes('column'))
+              throw new Error(`La tabla 'shifts' no tiene las columnas requeridas. Aplica la migración en Supabase. Detalle: ${result.error}`);
+            erroresValidacion.push(`${area.nombre}: ${result.error}`); continue;
           }
-          erroresValidacion.push(`${area.nombre}: ${result.error}`);
-          continue;
-        }
-
-        totalInserted += result.inserted || 0;
-        areasProcesadas.push(area.nombre);
-        if (Array.isArray(result.alertaDias)) {
-          allAlertaDias.push(...result.alertaDias);
+          totalInserted += result.inserted || 0;
+          areasProcesadas.push(area.nombre);
+          if (Array.isArray(result.alertaDias)) allAlertaDias.push(...result.alertaDias);
+        } catch (innerErr) {
+          erroresValidacion.push(`${area.nombre}: ${innerErr.message || 'error desconocido'}`); continue;
         }
       }
-
-      setAutoResult({
-        inserted: totalInserted,
-        alertaDias: [...new Set(allAlertaDias)],
-        scope,
-        areasProcesadas,
-        warn: erroresValidacion.join(' | '),
-      });
+      setAutoResult({ inserted: totalInserted, alertaDias: [...new Set(allAlertaDias)], scope, areasProcesadas, warn: erroresValidacion.join(' | ') });
     } catch (err) {
       setAutoResult({ error: err.message });
     } finally {
@@ -962,34 +268,26 @@ export default function SchedulingPage() {
     }
   };
 
-  // ── Limpiar período ───────────────────────────────────────────────────────
   const handleClearPeriod = async (options) => {
     const { scopeType, scopeId, rangeType, customStart, customEnd } = options;
-    
     let empIds = [];
     if (scopeType === 'area') {
       const area = areas.find(a => a.id === scopeId);
       empIds = area?.area_employees?.map(ae => ae.employee_id) || [];
     } else if (scopeType === 'employee') {
       empIds = [scopeId];
-    } // si es 'all', empIds queda vacío (aplica a todos)
-
+    }
     let dStartStr, dEndStr;
-    if (rangeType === 'custom') {
-      dStartStr = customStart;
-      dEndStr = customEnd;
-    } else {
-      // current_view
+    if (rangeType === 'custom') { dStartStr = customStart; dEndStr = customEnd; }
+    else {
       if (dias.length === 0) return;
       dStartStr = format(dias[0], 'yyyy-MM-dd');
       dEndStr = format(dias[dias.length - 1], 'yyyy-MM-dd');
     }
-
     await clearShiftsByDateRange(dStartStr, dEndStr, empIds);
     setAutoResult(null);
   };
 
-  // ── Navegación mes/semana ────────────────────────────────────────────────────────
   const handlePrev = () => {
     setAutoResult(null);
     if (viewMode === 'monthly') {
@@ -1001,19 +299,15 @@ export default function SchedulingPage() {
       setViewMode('biweekly_1');
     } else if (viewMode.startsWith('weekly_')) {
       const wIdx = parseInt(viewMode.split('_')[1], 10);
-      if (wIdx > 1) {
-        setViewMode(`weekly_${wIdx - 1}`);
-      } else {
+      if (wIdx > 1) { setViewMode(`weekly_${wIdx - 1}`); }
+      else {
         const prevMes = mes === 1 ? 12 : mes - 1;
         const prevAnio = mes === 1 ? anio - 1 : anio;
-        setMes(prevMes);
-        setAnio(prevAnio);
+        setMes(prevMes); setAnio(prevAnio);
         const prevDiasTodos = getDiasMes(prevAnio, prevMes);
         let prevWeeksCount = 0;
         prevDiasTodos.forEach(d => {
-          if (d.getDay() === 0 || d.getDate() === prevDiasTodos[prevDiasTodos.length - 1].getDate()) {
-            prevWeeksCount++;
-          }
+          if (d.getDay() === 0 || d.getDate() === prevDiasTodos[prevDiasTodos.length - 1].getDate()) prevWeeksCount++;
         });
         setViewMode(`weekly_${prevWeeksCount}`);
       }
@@ -1024,518 +318,161 @@ export default function SchedulingPage() {
     setAutoResult(null);
     if (viewMode === 'monthly') {
       if (mes === 12) { setMes(1); setAnio(anio + 1); } else setMes(mes + 1);
-    } else if (viewMode === 'biweekly_1') {
-      setViewMode('biweekly_2');
-    } else if (viewMode === 'biweekly_2') {
-      setViewMode('biweekly_1');
-      if (mes === 12) { setMes(1); setAnio(anio + 1); } else setMes(mes + 1);
-    } else if (viewMode.startsWith('weekly_')) {
+    } else if (viewMode === 'biweekly_1') { setViewMode('biweekly_2'); }
+    else if (viewMode === 'biweekly_2') { setViewMode('biweekly_1'); if (mes === 12) { setMes(1); setAnio(anio + 1); } else setMes(mes + 1); }
+    else if (viewMode.startsWith('weekly_')) {
       const wIdx = parseInt(viewMode.split('_')[1], 10);
-      if (wIdx < naturalWeeks.length) {
-        setViewMode(`weekly_${wIdx + 1}`);
-      } else {
-        setViewMode('weekly_1');
-        if (mes === 12) { setMes(1); setAnio(anio + 1); } else setMes(mes + 1);
-      }
+      if (wIdx < naturalWeeks.length) { setViewMode(`weekly_${wIdx + 1}`); }
+      else { setViewMode('weekly_1'); if (mes === 12) { setMes(1); setAnio(anio + 1); } else setMes(mes + 1); }
     }
   };
 
   const handleToday = () => {
     setAutoResult(null);
     const today = new Date();
-    setAnio(today.getFullYear());
-    setMes(today.getMonth() + 1);
-    setViewMode('weekly_1');
+    setAnio(today.getFullYear()); setMes(today.getMonth() + 1); setViewMode('weekly_1');
   };
 
-  // ── Verificar si un día es de descanso para el área seleccionada ──────────
-  const isDayOffForArea = (dia) => {
-    if (!selectedArea) return false; // "Todas" no filtra días
-    const dow = dia.getDay() === 0 ? 7 : dia.getDay(); // 1=Lun...7=Dom
-    return !diasTrabajoArea.includes(dow);
-  };
-
-  // Contar turnos asignados del período
   const turnosAsignados = shifts.length;
   const diasSinCobertura = dias.filter(dia => {
-    if (isDayOffForArea(dia)) return false;
+    const dowISO = dia.getDay() === 0 ? 7 : dia.getDay();
+    if (selectedArea && !diasTrabajoArea.includes(dowISO)) return false;
     const dateStr = format(dia, 'yyyy-MM-dd');
-    return !filteredEmployees.some(emp => getShiftForEmployeeDate(emp.id, dateStr));
+    return !filteredEmployees.some(emp => shifts.some(s => s.employee_id === emp.id && s.start_time.startsWith(dateStr)));
   }).length;
+
+  const handleShiftCellClick = (emp, dia, empArea, empTemplates, existingShift) => {
+    setShiftModal({
+      employee: emp, fecha: dia,
+      areaId: empArea?.id,
+      areaTemplates: empTemplates,
+      breakPolicy: empArea?.break_policy || null,
+      existingShift,
+    });
+  };
 
   return (
     <div className="page-wrapper animate-fade-in" style={{ maxWidth: '100%' }}>
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="page-header" style={{ display: 'block', marginBottom: '1.25rem' }}>
         <div className="page-header__info" style={{ marginBottom: '1rem' }}>
           <h1 className="page-title">📅 Programación de Turnos</h1>
-          <p className="page-subtitle">
-            Gestión visual de turnos por área · CST Colombia 2026 (máx 42h/sem)
-          </p>
+          <p className="page-subtitle">Gestión visual de turnos por área · CST Colombia</p>
         </div>
 
-        {/* Toolbar */}
-        <div style={{ 
-          display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap',
-          background: 'var(--bg-glass)', padding: '0.8rem 1rem', borderRadius: 10,
-          border: '1px solid var(--border-subtle)'
-        }}>
-          {/* Selector de Mes y Año explícito */}
-          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-            <select 
-              value={mes} 
-              onChange={e => { setMes(Number(e.target.value)); setAutoResult(null); }} 
-              className="cw-input" 
-              style={{ width: 'auto', padding: '0.45rem 0.6rem', fontSize: '0.85rem', fontWeight: 600 }}>
-              {Array.from({length: 12}, (_, i) => (
-                <option key={i+1} value={i+1}>{getNombreMes(i+1)}</option>
-              ))}
-            </select>
-            <select 
-              value={anio} 
-              onChange={e => { setAnio(Number(e.target.value)); setAutoResult(null); }} 
-              className="cw-input" 
-              style={{ width: 'auto', padding: '0.45rem 0.6rem', fontSize: '0.85rem', fontWeight: 600 }}>
-              {[anio-2, anio-1, anio, anio+1, anio+2].map(y => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
-            <button className="cw-btn cw-btn--secondary" onClick={handleToday} style={{ fontSize: '0.8rem', padding: '0.4rem 0.7rem' }}>Hoy</button>
-          </div>
-
-          <div style={{ width: 1, height: 28, background: 'var(--border-subtle)', margin: '0 0.25rem' }} />
-
-          {/* Controles de vista (Semana/Quincena/Mes) con flechas adjuntas */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', background: 'var(--bg-primary)', borderRadius: '8px', padding: '0.2rem', border: '1px solid var(--border-medium)' }}>
-            <button className="cw-btn cw-btn--secondary cw-btn--icon" onClick={handlePrev} title="Anterior" style={{ border: 'none', background: 'transparent' }}><MdChevronLeft size={20} /></button>
-            <select className="cw-input"
-              style={{ fontSize: '0.82rem', padding: '0.4rem 0.5rem', width: 'auto', minWidth: 150, border: 'none', background: 'transparent', fontWeight: 600, color: 'var(--cw-accent)' }}
-              value={viewMode}
-              onChange={e => { setViewMode(e.target.value); setAutoResult(null); }}>
-              <option value="monthly">📅 Mes completo</option>
-              <option value="biweekly_1">📅 Quincena 1 (1-15)</option>
-              <option value="biweekly_2">📅 Quincena 2 (16-fin)</option>
-              {naturalWeeks.map((w, i) => (
-                <option key={i} value={`weekly_${i + 1}`}>
-                  📅 Sem {i + 1} ({w[0].getDate()} al {w[w.length - 1].getDate()})
-                </option>
-              ))}
-            </select>
-            <button className="cw-btn cw-btn--secondary cw-btn--icon" onClick={handleNext} title="Siguiente" style={{ border: 'none', background: 'transparent' }}><MdChevronRight size={20} /></button>
-          </div>
-
-          <div style={{ width: 1, height: 28, background: 'var(--border-subtle)', margin: '0 0.25rem' }} />
-
-          {/* Filtro área */}
-          <select className="cw-input"
-            style={{ fontSize: '0.82rem', padding: '0.45rem 0.75rem', width: 'auto', minWidth: 160 }}
-            value={selectedAreaId}
-            onChange={e => { setSelectedAreaId(e.target.value); setAutoResult(null); }}>
-            <option value="all">🏢 Todas las áreas</option>
-            {areas.map(a => (
-              <option key={a.id} value={a.id}>● {a.nombre}</option>
-            ))}
-          </select>
-
-          {/* Barra de Búsqueda */}
-          <div style={{ display: 'flex', alignItems: 'center', background: 'var(--bg-primary)', border: '1px solid var(--border-medium)', borderRadius: 8, padding: '0.2rem 0.5rem' }}>
-            <span style={{ color: 'var(--text-muted)' }}>🔍</span>
-            <input 
-              type="text" 
-              placeholder="Buscar colaborador..." 
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              style={{ border: 'none', background: 'transparent', color: 'var(--text-primary)', outline: 'none', fontSize: '0.82rem', padding: '0.2rem 0.4rem', width: 140 }}
-            />
-          </div>
-
-          {/* Filtro Ordenar */}
-          <select className="cw-input"
-            style={{ fontSize: '0.82rem', padding: '0.45rem 0.75rem', width: 'auto', minWidth: 140 }}
-            value={sortBy}
-            onChange={e => setSortBy(e.target.value)}>
-            <option value="alfabetico">🔤 Orden Alfabético</option>
-            <option value="area">🏢 Agrupar por Área</option>
-            <option value="salario_desc">💰 Mayor Salario</option>
-          </select>
-
-          {/* Toggle vista */}
-          <button className={`cw-btn ${viewType === 'coverage' ? 'cw-btn--primary' : 'cw-btn--secondary'}`}
-            onClick={() => setViewType(t => t === 'grid' ? 'coverage' : 'grid')}
-            style={{ fontSize: '0.78rem', padding: '0.4rem 0.7rem' }}
-            title={viewType === 'grid' ? 'Ver cobertura por hora' : 'Ver rejilla de turnos'}>
-            <MdAccessTime /> {viewType === 'grid' ? 'Cobertura por Hora' : 'Rejilla'}
-          </button>
-
-          <div style={{ width: 1, height: 28, background: 'var(--border-subtle)', margin: '0 0.25rem' }} />
-
-          {/* Auto-asignar */}
-          <button className="cw-btn cw-btn--primary" onClick={() => setAutoAssignModal(selectedAreaId)}
-            disabled={autoAssignLoading}
-            title="Asignar turnos automáticamente">
-            {autoAssignLoading ? <span className="cw-spinner cw-spinner--sm"></span> : <MdBolt />}
-            Auto-asignar...
-          </button>
-
-          {/* Exportar Excel */}
-          <button className="cw-btn cw-btn--secondary" onClick={() => setShowExportModal(true)}
-            title="Exportar turnos y resumen a Excel"
-            disabled={shifts.length === 0 && employees.length === 0}>
-            <MdDownload /> Exportar Excel
-          </button>
-
-          {/* Limpiar período */}
-          <button className="cw-btn cw-btn--danger" onClick={() => setShowClearModal(true)}
-            title={`Eliminar todos los turnos de ${getNombreMes(mes)} ${anio}${selectedArea ? ` (${selectedArea.nombre})` : ''}`}
-            disabled={turnosAsignados === 0}>
-            <MdDeleteSweep /> Limpiar
-          </button>
-        </div>
+        <SchedulingToolbar
+          mes={mes} anio={anio}
+          viewMode={viewMode} viewType={viewType}
+          selectedAreaId={selectedAreaId}
+          searchTerm={searchTerm} sortBy={sortBy}
+          naturalWeeks={naturalWeeks} areas={areas}
+          shifts={shifts} employees={employees}
+          autoAssignLoading={autoAssignLoading}
+          onSetMes={v => { setMes(v); setAutoResult(null); }}
+          onSetAnio={v => { setAnio(v); setAutoResult(null); }}
+          onSetViewMode={v => { setViewMode(v); setAutoResult(null); }}
+          onSetViewType={() => setViewType(t => t === 'grid' ? 'coverage' : 'grid')}
+          onSetSelectedAreaId={v => { setSelectedAreaId(v); setAutoResult(null); }}
+          onSetSearchTerm={setSearchTerm}
+          onSetSortBy={setSortBy}
+          onPrev={handlePrev} onNext={handleNext} onToday={handleToday}
+          onAutoAssign={() => setAutoAssignModal(selectedAreaId)}
+          onExport={() => setShowExportModal(true)}
+          onClear={() => setShowClearModal(true)}
+        />
       </div>
 
-      {/* ── Estadísticas rápidas ────────────────────────────────────────────── */}
+      {/* Estadísticas rápidas */}
       <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-        <div style={{
-          background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-          borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem',
-          display: 'flex', alignItems: 'center', gap: '0.5rem',
-        }}>
+        <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={{ color: 'var(--text-muted)' }}>Turnos asignados:</span>
           <strong style={{ color: 'var(--cw-accent)' }}>{turnosAsignados}</strong>
         </div>
-        <div style={{
-          background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-          borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem',
-          display: 'flex', alignItems: 'center', gap: '0.5rem',
-        }}>
+        <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={{ color: 'var(--text-muted)' }}>Colaboradores:</span>
           <strong style={{ color: 'var(--text-primary)' }}>{filteredEmployees.length}</strong>
         </div>
         {diasSinCobertura > 0 && (
-          <div style={{
-            background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
-            borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem',
-            display: 'flex', alignItems: 'center', gap: '0.5rem',
-          }}>
+          <div style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <MdWarning style={{ color: '#fbbf24' }} />
-            <span style={{ color: '#fcd34d' }}>
-              <strong>{diasSinCobertura}</strong> días sin cobertura
-            </span>
+            <span style={{ color: '#fcd34d' }}><strong>{diasSinCobertura}</strong> días sin cobertura</span>
           </div>
         )}
         {selectedArea && (
-          <div style={{
-            background: selectedArea.color + '15', border: `1px solid ${selectedArea.color}40`,
-            borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem',
-            display: 'flex', alignItems: 'center', gap: '0.5rem',
-          }}>
+          <div style={{ background: selectedArea.color + '15', border: `1px solid ${selectedArea.color}40`, borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: selectedArea.color }} />
             <span style={{ color: 'var(--text-muted)' }}>Días laborables:</span>
-            <strong style={{ color: 'var(--text-primary)' }}>
-              {diasTrabajoArea.map(d => ['L', 'M', 'X', 'J', 'V', 'S', 'D'][d - 1]).join(' · ')}
-            </strong>
+            <strong style={{ color: 'var(--text-primary)' }}>{diasTrabajoArea.map(d => ['L','M','X','J','V','S','D'][d-1]).join(' · ')}</strong>
           </div>
         )}
       </div>
 
-      {/* ── Resultado auto-asignación ───────────────────────────────────────── */}
+      {/* Resultado auto-asignación */}
       {autoResult && (
         <div className={`cw-alert ${autoResult.error ? 'cw-alert--error' : autoResult.alertaDias?.length ? 'cw-alert--warning' : 'cw-alert--success'}`}
           style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', flex: 1 }}>
             {autoResult.error ? (
               <><MdWarning style={{ marginTop: 2, flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>🚫 Error en la auto-asignación</div>
-                  <div style={{ fontSize: '0.85rem' }}>{autoResult.error}</div>
-                </div>
-              </>
+                <div><div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>🚫 Error en la auto-asignación</div><div style={{ fontSize: '0.85rem' }}>{autoResult.error}</div></div></>
             ) : (
-              <>
-                {autoResult.alertaDias?.length
-                  ? <MdWarning style={{ color: '#fbbf24', marginTop: 2, flexShrink: 0 }} />
-                  : <MdCheckCircle style={{ color: '#10b981', marginTop: 2, flexShrink: 0 }} />}
+              <>{autoResult.alertaDias?.length ? <MdWarning style={{ color: '#fbbf24', marginTop: 2, flexShrink: 0 }} /> : <MdCheckCircle style={{ color: '#10b981', marginTop: 2, flexShrink: 0 }} />}
                 <div style={{ flex: 1 }}>
-                  <div>
-                    <strong>{autoResult.inserted}</strong> turnos asignados para {getNombreMes(mes)} {anio}.
-                    {autoResult.areasProcesadas?.length > 0 && (
-                      <> <span style={{ color: 'var(--text-muted)' }}>· Áreas: {autoResult.areasProcesadas.join(', ')}</span></>
-                    )}
-                  </div>
-                  {autoResult.alertaDias?.length > 0 && (
-                    <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: '#fcd34d' }}>
-                      ⚠️ {autoResult.alertaDias.length} advertencia{autoResult.alertaDias.length !== 1 ? 's' : ''}: {autoResult.alertaDias.slice(0, 3).join(' · ')}{autoResult.alertaDias.length > 3 ? ` … (+${autoResult.alertaDias.length - 3} más)` : ''}
-                    </div>
-                  )}
-                  {autoResult.warn && (
-                    <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: '#fca5a5' }}>
-                      ❗ {autoResult.warn}
-                    </div>
-                  )}
-                </div>
-              </>
+                  <div><strong>{autoResult.inserted}</strong> turnos asignados.{autoResult.areasProcesadas?.length > 0 && <> · {autoResult.areasProcesadas.join(', ')}</>}</div>
+                  {autoResult.alertaDias?.length > 0 && <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: '#fcd34d' }}>⚠️ {autoResult.alertaDias.slice(0, 3).join(' · ')}{autoResult.alertaDias.length > 3 ? ` … (+${autoResult.alertaDias.length - 3} más)` : ''}</div>}
+                  {autoResult.warn && <div style={{ fontSize: '0.8rem', marginTop: '0.3rem', color: '#fca5a5' }}>❗ {autoResult.warn}</div>}
+                </div></>
             )}
           </div>
-          <button onClick={() => setAutoResult(null)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: 'inherit' }}>×</button>
+          <button onClick={() => setAutoResult(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: 'inherit' }}>×</button>
         </div>
       )}
 
-      {/* ── Leyenda plantillas del área ─────────────────────────────────────── */}
       {areaTemplates.length > 0 && viewType === 'grid' && <TemplatesLegend templates={areaTemplates} />}
 
-      {/* ── Vista de cobertura por hora ────────────────────────────────────── */}
       {viewType === 'coverage' ? (
-        <HourlyCoverageView
-          shifts={shifts}
-          employees={filteredEmployees}
+        <HourlyCoverageView shifts={shifts} employees={filteredEmployees}
           demandSlots={selectedArea ? (selectedArea.area_demand_slots || []) : areas.flatMap(a => a.area_demand_slots || [])}
-          areas={areas}
-          selectedAreaId={selectedAreaId}
-        />
-      ) : filteredEmployees.length === 0 ? (
-        <div className="cw-card">
-          <div className="empty-state">
-            <div className="empty-state__icon"><MdCalendarMonth /></div>
-            <div className="empty-state__title">
-              {employees.length === 0 ? 'No hay empleados registrados' : 'Sin empleados en esta área'}
-            </div>
-            <div className="empty-state__desc">
-              {employees.length === 0
-                ? 'Registre empleados primero en la sección de Personal.'
-                : 'Asigne empleados a esta área en la página de Áreas.'}
-            </div>
-          </div>
-        </div>
+          areas={areas} selectedAreaId={selectedAreaId} />
       ) : (
-        <div className="cw-card" style={{ padding: '1rem' }}>
-          <div className="shift-grid-wrapper">
-            <table className="shift-grid">
-              <thead>
-                <tr>
-                  {/* Columna empleado */}
-                  <th style={{ minWidth: 170, textAlign: 'left', paddingLeft: '0.875rem', position: 'sticky', left: 0, background: 'var(--bg-card)', zIndex: 10 }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.8px', textTransform: 'uppercase' }}>
-                      Colaborador
-                    </div>
-                  </th>
-                  {/* Columnas de días */}
-                  {dias.map(dia => {
-                    const dow = dia.getDay(); // 0=Dom,6=Sab
-                    const dowISO = dow === 0 ? 7 : dow; // 1=Lun...7=Dom
-                    const esDom = dow === 0;
-                    const esSab = dow === 6;
-                    const isHoy = format(dia, 'yyyy-MM-dd') === format(new Date(), 'yyyy-MM-dd');
-                    const isDayOff = selectedArea && !diasTrabajoArea.includes(dowISO);
-                    return (
-                      <th key={dia.toISOString()} style={{
-                        minWidth: 42, textAlign: 'center',
-                        color: isDayOff ? 'var(--text-muted)' : esDom ? '#fca5a5' : esSab ? '#fcd34d' : undefined,
-                        opacity: isDayOff ? 0.4 : 1,
-                        background: isHoy ? 'rgba(59,130,246,0.12)' : undefined,
-                        borderBottom: isHoy ? '2px solid var(--cw-accent)' : undefined,
-                        padding: '0.5rem 0.1rem',
-                      }}>
-                        <div style={{ fontSize: '0.65rem', fontWeight: 600 }}>
-                          {DIAS_LABELS[(dow + 6) % 7]}
-                        </div>
-                        <div style={{ fontWeight: 800, fontSize: '0.82rem' }}>{dia.getDate()}</div>
-                        {isDayOff && <div style={{ fontSize: '0.5rem', opacity: 0.7 }}>🌙</div>}
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredEmployees.map(emp => {
-                  const empArea = getEmployeeArea(emp.id);
-                  const empTemplates = getTemplatesForEmployee(emp.id);
-                  const resumen = resumenPorEmpleado[emp.id] || { bruto: 0, neto: 0, almuerzoMin: 0, breaks15: 0, turnos: 0 };
-                  const horasTotal = resumen.neto; // horas netas trabajadas en el período cargado
-                  const porcentajeHoras = Math.min((horasTotal / (42 * 4)) * 100, 100); // 42h × 4 semanas
-                  const horasColor = horasTotal > 160 ? '#ef4444' : horasTotal > 130 ? '#f59e0b' : '#10b981';
-                  const descansoTotalMin = resumen.almuerzoMin + resumen.breaks15 * 15;
-                  const resumenTooltip =
-                    `${resumen.turnos} turno(s) · Netas ${resumen.neto.toFixed(1)}h · ` +
-                    `Brutas ${resumen.bruto.toFixed(1)}h · Almuerzo ${resumen.almuerzoMin}min · ` +
-                    `Breaks 15: ${resumen.breaks15} · Descanso total ${descansoTotalMin}min`;
-
-                  return (
-                    <tr key={emp.id}>
-                      {/* Celda empleado — sticky */}
-                      <td className="shift-grid__employee-cell"
-                        style={{ position: 'sticky', left: 0, background: 'var(--bg-card)', zIndex: 5, borderRight: '1px solid var(--border-subtle)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          {empArea && (
-                            <div style={{ width: 7, height: 32, borderRadius: 4, background: empArea.color, flexShrink: 0 }} />
-                          )}
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                              {/* Badge de jornada preferida — visibilidad rápida para 24/7 */}
-                              {(emp.solo_nocturno || emp.jornada_preferida === 'NOCTURNA') && (
-                                <span title="Turno Nocturno" style={{ fontSize: '0.6rem', flexShrink: 0 }}>🌙</span>
-                              )}
-                              {(emp.solo_diurno || emp.jornada_preferida === 'DIURNA') && (
-                                <span title="Turno Diurno" style={{ fontSize: '0.6rem', flexShrink: 0 }}>☀️</span>
-                              )}
-                              {(!emp.solo_nocturno && !emp.solo_diurno && emp.jornada_preferida === 'MIXTA') && (
-                                <span title="Turno Mixto" style={{ fontSize: '0.6rem', flexShrink: 0 }}>🌓</span>
-                              )}
-                              <div className="shift-grid__employee-name" title={emp.nombre}
-                                style={{ fontSize: '0.8rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {emp.nombre}
-                              </div>
-                            </div>
-                            <div className="shift-grid__employee-cargo" style={{ fontSize: '0.68rem' }}>{emp.cargo}</div>
-                            {/* Resumen de horas netas + descansos del período */}
-                            <div title={resumenTooltip}
-                              style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginTop: '0.15rem', fontSize: '0.62rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                              <strong style={{ color: horasColor, fontFamily: 'var(--font-mono)' }}>{resumen.neto.toFixed(0)}h</strong>
-                              {resumen.almuerzoMin > 0 && <span title={`Almuerzo acumulado ${resumen.almuerzoMin} min`}>🍴{Math.round(resumen.almuerzoMin / 60)}h</span>}
-                              {resumen.breaks15 > 0 && <span title={`${resumen.breaks15} breaks de 15 min`}>☕{resumen.breaks15}</span>}
-                            </div>
-                            {/* Barra de horas */}
-                            <div title={resumenTooltip}
-                              style={{ marginTop: '0.2rem', height: 3, background: 'var(--border-subtle)', borderRadius: 2, overflow: 'hidden' }}>
-                              <div style={{ width: `${porcentajeHoras}%`, height: '100%', background: horasColor, borderRadius: 2, transition: 'width 0.3s' }} />
-                            </div>
-                          </div>
-
-                        </div>
-                      </td>
-
-                      {/* Celdas de días */}
-                      {dias.map(dia => {
-                        const dateStr = format(dia, 'yyyy-MM-dd');
-                        const dow = dia.getDay() === 0 ? 7 : dia.getDay();
-                        const shift = getShiftForEmployeeDate(emp.id, dateStr);
-                        const novedad = tieneNovedad(emp.id, dateStr);
-                        const novedadInfo = novedad ? getNovedad(emp.id, dateStr) : null;
-                        const blockedReason = novedadInfo
-                          ? `${novedadInfo.tipo}: ${novedadInfo.fecha_inicio} al ${novedadInfo.fecha_fin}` : '';
-
-                        // Resolver plantilla del turno para mostrar color correcto
-                        let shiftTemplate = null;
-                        if (shift) {
-                          if (shift.template_id && allTemplatesMap[shift.template_id]) {
-                            shiftTemplate = allTemplatesMap[shift.template_id];
-                          } else {
-                            // Fallback: buscar por hora de inicio
-                            const startHour = shift.start_time?.slice(11, 16);
-                            shiftTemplate = empTemplates.find(t => t.hora_inicio.slice(0, 5) === startHour) || null;
-                          }
-                        }
-
-                        // ¿Es día de descanso del área del empleado?
-                        const empDiasDescanso = empArea?.dias_trabajo || null;
-                        const isDayOff = empDiasDescanso ? !empDiasDescanso.includes(dow) : false;
-
-                        return (
-                          <ShiftCell
-                            key={dateStr}
-                            employee={emp}
-                            fecha={dia}
-                            shift={shift}
-                            blocked={novedad}
-                            blockedReason={blockedReason}
-                            template={shiftTemplate}
-                            isDayOff={isDayOff}
-                            onAdd={() => setShiftModal({
-                              employee: emp,
-                              fecha: dia,
-                              areaId: empArea?.id,
-                              areaTemplates: empTemplates,
-                              breakPolicy: empArea?.break_policy || null,
-                              existingShift: shift,
-                            })}
-                          />
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Leyenda inferior */}
-          <div style={{ display: 'flex', gap: '1rem', marginTop: '0.875rem', fontSize: '0.72rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-            <span>🌙 Turno / día nocturno</span>
-            <span>🚫 Novedad (licencia/vacación)</span>
-            <span>🍴 Almuerzo</span>
-            <span>☕ Breaks de 15 min</span>
-            <span>⏱ <strong>Xh</strong> = horas netas (sin almuerzo)</span>
-            <span>📟 Disponibilidad</span>
-            <span style={{ color: 'var(--text-muted)' }}>Pasa el cursor sobre un turno para ver el detalle</span>
-            <span style={{ color: '#fca5a5' }}>Dom</span>
-            <span style={{ color: '#fcd34d' }}>Sáb</span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ display: 'inline-block', width: 12, height: 3, background: 'linear-gradient(90deg,#10b981,#f59e0b,#ef4444)', borderRadius: 2 }} />
-              Barra de horas (verde = normal, amarillo = alto, rojo = límite 42h/sem)
-            </span>
-          </div>
-        </div>
+        <ErrorBoundary>
+          <SchedulingGrid
+            filteredEmployees={filteredEmployees}
+            dias={dias}
+            shifts={shifts}
+            selectedArea={selectedArea}
+            diasTrabajoArea={diasTrabajoArea}
+            allTemplatesMap={allTemplatesMap}
+            resumenPorEmpleado={resumenPorEmpleado}
+            areas={areas}
+            tieneNovedad={tieneNovedad}
+            getNovedad={getNovedad}
+            onShiftCellClick={handleShiftCellClick}
+          />
+        </ErrorBoundary>
       )}
 
-      {/* ── Modal turno ──────────────────────────────────────────────────────── */}
       {viewType === 'grid' && shiftModal && (
-        <ShiftModal
-          employee={shiftModal.employee}
-          fecha={shiftModal.fecha}
-          areaId={shiftModal.areaId}
-          areaTemplates={shiftModal.areaTemplates || []}
-          breakPolicy={shiftModal.breakPolicy}
-          existingShift={shiftModal.existingShift}
-          onClose={() => setShiftModal(null)}
+        <ShiftModal {...shiftModal} onClose={() => setShiftModal(null)}
           onSave={async (data) => {
-            if (shiftModal.existingShift) {
-              await updateShift(shiftModal.existingShift.id, data);
-            } else {
-              await createShift(data);
-            }
+            if (shiftModal.existingShift) await updateShift(shiftModal.existingShift.id, data);
+            else await createShift(data);
           }}
-          onDelete={deleteShift}
-        />
+          onDelete={deleteShift} />
       )}
 
-      {/* ── Modal Auto-asignar ─────────────────────────────────────────── */}
       {autoAssignModal && (
-        <AutoAssignModal
-          scope={autoAssignModal}
-          areas={areas}
-          onClose={() => setAutoAssignModal(null)}
-          onConfirm={handleAutoAssign}
-        />
+        <AutoAssignModal scope={autoAssignModal} areas={areas} onClose={() => setAutoAssignModal(null)} onConfirm={handleAutoAssign} />
       )}
 
-      {/* ── Modal limpiar período ─────────────────────────────────────────── */}
       {showClearModal && (
-        <ClearModal
-          areas={areas}
-          employees={employees}
-          dias={dias}
-          onClose={() => setShowClearModal(false)}
-          onConfirm={handleClearPeriod}
-        />
+        <ClearModal areas={areas} employees={employees} dias={dias} onClose={() => setShowClearModal(false)} onConfirm={handleClearPeriod} />
       )}
 
-      {/* ── Modal Exportar a Excel ─────────────────────────────────────────── */}
       {showExportModal && (
-        <ExportShiftsModal
-          areas={areas}
-          employees={filteredEmployees}
-          shifts={shifts}
-          absences={absences}
-          allTemplates={allTemplatesMap}
-          defaultAreaId={selectedAreaId}
-          defaultRange="this_week"
-          currentViewRange={dias && dias.length > 0 ? {
-            start: dias[0],
-            end: dias[dias.length - 1],
-            days: dias,
-          } : null}
-          onClose={() => setShowExportModal(false)}
-        />
+        <ExportShiftsModal areas={areas} employees={filteredEmployees} shifts={shifts} absences={absences} allTemplates={allTemplatesMap}
+          defaultAreaId={selectedAreaId} defaultRange="this_week"
+          currentViewRange={dias?.length > 0 ? { start: dias[0], end: dias[dias.length - 1], days: dias } : null}
+          onClose={() => setShowExportModal(false)} />
       )}
     </div>
   );
