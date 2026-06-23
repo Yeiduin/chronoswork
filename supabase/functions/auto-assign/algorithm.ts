@@ -514,8 +514,9 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
       const candidate = [...nightPool].sort(() => Math.random() - 0.5)[0];
       if (!candidate) return false;
 
-      const hhmm = slotToTime(best.start, slotsPorHora);
-      const startIso = getLocalISOString(day.dateStr, hhmm);
+      const startOnNext = best.start >= slotsPerDay;
+      const hhmm = slotToTime(best.start % slotsPerDay, slotsPorHora);
+      const startIso = getLocalISOString(startOnNext ? dNextStr : day.dateStr, hhmm);
       const endSlot = best.end;
       const onNext = endSlot > slotsPerDay;
       const endIso = getLocalISOString(onNext ? dNextStr : day.dateStr, slotToTime(endSlot % slotsPerDay, slotsPorHora));

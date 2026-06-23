@@ -72,10 +72,7 @@ export default function ShiftCell({ employee, fecha, shift, blocked, blockedReas
     const getLocalHHMM = (str) => {
       if (!str) return '';
       if (!str.includes('T')) return str.slice(0, 5);
-      const d = new Date(str);
-      const h = String(d.getHours()).padStart(2, '0');
-      const m = String(d.getMinutes()).padStart(2, '0');
-      return `${h}:${m}`;
+      return str.slice(11, 16);
     };
 
     const inicio = template?.hora_inicio?.slice(0, 5) || getLocalHHMM(shift.start_time);
