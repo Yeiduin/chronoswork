@@ -150,22 +150,25 @@ export default function SchedulingPage() {
   }, [selectedAreaId, areas, employees, searchTerm, sortBy]);
 
   const resumenPorEmpleado = useMemo(() => {
+    const diasVisibles = new Set(dias.map(d => format(d, 'yyyy-MM-dd')));
     const map = {};
     shifts.forEach(s => {
       if (!s.employee_id) return;
+      const shiftDate = s.start_time?.slice(0, 10);
+      if (!diasVisibles.has(shiftDate)) return;
       const bd = getShiftBreakdown(s);
-      const r = map[s.employee_id] || { bruto: 0, neto: 0, almuerzoMin: 0, breaks15: 0, turnos: 0 };
-      r.bruto += bd.grossH;
-      r.neto += bd.netH;
+      const r = map[s.employee_id] || { bruto: 0, neto: 0, almuerzoMin: 0, breaks15: 0, breaks15Min: 0, turnos: 0 };
+      r.bruto      += bd.grossH;
+      r.neto       += bd.netH;
       r.almuerzoMin += bd.almuerzo;
-      r.breaks15 += bd.breaks15;
-      r.turnos += 1;
+      r.breaks15   += bd.breaks15;
+      r.breaks15Min += bd.breaks15Min;
+      r.turnos     += 1;
       map[s.employee_id] = r;
     });
     return map;
-  }, [shifts]);
+  }, [shifts, dias]);
 
-  // ── Auto-asignar ──────────────────────────────────────────────────────────
   const handleAutoAssign = async (scope, strategyOptions) => {
     setAutoAssignLoading(true);
     setAutoResult(null);
@@ -381,7 +384,6 @@ export default function SchedulingPage() {
         />
       </div>
 
-      {/* Estadísticas rápidas */}
       <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         <div style={{ background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '0.6rem 1rem', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span style={{ color: 'var(--text-muted)' }}>Turnos asignados:</span>

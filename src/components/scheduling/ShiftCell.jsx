@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import { MdInfo } from 'react-icons/md';
 import { getShiftBreakdown } from './getShiftBreakdown';
 
-export default function ShiftCell({ employee, fecha, shift, blocked, blockedReason, template, onAdd, isDayOff }) {
+function ShiftCard({ employee, shift, template, onAdd }) {
   const [showInfo, setShowInfo] = useState(false);
   const cardRef = useRef(null);
   const [popPos, setPopPos] = useState(null);
@@ -23,6 +23,114 @@ export default function ShiftCell({ employee, fecha, shift, blocked, blockedReas
     setShowInfo(true);
   };
   const closePopover = () => setShowInfo(false);
+
+  const color = template?.color || '#6366f1';
+  const nombreCorto = template?.nombre || 'Turno';
+  const abrev = nombreCorto.length > 8
+    ? nombreCorto.split(' ').map(w => w[0]).join('').slice(0, 3).toUpperCase()
+    : nombreCorto;
+
+  const getLocalHHMM = (str) => {
+    if (!str) return '';
+    if (!str.includes('T')) return str.slice(0, 5);
+    return str.slice(11, 16);
+  };
+
+  const inicio = template?.hora_inicio?.slice(0, 5) || getLocalHHMM(shift.start_time);
+  const fin = template?.hora_fin?.slice(0, 5) || getLocalHHMM(shift.end_time);
+
+  const bd = getShiftBreakdown(shift);
+  const esNocturno = shift.shift_kind === 'NOCTURNO';
+  const esDisponibilidad = shift.disponibilidad || shift.shift_kind === 'DISPONIBILIDAD';
+  const netoLabel = Number.isInteger(bd.netH) ? `${bd.netH}h` : `${bd.netH.toFixed(1)}h`;
+
+  return (
+    <div onClick={(e) => { e.stopPropagation(); onAdd(shift); }}
+      ref={cardRef}
+      onMouseEnter={openPopover}
+      onMouseLeave={closePopover}
+      className="shift-cell-card"
+      title={`${nombreCorto} · ${inicio}–${fin} · Netas ${bd.netH.toFixed(1)}h · Almuerzo ${bd.almuerzo}min · Breaks 15: ${bd.breaks15} · Descanso ${bd.descansoTotalMin}min`}
+      style={{
+        borderRadius: 6, padding: '0.25rem 0.2rem 0.3rem', fontSize: '0.65rem', fontWeight: 700,
+        textAlign: 'center', cursor: 'pointer', minHeight: 32, display: 'flex',
+        flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        background: color + '28', border: `1.5px solid ${color}70`, color: 'var(--text-primary)',
+        transition: 'all 0.15s', position: 'relative', overflow: 'visible',
+        marginBottom: '0.25rem', width: '100%',
+      }}>
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: color, borderRadius: '6px 6px 0 0' }} />
+      <div style={{ marginTop: 2, fontWeight: 800, letterSpacing: '-0.3px', color, display: 'flex', alignItems: 'center', gap: 2 }}>
+        {esNocturno && <span style={{ fontSize: '0.6rem' }}>🌙</span>}
+        {esDisponibilidad && <span style={{ fontSize: '0.6rem' }} title="Disponibilidad">📟</span>}
+        {abrev}
+      </div>
+      <div style={{ fontSize: '0.58rem', opacity: 0.78, fontWeight: 500 }}>{inicio} - {fin}</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 1, fontSize: '0.55rem', fontWeight: 600, opacity: 0.9 }}>
+        <span style={{ color: 'var(--text-primary)' }}>{netoLabel}</span>
+        {bd.almuerzo > 0 && <span title={`Almuerzo ${bd.almuerzo} min`}>🍴</span>}
+        {bd.breaks15 > 0 && <span title={`${bd.breaks15} break(s) de 15 min`}>☕{bd.breaks15}</span>}
+      </div>
+
+      {showInfo && popPos && (
+        <div
+          className={`shift-detail-popover shift-detail-popover--${popPos.placement}`}
+          onClick={(e) => e.stopPropagation()}
+          style={{ left: popPos.left, top: popPos.top, position: 'fixed', zIndex: 9999 }}>
+          <div className="shift-detail-popover__title" style={{ color }}>
+            {esNocturno && '🌙 '}{nombreCorto}
+          </div>
+          <div className="shift-detail-popover__row">
+            <span>🕐 Horario</span><strong>{inicio} – {fin}</strong>
+          </div>
+          <div className="shift-detail-popover__row">
+            <span>⏱ Duración bruta</span><strong>{bd.grossH.toFixed(1)} h</strong>
+          </div>
+          <div className="shift-detail-popover__row">
+            <span>🍴 Almuerzo</span>
+            <strong>{bd.almuerzo > 0 ? `${bd.almuerzo} min` : '—'}</strong>
+          </div>
+          <div className="shift-detail-popover__row">
+            <span>☕ Breaks cortos</span>
+            <strong>{bd.breaks15 > 0 ? `${bd.breaks15} (${bd.breaks15Min} min)` : '—'}</strong>
+          </div>
+          {bd.tieneDetalle && bd.descansos.some(d => d.inicio) && (
+            <div className="shift-detail-popover__schedule">
+              <div className="shift-detail-popover__schedule-title">Horario de descansos</div>
+              {bd.descansos.map((d, i) => (
+                <div key={i} className="shift-detail-popover__schedule-item">
+                  <span>{d.tipo === 'ALMUERZO' ? '🍴 Almuerzo' : '☕ Break'}</span>
+                  <strong>{d.inicio ? d.inicio : '—'} · {d.minutos}m</strong>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="shift-detail-popover__row">
+            <span>😴 Descanso total</span>
+            <strong>{bd.descansoTotalMin} min</strong>
+          </div>
+          <div className="shift-detail-popover__row shift-detail-popover__row--net">
+            <span>✅ Horas netas</span>
+            <strong>{bd.netH.toFixed(1)} h</strong>
+          </div>
+          {esDisponibilidad && (
+            <div className="shift-detail-popover__row">
+              <span>📟 Disponibilidad</span>
+              <strong>{shift.recargo_porcentaje ? `+${shift.recargo_porcentaje}%` : 'Sí'}</strong>
+            </div>
+          )}
+          {shift.observaciones && (
+            <div className="shift-detail-popover__note">{shift.observaciones}</div>
+          )}
+          <div className="shift-detail-popover__hint">Click para editar / quitar</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ShiftCell({ employee, fecha, shifts = [], blocked, blockedReason, onAdd, isDayOff }) {
+  const [showInfo, setShowInfo] = useState(false);
 
   if (isDayOff) {
     return (
@@ -62,106 +170,25 @@ export default function ShiftCell({ employee, fecha, shift, blocked, blockedReas
     );
   }
 
-  if (shift) {
-    const color = template?.color || '#6366f1';
-    const nombreCorto = template?.nombre || 'Turno';
-    const abrev = nombreCorto.length > 8
-      ? nombreCorto.split(' ').map(w => w[0]).join('').slice(0, 3).toUpperCase()
-      : nombreCorto;
-
-    const getLocalHHMM = (str) => {
-      if (!str) return '';
-      if (!str.includes('T')) return str.slice(0, 5);
-      return str.slice(11, 16);
-    };
-
-    const inicio = template?.hora_inicio?.slice(0, 5) || getLocalHHMM(shift.start_time);
-    const fin = template?.hora_fin?.slice(0, 5) || getLocalHHMM(shift.end_time);
-
-    const bd = getShiftBreakdown(shift);
-    const esNocturno = shift.shift_kind === 'NOCTURNO';
-    const esDisponibilidad = shift.disponibilidad || shift.shift_kind === 'DISPONIBILIDAD';
-    const netoLabel = Number.isInteger(bd.netH) ? `${bd.netH}h` : `${bd.netH.toFixed(1)}h`;
-
+  if (shifts && shifts.length > 0) {
     return (
-      <td style={{ padding: '0.2rem' }}>
-        <div onClick={onAdd}
-          ref={cardRef}
-          onMouseEnter={openPopover}
-          onMouseLeave={closePopover}
-          className="shift-cell-card"
-          title={`${nombreCorto} · ${inicio}–${fin} · Netas ${bd.netH.toFixed(1)}h · Almuerzo ${bd.almuerzo}min · Breaks 15: ${bd.breaks15} · Descanso ${bd.descansoTotalMin}min`}
-          style={{
-            borderRadius: 6, padding: '0.25rem 0.2rem 0.3rem', fontSize: '0.65rem', fontWeight: 700,
-            textAlign: 'center', cursor: 'pointer', minHeight: 32, display: 'flex',
-            flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            background: color + '28', border: `1.5px solid ${color}70`, color: 'var(--text-primary)',
-            transition: 'all 0.15s', position: 'relative', overflow: 'visible',
-          }}>
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: color, borderRadius: '6px 6px 0 0' }} />
-          <div style={{ marginTop: 2, fontWeight: 800, letterSpacing: '-0.3px', color, display: 'flex', alignItems: 'center', gap: 2 }}>
-            {esNocturno && <span style={{ fontSize: '0.6rem' }}>🌙</span>}
-            {esDisponibilidad && <span style={{ fontSize: '0.6rem' }} title="Disponibilidad">📟</span>}
-            {abrev}
-          </div>
-          <div style={{ fontSize: '0.58rem', opacity: 0.78, fontWeight: 500 }}>{inicio} - {fin}</div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 1, fontSize: '0.55rem', fontWeight: 600, opacity: 0.9 }}>
-            <span style={{ color: 'var(--text-primary)' }}>{netoLabel}</span>
-            {bd.almuerzo > 0 && <span title={`Almuerzo ${bd.almuerzo} min`}>🍴</span>}
-            {bd.breaks15 > 0 && <span title={`${bd.breaks15} break(s) de 15 min`}>☕{bd.breaks15}</span>}
-          </div>
-
-          {showInfo && popPos && (
-            <div
-              className={`shift-detail-popover shift-detail-popover--${popPos.placement}`}
-              onClick={(e) => e.stopPropagation()}
-              style={{ left: popPos.left, top: popPos.top }}>
-              <div className="shift-detail-popover__title" style={{ color }}>
-                {esNocturno && '🌙 '}{nombreCorto}
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>🕐 Horario</span><strong>{inicio} – {fin}</strong>
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>⏱ Duración bruta</span><strong>{bd.grossH.toFixed(1)} h</strong>
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>🍴 Almuerzo</span>
-                <strong>{bd.almuerzo > 0 ? `${bd.almuerzo} min` : '—'}</strong>
-              </div>
-              <div className="shift-detail-popover__row">
-                <span>☕ Breaks cortos</span>
-                <strong>{bd.breaks15 > 0 ? `${bd.breaks15} (${bd.breaks15Min} min)` : '—'}</strong>
-              </div>
-              {bd.tieneDetalle && bd.descansos.some(d => d.inicio) && (
-                <div className="shift-detail-popover__schedule">
-                  <div className="shift-detail-popover__schedule-title">Horario de descansos</div>
-                  {bd.descansos.map((d, i) => (
-                    <div key={i} className="shift-detail-popover__schedule-item">
-                      <span>{d.tipo === 'ALMUERZO' ? '🍴 Almuerzo' : '☕ Break'}</span>
-                      <strong>{d.inicio ? d.inicio : '—'} · {d.minutos}m</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="shift-detail-popover__row">
-                <span>😴 Descanso total</span>
-                <strong>{bd.descansoTotalMin} min</strong>
-              </div>
-              <div className="shift-detail-popover__row shift-detail-popover__row--net">
-                <span>✅ Horas netas</span>
-                <strong>{bd.netH.toFixed(1)} h</strong>
-              </div>
-              {esDisponibilidad && (
-                <div className="shift-detail-popover__row">
-                  <span>📟 Disponibilidad</span>
-                  <strong>{shift.recargo_porcentaje ? `+${shift.recargo_porcentaje}%` : 'Sí'}</strong>
-                </div>
-              )}
-              {shift.observaciones && (
-                <div className="shift-detail-popover__note">{shift.observaciones}</div>
-              )}
-              <div className="shift-detail-popover__hint">Click para editar / quitar</div>
+      <td style={{ padding: '0.2rem', verticalAlign: 'top' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+          {shifts.map((s, idx) => (
+            <ShiftCard
+              key={s.shift.id || idx}
+              employee={employee}
+              shift={s.shift}
+              template={s.template}
+              onAdd={onAdd}
+            />
+          ))}
+          {/* Si tiene menos de 2 turnos, permitir agregar otro (por ejemplo para turnos partidos o extras) */}
+          {shifts.length < 2 && (
+            <div className="shift-cell shift-cell--empty" onClick={() => onAdd(null)}
+              title="Click para asignar otro turno"
+              style={{ minHeight: 18, fontSize: '0.8rem', opacity: 0.2, marginTop: '0.15rem' }}>
+              +
             </div>
           )}
         </div>
@@ -171,7 +198,7 @@ export default function ShiftCell({ employee, fecha, shift, blocked, blockedReas
 
   return (
     <td style={{ padding: '0.2rem' }}>
-      <div className="shift-cell shift-cell--empty" onClick={onAdd}
+      <div className="shift-cell shift-cell--empty" onClick={() => onAdd(null)}
         title="Click para asignar turno"
         style={{ minHeight: 32, fontSize: '1rem', opacity: 0.4 }}>
         +

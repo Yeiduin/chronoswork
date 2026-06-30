@@ -11,8 +11,8 @@ export default function SchedulingGrid({
   areas, tieneNovedad, getNovedad,
   onShiftCellClick,
 }) {
-  const getShiftForEmployeeDate = (empId, dateStr) =>
-    shifts.find(s => s.employee_id === empId && s.start_time.startsWith(dateStr));
+  const getShiftsForEmployeeDate = (empId, dateStr) =>
+    shifts.filter(s => s.employee_id === empId && s.start_time.startsWith(dateStr));
 
   const getEmployeeArea = (empId) =>
     areas.find(a => a.area_employees?.some(ae => ae.employee_id === empId));
@@ -81,12 +81,16 @@ export default function SchedulingGrid({
             {filteredEmployees.map(emp => {
               const empArea = getEmployeeArea(emp.id);
               const empTemplates = getTemplatesForEmployee(emp.id);
-              const resumen = resumenPorEmpleado[emp.id] || { bruto: 0, neto: 0, almuerzoMin: 0, breaks15: 0, turnos: 0 };
+              const resumen = resumenPorEmpleado[emp.id] || { bruto: 0, neto: 0, almuerzoMin: 0, breaks15: 0, breaks15Min: 0, turnos: 0 };
               const horasTotal = resumen.neto;
-              const porcentajeHoras = Math.min((horasTotal / (42 * 4)) * 100, 100);
-              const horasColor = horasTotal > 160 ? '#ef4444' : horasTotal > 130 ? '#f59e0b' : '#10b981';
-              const descansoTotalMin = resumen.almuerzoMin + resumen.breaks15 * 15;
-              const resumenTooltip = `${resumen.turnos} turno(s) · Netas ${resumen.neto.toFixed(1)}h · Brutas ${resumen.bruto.toFixed(1)}h · Almuerzo ${resumen.almuerzoMin}min · Breaks 15: ${resumen.breaks15} · Descanso total ${descansoTotalMin}min`;
+              // Ajustar el límite de referencia al período visualizado
+              const limitRef = dias.length <= 7 ? 42 : dias.length <= 16 ? 84 : 168;
+              const porcentajeHoras = Math.min((horasTotal / limitRef) * 100, 100);
+              const horasColor = horasTotal > (limitRef * 0.95) ? '#ef4444' : horasTotal > (limitRef * 0.8) ? '#f59e0b' : '#10b981';
+              // Usar minutos reales de breaks si están disponibles
+              const breaks15MinReal = resumen.breaks15Min > 0 ? resumen.breaks15Min : resumen.breaks15 * 15;
+              const descansoTotalMin = resumen.almuerzoMin + breaks15MinReal;
+              const resumenTooltip = `${resumen.turnos} turno(s) en vista actual · Netas ${resumen.neto.toFixed(1)}h · Brutas ${resumen.bruto.toFixed(1)}h · Almuerzo ${resumen.almuerzoMin}min · Breaks: ${resumen.breaks15} (${breaks15MinReal}min) · Descanso total ${descansoTotalMin}min`;
 
               return (
                 <tr key={emp.id}>
@@ -115,9 +119,20 @@ export default function SchedulingGrid({
                         <div className="shift-grid__employee-cargo" style={{ fontSize: '0.68rem' }}>{emp.cargo}</div>
                         <div title={resumenTooltip}
                           style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginTop: '0.15rem', fontSize: '0.62rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                          <strong style={{ color: horasColor, fontFamily: 'var(--font-mono)' }}>{resumen.neto.toFixed(0)}h</strong>
-                          {resumen.almuerzoMin > 0 && <span title={`Almuerzo acumulado ${resumen.almuerzoMin} min`}>🍴{Math.round(resumen.almuerzoMin / 60)}h</span>}
-                          {resumen.breaks15 > 0 && <span title={`${resumen.breaks15} breaks de 15 min`}>☕{resumen.breaks15}</span>}
+                          <strong style={{ color: horasColor, fontFamily: 'var(--font-mono)' }}>
+                            {Number.isInteger(resumen.neto) ? resumen.neto.toFixed(0) : resumen.neto.toFixed(1)}h
+                          </strong>
+                          {resumen.almuerzoMin > 0 && (
+                            <span title={`Almuerzo acumulado: ${resumen.almuerzoMin} min`}>
+                              🍴{resumen.almuerzoMin}m
+                            </span>
+                          )}
+                          {resumen.breaks15 > 0 && (
+                            <span title={`${resumen.breaks15} break(s) · ${breaks15MinReal}min total`}>
+                              ☕{resumen.breaks15}
+                            </span>
+                          )}
+                          <span title={`${resumen.turnos} turno(s) en esta vista`} style={{ opacity: 0.65 }}>📋{resumen.turnos}</span>
                         </div>
                         <div title={resumenTooltip}
                           style={{ marginTop: '0.2rem', height: 3, background: 'var(--border-subtle)', borderRadius: 2, overflow: 'hidden' }}>
@@ -129,20 +144,21 @@ export default function SchedulingGrid({
                   {dias.map(dia => {
                     const dateStr = format(dia, 'yyyy-MM-dd');
                     const dow = dia.getDay() === 0 ? 7 : dia.getDay();
-                    const shift = getShiftForEmployeeDate(emp.id, dateStr);
+                    const shiftsOnDate = getShiftsForEmployeeDate(emp.id, dateStr);
                     const novedad = tieneNovedad(emp.id, dateStr);
                     const novedadInfo = novedad ? getNovedad(emp.id, dateStr) : null;
                     const blockedReason = novedadInfo ? `${novedadInfo.tipo}: ${novedadInfo.fecha_inicio} al ${novedadInfo.fecha_fin}` : '';
 
-                    let shiftTemplate = null;
-                    if (shift) {
-                      if (shift.template_id && allTemplatesMap[shift.template_id]) {
-                        shiftTemplate = allTemplatesMap[shift.template_id];
+                    const shiftsWithTemplates = shiftsOnDate.map(s => {
+                      let tpl = null;
+                      if (s.template_id && allTemplatesMap[s.template_id]) {
+                        tpl = allTemplatesMap[s.template_id];
                       } else {
-                        const startHour = shift.start_time?.slice(11, 16);
-                        shiftTemplate = empTemplates.find(t => t.hora_inicio.slice(0, 5) === startHour) || null;
+                        const startHour = s.start_time?.slice(11, 16);
+                        tpl = empTemplates.find(t => t.hora_inicio.slice(0, 5) === startHour) || null;
                       }
-                    }
+                      return { shift: s, template: tpl };
+                    });
 
                     const empDiasDescanso = empArea?.dias_trabajo || null;
                     const isDayOff = empDiasDescanso ? !empDiasDescanso.includes(dow) : false;
@@ -152,17 +168,17 @@ export default function SchedulingGrid({
                         key={dateStr}
                         employee={emp}
                         fecha={dia}
-                        shift={shift}
+                        shifts={shiftsWithTemplates}
                         blocked={novedad}
                         blockedReason={blockedReason}
-                        template={shiftTemplate}
                         isDayOff={isDayOff}
-                        onAdd={() => onShiftCellClick(emp, dia, empArea, empTemplates, shift)}
+                        onAdd={(selectedShift) => onShiftCellClick(emp, dia, empArea, empTemplates, selectedShift)}
                       />
                     );
                   })}
                 </tr>
               );
+
             })}
           </tbody>
         </table>

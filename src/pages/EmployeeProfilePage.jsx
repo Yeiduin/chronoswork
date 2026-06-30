@@ -2,67 +2,107 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../config/supabaseClient';
 import {
-  MdPerson, MdCalendarMonth, MdEventBusy, MdCalculate,
-  MdLogout, MdSchedule, MdAccessTime,
+  MdCalendarMonth, MdEventBusy, MdCalculate,
+  MdLogout, MdSchedule, MdAccessTime, MdChevronLeft, MdChevronRight,
+  MdOutlineCalendarToday,
 } from 'react-icons/md';
 
-// ── Helpers de fecha/hora en zona Colombia (UTC-5) ────────────────────────────
-// CRÍTICO: TODAS las operaciones de fecha usan 'America/Bogota' explícitamente.
-// Los TIMESTAMPTZ de Supabase vienen en ISO 8601 UTC. Si usamos .slice(0,10)
-// directamente, los turnos nocturnos que cruzan medianoche UTC aparecen
-// en el día equivocado para Colombia.
+// ════════════════════════════════════════════════════════════════════════════
+// SECCIÓN 1 — HELPERS DE FECHA/HORA
+//
+// CONVENCIÓN CRÍTICA DE LA APP:
+// Los timestamps se guardan como "YYYY-MM-DDTHH:MM:00Z" donde HH:MM es
+// la HORA RELOJ de Colombia SIN conversión de zona.
+// Ej: turno a las 08:00 → "2026-06-24T08:00:00Z"
+//
+// POR TANTO: para mostrar la hora correcta, se usa .slice(11,16) del
+// string ISO directamente, NO toLocaleTimeString con timeZone.
+// Usar toLocaleTimeString con 'America/Bogota' restaría 5h (error).
+// ════════════════════════════════════════════════════════════════════════════
 
 const TZ = 'America/Bogota';
 
-function colDateStr(iso) {
-  if (!iso) return null;
-  return new Date(iso).toLocaleDateString('sv-SE', { timeZone: TZ }); // YYYY-MM-DD
+/** Extrae la hora "reloj" de un ISO timestamp: "2026-06-24T08:30:00Z" → "08:30" */
+function isoToClockTime(isoStr) {
+  if (!isoStr) return '--:--';
+  return String(isoStr).slice(11, 16); // "HH:MM"
 }
 
-function colMonthStr(iso) {
-  if (!iso) return null;
-  return new Date(iso).toLocaleDateString('sv-SE', { timeZone: TZ }).slice(0, 7);
+/** Formatea hora como "08:30 AM" desde un ISO string (convención app: hora reloj directa) */
+function formatTime(isoStr) {
+  if (!isoStr) return '—';
+  const [hStr, mStr] = isoToClockTime(isoStr).split(':');
+  const h = parseInt(hStr, 10);
+  const m = mStr;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${String(h12).padStart(2, '0')}:${m} ${ampm}`;
 }
 
+/** Devuelve "YYYY-MM-DD" del ISO string (parte de fecha, sin zona horaria) */
+function isoToDateStr(isoStr) {
+  if (!isoStr) return null;
+  return String(isoStr).slice(0, 10);
+}
+
+/** Hoy como "YYYY-MM-DD" en Colombia */
 function colTodayStr() {
   return new Date().toLocaleDateString('sv-SE', { timeZone: TZ });
 }
 
+/** Mes actual como "YYYY-MM" en Colombia */
 function colCurrentMonth() {
   return new Date().toLocaleDateString('sv-SE', { timeZone: TZ }).slice(0, 7);
 }
 
-function colNow() {
-  // Devuelve un Date que representa "ahora" en Colombia (sin pies ni cabeza de UTC)
-  const s = new Date().toLocaleString('en-US', { timeZone: TZ });
-  return new Date(s);
+/** Año actual en Colombia */
+function colCurrentYear() {
+  return parseInt(new Date().toLocaleDateString('sv-SE', { timeZone: TZ }).slice(0, 4), 10);
 }
 
-function colDateFromParts(year, month, day) {
-  // month 1-12, day 1-31 → Date en mediodía Colombia
-  const s = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T12:00:00`;
-  return new Date(new Date(s).toLocaleString('en-US', { timeZone: TZ }));
-}
-
-function formatDate(dateStr) {
+/** Formatea fecha "YYYY-MM-DD" como "24 jun." */
+function fmtShortDate(dateStr) {
   if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString('es-CO', {
-    day: '2-digit', month: 'short', year: 'numeric', timeZone: TZ,
-  });
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' });
 }
 
-function formatDateFull(dateStr) {
+/** Formatea fecha como "lunes, 24 de junio" */
+function fmtLongDate(dateStr) {
   if (!dateStr) return '—';
-  return new Date(dateStr).toLocaleDateString('es-CO', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: TZ,
-  });
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
-function formatTime(dtStr) {
-  if (!dtStr) return '—';
-  return new Date(dtStr).toLocaleTimeString('es-CO', {
-    hour: '2-digit', minute: '2-digit', hour12: true, timeZone: TZ,
-  });
+/** Nombre del día corto desde "YYYY-MM-DD": "lun." */
+function fmtDayName(dateStr, long = false) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString('es-CO', { weekday: long ? 'long' : 'short' });
+}
+
+/** Número del día desde "YYYY-MM-DD": 24 */
+function dayNum(dateStr) {
+  return parseInt(dateStr?.slice(8, 10) ?? '0', 10);
+}
+
+/** Calcula horas brutas entre dos ISO timestamps */
+function brutHours(start, end) {
+  if (!start || !end) return 0;
+  const [sh, sm] = isoToClockTime(start).split(':').map(Number);
+  const [eh, em] = isoToClockTime(end).split(':').map(Number);
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins < 0) mins += 24 * 60; // cruza medianoche
+  return mins / 60;
+}
+
+/** Horas netas = brutas - almuerzo (en horas) */
+function netHours(shift) {
+  const brut = brutHours(shift.start_time, shift.end_time);
+  return Math.max(0, brut - ((shift.break_minutes || 0) / 60));
 }
 
 function formatCurrency(val) {
@@ -72,138 +112,178 @@ function formatCurrency(val) {
   }).format(val);
 }
 
-// ── Constantes ────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// SECCIÓN 2 — CONSTANTES
+// ════════════════════════════════════════════════════════════════════════════
 
 const MESES = [
   'Enero','Febrero','Marzo','Abril','Mayo','Junio',
   'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre',
 ];
 
-const DIAS_SEMANA_CORTO = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+const DIAS_SEMANA = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+const DIAS_SEMANA_FULL = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
 
-const SHIFT_LABELS = {
-  morning:   { label: 'Mañana', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
-  afternoon: { label: 'Tarde',  color: '#fb923c', bg: 'rgba(251,146,60,0.12)' },
-  night:     { label: 'Noche',  color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)' },
-  custom:    { label: 'Turno',  color: '#3b82f6', bg: 'rgba(59,130,246,0.12)' },
+const SHIFT_CFG = {
+  morning:   { label: 'Mañana',  color: '#f59e0b', bg: 'rgba(245,158,11,0.12)',   icon: '🌅' },
+  afternoon: { label: 'Tarde',   color: '#fb923c', bg: 'rgba(251,146,60,0.12)',   icon: '☀️' },
+  night:     { label: 'Noche',   color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)',   icon: '🌙' },
+  custom:    { label: 'Turno',   color: '#3b82f6', bg: 'rgba(59,130,246,0.12)',   icon: '⚡' },
 };
 
-const ABSENCE_LABELS = {
+const ABSENCE_CFG = {
   vacaciones:  { label: 'Vacaciones',  color: '#22c55e', icon: '🏖️' },
   incapacidad: { label: 'Incapacidad', color: '#f59e0b', icon: '🏥' },
   licencia:    { label: 'Licencia',    color: '#3b82f6', icon: '📋' },
   suspension:  { label: 'Suspensión',  color: '#ef4444', icon: '⚠️' },
 };
 
-// ── Tarjeta de Turno ─────────────────────────────────────────────────────────
-function ShiftCard({ shift }) {
-  const nowCol   = colNow();
-  const startD   = new Date(shift.start_time);
-  const endD     = new Date(shift.end_time);
-  const isActive = nowCol >= startD && nowCol <= endD;
-  const isPast   = endD < nowCol;
-  const isToday  = colDateStr(shift.start_time) === colTodayStr();
+// ════════════════════════════════════════════════════════════════════════════
+// SECCIÓN 3 — HELPERS DE SEMANA
+// ════════════════════════════════════════════════════════════════════════════
 
-  const rawHours = (shift.end_time && shift.start_time)
-    ? (endD - startD) / 3600000 : 0;
-  const netHours = Math.max(0, rawHours - ((shift.break_minutes || 0) / 60));
+/** Retorna "YYYY-MM-DD" del lunes de la semana que contiene dateStr */
+function getMondayOf(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  const dow = date.getDay(); // 0=Dom ... 6=Sáb
+  const diff = dow === 0 ? -6 : 1 - dow; // ajustar a lunes
+  date.setDate(date.getDate() + diff);
+  return date.toLocaleDateString('sv-SE');
+}
 
-  // Descansos detallados
+/** Genera array de 7 "YYYY-MM-DD" de lunes a domingo */
+function getWeekDays(mondayStr) {
+  const [y, m, d] = mondayStr.split('-').map(Number);
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const date = new Date(y, m - 1, d + i);
+    days.push(date.toLocaleDateString('sv-SE'));
+  }
+  return days;
+}
+
+/** Suma o resta N semanas a mondayStr */
+function shiftWeek(mondayStr, n) {
+  const [y, m, d] = mondayStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d + n * 7);
+  return date.toLocaleDateString('sv-SE');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SECCIÓN 4 — COMPONENTES INTERNOS
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Breaks Timeline ───────────────────────────────────────────────────────────
+function BreaksTimeline({ descansos, breakMinutes }) {
   let breaks = [];
   try {
-    if (shift.descansos) {
-      breaks = typeof shift.descansos === 'string' ? JSON.parse(shift.descansos) : shift.descansos;
-    }
-  } catch { /* ok */ }
+    breaks = typeof descansos === 'string' ? JSON.parse(descansos) : (descansos || []);
+  } catch { /**/ }
 
-  const cfg = SHIFT_LABELS[shift.shift_type] || SHIFT_LABELS.custom;
+  if (breaks.length === 0 && !breakMinutes) return null;
 
   return (
-    <div className="shift-card" style={{
-      padding: '0.9rem 1.25rem',
-      borderRadius: 12,
-      border: `1px solid ${isActive ? 'rgba(34,197,94,0.4)' : 'var(--border-subtle)'}`,
-      background: isActive
-        ? 'linear-gradient(135deg, rgba(34,197,94,0.08), rgba(34,197,94,0.02))'
-        : isToday
-          ? 'linear-gradient(135deg, rgba(99,102,241,0.08), var(--surface-1))'
-          : 'var(--surface-1)',
-      position: 'relative', overflow: 'hidden',
-      opacity: isPast ? 0.65 : 1,
-    }}>
+    <div className="emp-breaks-row">
+      {breaks.map((b, i) => {
+        const isLunch = b.tipo === 'ALMUERZO';
+        return (
+          <span key={i} className={`emp-break-pill ${isLunch ? 'emp-break-pill--lunch' : ''}`}>
+            {isLunch ? '🍽️' : '☕'}
+            <span>{isLunch ? 'Almuerzo' : 'Break'}</span>
+            {b.inicio && <span className="emp-break-time">{b.inicio}</span>}
+            <span className="emp-break-mins">{b.minutos ?? breakMinutes}min</span>
+          </span>
+        );
+      })}
+      {breaks.length === 0 && breakMinutes > 0 && (
+        <span className="emp-break-pill emp-break-pill--lunch">
+          🍽️ <span>Almuerzo</span>
+          <span className="emp-break-mins">{breakMinutes}min</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── ShiftCard ─────────────────────────────────────────────────────────────────
+function ShiftCard({ shift, compact = false }) {
+  const today   = colTodayStr();
+  const dateStr = isoToDateStr(shift.start_time);
+  const isToday  = dateStr === today;
+
+  // "EN CURSO": comparar horas reloj (convención app: hora ISO = hora reloj Colombia)
+  const nowClk  = new Date().toLocaleTimeString('sv-SE', { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
+  const startClk = isoToClockTime(shift.start_time);
+  const endClk   = isoToClockTime(shift.end_time);
+  const isActive = isToday && nowClk >= startClk && nowClk <= endClk;
+  const isPast   = dateStr < today || (isToday && nowClk > endClk);
+
+  const cfg = SHIFT_CFG[shift.shift_type] || SHIFT_CFG.custom;
+  const net = netHours(shift);
+
+  if (compact) {
+    return (
+      <div className={`emp-shift-compact ${isActive ? 'emp-shift-compact--active' : ''} ${isPast ? 'emp-shift-compact--past' : ''}`}
+        style={{ borderColor: isActive ? '#22c55e44' : `${cfg.color}33` }}>
+        <span className="emp-shift-compact__icon">{cfg.icon}</span>
+        <div className="emp-shift-compact__body">
+          <span className="emp-shift-compact__time">
+            {formatTime(shift.start_time)} → {formatTime(shift.end_time)}
+          </span>
+          <span className="emp-shift-compact__net">{net.toFixed(1)}h netas</span>
+        </div>
+        {isActive && <span className="emp-active-dot" />}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`emp-shift-card ${isActive ? 'emp-shift-card--active' : ''} ${isPast ? 'emp-shift-card--past' : ''}`}>
+      {/* Estado badge */}
       {isActive && (
-        <div style={{
-          position: 'absolute', top: 8, right: 10,
-          fontSize: '0.68rem', fontWeight: 700, color: '#22c55e',
-          background: 'rgba(34,197,94,0.15)', padding: '0.15rem 0.5rem',
-          borderRadius: 999, display: 'flex', alignItems: 'center', gap: 4,
-        }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block', animation: 'pulse 1.5s infinite' }} />
-          EN CURSO
+        <div className="emp-shift-card__badge emp-shift-card__badge--active">
+          <span className="emp-pulse-dot" /> EN CURSO
         </div>
       )}
       {isToday && !isActive && (
-        <div style={{
-          position: 'absolute', top: 8, right: 10,
-          fontSize: '0.68rem', fontWeight: 700, color: '#6366f1',
-          background: 'rgba(99,102,241,0.12)', padding: '0.15rem 0.5rem', borderRadius: 999,
-        }}>
-          HOY
-        </div>
+        <div className="emp-shift-card__badge emp-shift-card__badge--today">HOY</div>
+      )}
+      {!isToday && !isPast && dateStr > today && (
+        <div className="emp-shift-card__badge emp-shift-card__badge--upcoming">PRÓXIMO</div>
       )}
 
-      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
-        <div style={{
-          width: 44, height: 44, borderRadius: 10, flexShrink: 0,
-          background: isActive ? 'rgba(34,197,94,0.15)' : 'var(--surface-2)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: isActive ? '#22c55e' : 'var(--text-muted)', fontSize: '1.3rem',
-        }}>
-          <MdSchedule />
+      <div className="emp-shift-card__inner">
+        {/* Ícono tipo turno */}
+        <div className="emp-shift-card__icon-wrap" style={{ background: `${cfg.color}1a`, color: cfg.color }}>
+          <span style={{ fontSize: '1.4rem' }}>{cfg.icon}</span>
         </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)', marginBottom: '0.2rem' }}>
-            {startD.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long', timeZone: TZ })}
+
+        <div className="emp-shift-card__content">
+          {/* Fecha */}
+          <div className="emp-shift-card__date">
+            {fmtLongDate(dateStr)}
           </div>
-          <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.3rem', flexWrap: 'wrap' }}>
-            <MdAccessTime style={{ verticalAlign: 'middle' }} />
-            {formatTime(shift.start_time)} → {formatTime(shift.end_time)}
-            <span style={{
-              fontSize: '0.65rem', color: cfg.color, background: cfg.bg,
-              padding: '0.08rem 0.4rem', borderRadius: 4, fontWeight: 600,
-            }}>
+
+          {/* Horario */}
+          <div className="emp-shift-card__hours">
+            <MdAccessTime />
+            <span>{formatTime(shift.start_time)}</span>
+            <span className="emp-shift-card__arrow">→</span>
+            <span>{formatTime(shift.end_time)}</span>
+            <span className="emp-shift-type-tag" style={{ color: cfg.color, background: cfg.bg }}>
               {cfg.label}
             </span>
           </div>
 
-          {/* Descansos del turno */}
-          {breaks.length > 0 && (
-            <div style={{
-              marginTop: '0.45rem', display: 'flex', flexWrap: 'wrap', gap: '0.35rem 0.75rem',
-            }}>
-              {breaks.map((b, i) => (
-                <span key={i} style={{
-                  fontSize: '0.7rem', color: 'var(--text-muted)',
-                  background: 'var(--bg-glass)', padding: '0.15rem 0.45rem', borderRadius: 4,
-                  display: 'flex', alignItems: 'center', gap: '0.2rem',
-                }}>
-                  {b.tipo === 'ALMUERZO' ? '🍽️' : '☕'} {b.tipo === 'ALMUERZO' ? 'Almuerzo' : 'Break'}
-                  {b.inicio ? ` ${b.inicio}` : ''} · {b.minutos}min
-                </span>
-              ))}
-            </div>
-          )}
+          {/* Descansos */}
+          <BreaksTimeline descansos={shift.descansos} breakMinutes={shift.break_minutes} />
 
-          <div style={{ display: 'flex', gap: '1rem', marginTop: '0.4rem' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              ⏱ {netHours.toFixed(1)}h netas
-            </span>
+          {/* Métricas */}
+          <div className="emp-shift-card__meta">
+            <span>⏱ {net.toFixed(1)}h netas</span>
             {shift.recargo_porcentaje > 0 && (
-              <span style={{
-                fontSize: '0.7rem', fontWeight: 600, color: '#f59e0b',
-              }}>
-                +{shift.recargo_porcentaje}% recargo
-              </span>
+              <span className="emp-shift-card__recargo">+{shift.recargo_porcentaje}% recargo</span>
             )}
           </div>
         </div>
@@ -212,137 +292,249 @@ function ShiftCard({ shift }) {
   );
 }
 
-// ── Mini-calendario de turnos y descansos del mes ─────────────────────────────
-function MonthlyShiftGrid({ shifts, absences, month, year }) {
-  const todayStr = colTodayStr();
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const firstDow = new Date(year, month - 1, 1).getDay();
+// ── WeekView ──────────────────────────────────────────────────────────────────
+function WeekView({ shifts, absences, weekMonday, onPrev, onNext, onGoToday }) {
+  const today    = colTodayStr();
+  const weekDays = getWeekDays(weekMonday);
 
-  // Mapa fecha Colombia → turnos del día
-  const shiftsByColDate = useMemo(() => {
+  // Índice fecha → turnos
+  const shiftsByDate = useMemo(() => {
     const m = {};
     for (const s of shifts) {
-      const d = colDateStr(s.start_time);
+      const d = isoToDateStr(s.start_time);
       if (d) { if (!m[d]) m[d] = []; m[d].push(s); }
     }
     return m;
   }, [shifts]);
 
-  // Mapa fecha → ausencia
+  // Índice fecha → ausencia
   const absByDate = useMemo(() => {
     const m = {};
     for (const a of absences) {
-      const ini = new Date(a.fecha_inicio);
-      const fin = new Date(a.fecha_fin);
-      for (let d = new Date(ini); d <= fin; d.setDate(d.getDate() + 1)) {
-        m[d.toISOString().slice(0, 10)] = a;
+      const ini = a.fecha_inicio; // DATE campo
+      const fin = a.fecha_fin;
+      // Generar días intermedios
+      const [iy, im, id] = ini.split('-').map(Number);
+      const [fy, fm, fd] = fin.split('-').map(Number);
+      const startD = new Date(iy, im - 1, id);
+      const endD   = new Date(fy, fm - 1, fd);
+      for (let dt = new Date(startD); dt <= endD; dt.setDate(dt.getDate() + 1)) {
+        m[dt.toLocaleDateString('sv-SE')] = a;
       }
     }
     return m;
   }, [absences]);
 
-  // Construir celdas
+  const weekStart = weekDays[0];
+  const weekEnd   = weekDays[6];
+
+  // Total horas semana
+  const totalWeekHours = weekDays.reduce((acc, d) => {
+    const dayShifts = shiftsByDate[d] || [];
+    return acc + dayShifts.reduce((a, s) => a + netHours(s), 0);
+  }, 0);
+
+  return (
+    <div className="emp-week-section">
+      {/* Cabecera semana */}
+      <div className="emp-week-header">
+        <div className="emp-week-header__left">
+          <h2 className="emp-week-title">
+            <MdCalendarMonth style={{ color: 'var(--cw-accent)', fontSize: '1.3rem' }} />
+            Semana actual
+          </h2>
+          <span className="emp-week-range">
+            {fmtShortDate(weekStart)} — {fmtShortDate(weekEnd)}
+          </span>
+        </div>
+        <div className="emp-week-header__right">
+          {totalWeekHours > 0 && (
+            <span className="emp-week-total-badge">
+              ⏱ {totalWeekHours.toFixed(1)}h esta semana
+            </span>
+          )}
+          <button className="emp-nav-btn" onClick={onPrev} title="Semana anterior">
+            <MdChevronLeft />
+          </button>
+          <button className="emp-nav-btn emp-nav-btn--today" onClick={onGoToday} title="Hoy">
+            Hoy
+          </button>
+          <button className="emp-nav-btn" onClick={onNext} title="Próxima semana">
+            <MdChevronRight />
+          </button>
+        </div>
+      </div>
+
+      {/* Grid 7 días */}
+      <div className="emp-week-grid">
+        {weekDays.map((dateStr) => {
+          const dayShifts = shiftsByDate[dateStr] || [];
+          const absence   = absByDate[dateStr];
+          const isToday   = dateStr === today;
+          const dow       = new Date(...dateStr.split('-').map((n,i)=>i===1?n-1:n)).getDay();
+          const isWeekend = dow === 0 || dow === 6;
+
+          return (
+            <div
+              key={dateStr}
+              className={[
+                'emp-day-card',
+                isToday   ? 'emp-day-card--today'   : '',
+                isWeekend ? 'emp-day-card--weekend' : '',
+                dayShifts.length > 0 ? 'emp-day-card--has-shift' : '',
+                absence ? 'emp-day-card--absence' : '',
+                (!dayShifts.length && !absence && dateStr < today) ? 'emp-day-card--rest' : '',
+              ].join(' ')}
+            >
+              {/* Cabecera del día */}
+              <div className="emp-day-card__header">
+                <span className="emp-day-card__dow">{DIAS_SEMANA[dow]}</span>
+                <span className="emp-day-card__num">{dayNum(dateStr)}</span>
+                {isToday && <span className="emp-day-card__today-dot" />}
+              </div>
+
+              {/* Contenido */}
+              <div className="emp-day-card__body">
+                {absence && (() => {
+                  const ac = ABSENCE_CFG[absence.tipo] || { icon: '📌', color: '#6366f1', label: absence.tipo };
+                  return (
+                    <div className="emp-day-absence" style={{ color: ac.color }}>
+                      <span>{ac.icon}</span>
+                      <span>{ac.label}</span>
+                    </div>
+                  );
+                })()}
+
+                {!absence && dayShifts.length === 0 && (
+                  <div className="emp-day-empty">
+                    {dateStr < today ? (
+                      <span className="emp-day-rest-label">Descanso</span>
+                    ) : (
+                      <span className="emp-day-free-label">Libre</span>
+                    )}
+                  </div>
+                )}
+
+                {!absence && dayShifts.map((s, i) => (
+                  <ShiftCard key={i} shift={s} compact />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── MonthCalendar ─────────────────────────────────────────────────────────────
+function MonthCalendar({ shifts, absences, month, year }) {
+  const today = colTodayStr();
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const firstDow = new Date(year, month - 1, 1).getDay();
+
+  const shiftsByDate = useMemo(() => {
+    const m = {};
+    for (const s of shifts) {
+      const d = isoToDateStr(s.start_time);
+      if (d) { if (!m[d]) m[d] = []; m[d].push(s); }
+    }
+    return m;
+  }, [shifts]);
+
+  const absByDate = useMemo(() => {
+    const m = {};
+    for (const a of absences) {
+      const [iy, im, id] = a.fecha_inicio.split('-').map(Number);
+      const [fy, fm, fd] = a.fecha_fin.split('-').map(Number);
+      for (let dt = new Date(iy, im-1, id); dt <= new Date(fy, fm-1, fd); dt.setDate(dt.getDate()+1)) {
+        m[dt.toLocaleDateString('sv-SE')] = a;
+      }
+    }
+    return m;
+  }, [absences]);
+
   const cells = [];
   for (let i = 0; i < firstDow; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
-  // Contar días trabajados y descansos
+  const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   let worked = 0, rest = 0;
   for (let d = 1; d <= daysInMonth; d++) {
-    const ds = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    if (shiftsByColDate[ds] || absByDate[ds]) worked++;
-    else if (ds <= todayStr) rest++;
+    const ds = `${monthStr}-${String(d).padStart(2, '0')}`;
+    if (shiftsByDate[ds] || absByDate[ds]) worked++;
+    else if (ds < today) rest++;
   }
 
   return (
-    <div className="cw-card" style={{ padding: '1rem 1.25rem', marginBottom: '1.25rem' }}>
-      {/* Cabecera */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem' }}>
-        <span style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-          {MESES[month - 1]} {year}
-        </span>
-        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-          {worked} {worked === 1 ? 'día trabajado' : 'días trabajados'}
-          {rest > 0 && ` · ${rest} ${rest === 1 ? 'descanso' : 'descansos'}`}
-        </span>
+    <div className="emp-month-cal">
+      <div className="emp-month-cal__stats">
+        <span>📅 {worked} días con turno</span>
+        {rest > 0 && <span>😴 {rest} días de descanso</span>}
       </div>
 
-      {/* Nombres de días */}
-      <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, marginBottom: 2,
-      }}>
-        {DIAS_SEMANA_CORTO.map(d => (
-          <div key={d} style={{
-            textAlign: 'center', fontSize: '0.62rem', fontWeight: 600,
-            color: 'var(--text-muted)', padding: '0.25rem 0',
-          }}>{d}</div>
-        ))}
+      {/* Cabeceras días */}
+      <div className="emp-cal-grid emp-cal-grid--header">
+        {DIAS_SEMANA.map(d => <div key={d} className="emp-cal-dow">{d}</div>)}
       </div>
 
-      {/* Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}>
+      {/* Celdas */}
+      <div className="emp-cal-grid">
         {cells.map((day, idx) => {
-          if (day === null) return <div key={`e-${idx}`} />;
+          if (day === null) return <div key={`e-${idx}`} className="emp-cal-cell emp-cal-cell--empty" />;
 
-          const ds = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-          const dayShifts = shiftsByColDate[ds];
-          const absence = absByDate[ds];
-          const isToday = ds === todayStr;
-          const isWeekend = new Date(year, month - 1, day).getDay() % 6 === 0;
+          const ds = `${monthStr}-${String(day).padStart(2, '0')}`;
+          const dayShifts = shiftsByDate[ds] || [];
+          const absence   = absByDate[ds];
+          const isToday   = ds === today;
+          const dow       = new Date(year, month - 1, day).getDay();
+          const isWeekend = dow === 0 || dow === 6;
 
-          let bg = 'var(--bg-glass)';
-          let border = '1px solid transparent';
-          let label = null;
-          let labelColor = null;
+          let dotColor = null;
+          let cellClass = 'emp-cal-cell';
+          let titleTip  = 'Descanso';
 
           if (absence) {
-            const ac = ABSENCE_LABELS[absence.tipo] || ABSENCE_LABELS.licencia;
-            bg = ac.color + '18';
-            border = `1px solid ${ac.color}44`;
-            label = ac.icon;
-            labelColor = ac.color;
-          } else if (dayShifts && dayShifts.length > 0) {
-            const sc = SHIFT_LABELS[dayShifts[0].shift_type] || SHIFT_LABELS.custom;
-            bg = sc.bg;
-            border = `1px solid ${sc.color}44`;
-            labelColor = sc.color;
-            if (dayShifts.length === 2) label = '×2';
-          } else {
-            bg = 'rgba(100,116,139,0.04)';
-            border = '1px dashed rgba(100,116,139,0.12)';
+            const ac = ABSENCE_CFG[absence.tipo] || { color: '#6366f1' };
+            dotColor = ac.color;
+            cellClass += ' emp-cal-cell--absence';
+            titleTip = ABSENCE_CFG[absence.tipo]?.label || absence.tipo;
+          } else if (dayShifts.length > 0) {
+            const sc = SHIFT_CFG[dayShifts[0].shift_type] || SHIFT_CFG.custom;
+            dotColor = sc.color;
+            cellClass += ' emp-cal-cell--shift';
+            titleTip = dayShifts.map(s => `${formatTime(s.start_time)}→${formatTime(s.end_time)}`).join(' | ');
+          } else if (isWeekend) {
+            cellClass += ' emp-cal-cell--weekend';
+          } else if (ds < today) {
+            cellClass += ' emp-cal-cell--rest';
           }
+          if (isToday) cellClass += ' emp-cal-cell--today';
 
           return (
-            <div
-              key={ds}
-              title={dayShifts ? dayShifts.map(s => `${formatTime(s.start_time)} → ${formatTime(s.end_time)}`).join(' | ') : (absence ? ABSENCE_LABELS[absence.tipo]?.label : 'Descanso')}
-              className={`calendar-cell ${!dayShifts && !absence ? 'rest-day' : ''}`}
-              style={{
-                aspectRatio: '1', borderRadius: 5,
-                background: bg, border: isToday ? '2px solid var(--primary)' : border,
-                display: 'flex', flexDirection: 'column',
-                alignItems: 'center', justifyContent: 'center',
-                fontSize: '0.7rem', fontWeight: isToday ? 700 : 500,
-                color: isToday ? 'var(--text-primary)' : labelColor || 'var(--text-muted)',
-              }}
-            >
-              <span>{day}</span>
-              {label && <span style={{ fontSize: '0.45rem', marginTop: 1 }}>{label}</span>}
+            <div key={ds} className={cellClass} title={titleTip}>
+              <span className="emp-cal-cell__num">{day}</span>
+              {dotColor && (
+                <span className="emp-cal-cell__dot" style={{ background: dotColor }} />
+              )}
+              {dayShifts.length > 1 && (
+                <span className="emp-cal-cell__multi">×{dayShifts.length}</span>
+              )}
             </div>
           );
         })}
       </div>
 
       {/* Leyenda */}
-      <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.65rem', flexWrap: 'wrap' }}>
-        {Object.entries(SHIFT_LABELS).slice(0, 3).map(([k, v]) => (
-          <span key={k} style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: v.color, display: 'inline-block' }} />
+      <div className="emp-cal-legend">
+        {Object.entries(SHIFT_CFG).slice(0,3).map(([k,v]) => (
+          <span key={k} className="emp-cal-legend__item">
+            <span style={{ background: v.color }} className="emp-cal-legend__dot" />
             {v.label}
           </span>
         ))}
-        <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span style={{ width: 8, height: 8, borderRadius: 2, border: '1px dashed rgba(100,116,139,0.3)', display: 'inline-block' }} />
+        <span className="emp-cal-legend__item">
+          <span className="emp-cal-legend__dot emp-cal-legend__dot--rest" />
           Descanso
         </span>
       </div>
@@ -350,16 +542,26 @@ function MonthlyShiftGrid({ shifts, absences, month, year }) {
   );
 }
 
-// ── Página principal ──────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// SECCIÓN 5 — PÁGINA PRINCIPAL
+// ════════════════════════════════════════════════════════════════════════════
+
 export default function EmployeeProfilePage() {
   const { user, signOut } = useAuth();
   const [profile, setProfile]   = useState(null);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState('');
-  const [activeTab, setActiveTab] = useState('turnos');
-  const [calMonth, setCalMonth] = useState(new Date().getMonth() + 1);
-  const [calYear, setCalYear]   = useState(new Date().getFullYear());
+  const [activeTab, setActiveTab] = useState('semana');
 
+  // Semana (navegación)
+  const [currentMonday, setCurrentMonday] = useState(() => getMondayOf(colTodayStr()));
+
+  // Calendario mensual
+  const today        = colTodayStr();
+  const [calMonth, setCalMonth] = useState(parseInt(today.slice(5, 7), 10));
+  const [calYear,  setCalYear]  = useState(parseInt(today.slice(0, 4), 10));
+
+  // ── Carga de datos ────────────────────────────────────────────────────────
   const loadProfile = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -382,82 +584,85 @@ export default function EmployeeProfilePage() {
     window.location.href = '/login';
   };
 
-  const employee = profile?.employee;
-  const shifts   = profile?.shifts || [];
-  const absences = profile?.absences || [];
-  const resumenMes = profile?.resumen_mes || {};
-  const resumenMesSig = profile?.resumen_mes_siguiente || {};
+  // ── Datos derivados ───────────────────────────────────────────────────────
+  const employee    = profile?.employee    || {};
+  const shifts      = profile?.shifts      || [];
+  const absences    = profile?.absences    || [];
+  const resMes      = profile?.resumen_mes || {};
+  const resMesSig   = profile?.resumen_mes_siguiente || {};
+  const resSemana   = profile?.resumen_semana_actual || {};
 
-  // ── Datos calculados (TODOS con zona Colombia) ────────────────────────────
   const currentMonth = colCurrentMonth();
-  const nowCol = colNow();
 
-  // Turnos del mes actual (filtrados por fecha Colombia)
-  const shiftsThisMonth = useMemo(() => shifts.filter(s => colMonthStr(s.start_time) === currentMonth), [shifts, currentMonth]);
+  const shiftsThisMonth = useMemo(() =>
+    shifts.filter(s => isoToDateStr(s.start_time)?.slice(0, 7) === currentMonth),
+  [shifts, currentMonth]);
 
-  // Turnos del mes visible en calendario
   const calPeriodo = `${calYear}-${String(calMonth).padStart(2, '0')}`;
-  const shiftsInCalMonth = useMemo(() => shifts.filter(s => colMonthStr(s.start_time) === calPeriodo), [shifts, calPeriodo]);
-
-  // Próximos y pasados (todos)
-  const upcomingShifts = useMemo(() =>
-    shifts.filter(s => new Date(s.end_time) >= nowCol).sort((a, b) => new Date(a.start_time) - new Date(b.start_time)),
-  [shifts, nowCol]);
-
-  const pastShifts = useMemo(() =>
-    shifts.filter(s => new Date(s.end_time) < nowCol).sort((a, b) => new Date(b.start_time) - new Date(a.start_time)),
-  [shifts, nowCol]);
+  const shiftsInCalMonth = useMemo(() =>
+    shifts.filter(s => isoToDateStr(s.start_time)?.slice(0, 7) === calPeriodo)
+          .sort((a, b) => a.start_time.localeCompare(b.start_time)),
+  [shifts, calPeriodo]);
 
   // Pre-nómina
-  const totalHorasNetas = shiftsThisMonth.reduce((acc, s) => {
-    const h = ((new Date(s.end_time) - new Date(s.start_time)) / 3600000) - ((s.break_minutes || 0) / 60);
-    return acc + Math.max(0, h);
-  }, 0);
-  const valorHora = employee?.valor_hora || 0;
-  const totalEstimado = totalHorasNetas * valorHora;
+  const totalHorasNetas = shiftsThisMonth.reduce((acc, s) => acc + netHours(s), 0);
+  const valorHora       = employee?.valor_hora || 0;
+  const totalEstimado   = totalHorasNetas * valorHora;
 
-  // Desglose semanal
+  // Desglose semanal del mes actual
   const weeklyBreakdown = useMemo(() => {
     const weeks = {};
     for (const s of shiftsThisMonth) {
-      const dateStr = colDateStr(s.start_time);
-      if (!dateStr) continue;
-      const day = parseInt(dateStr.slice(8, 10), 10);
-      const wk = Math.ceil(day / 7);
+      const ds = isoToDateStr(s.start_time);
+      if (!ds) continue;
+      const d  = parseInt(ds.slice(8, 10), 10);
+      const wk = Math.ceil(d / 7);
       const key = `Semana ${wk}`;
       if (!weeks[key]) weeks[key] = { horas: 0, turnos: 0, dias: new Set() };
-      const h = Math.max(0, ((new Date(s.end_time) - new Date(s.start_time)) / 3600000) - ((s.break_minutes || 0) / 60));
-      weeks[key].horas += h;
+      weeks[key].horas  += netHours(s);
       weeks[key].turnos += 1;
-      weeks[key].dias.add(dateStr);
+      weeks[key].dias.add(ds);
     }
-    return Object.entries(weeks).map(([k, v]) => ({ label: k, horas: v.horas, turnos: v.turnos, dias: v.dias.size }));
+    return Object.entries(weeks).map(([k, v]) => ({
+      label: k, horas: v.horas, turnos: v.turnos, dias: v.dias.size,
+    }));
   }, [shiftsThisMonth]);
+
+  // Iniciales del empleado
+  const initials = useMemo(() => {
+    const n = employee?.nombre || user?.email || '';
+    return n.split(' ').slice(0, 2).map(p => p[0]).join('').toUpperCase() || '?';
+  }, [employee, user]);
 
   // ── Navegación calendario ─────────────────────────────────────────────────
   const prevMonth = () => {
-    if (calMonth === 1) { setCalMonth(12); setCalYear(calYear - 1); }
-    else setCalMonth(calMonth - 1);
+    if (calMonth === 1) { setCalMonth(12); setCalYear(y => y - 1); }
+    else setCalMonth(m => m - 1);
   };
   const nextMonth = () => {
-    if (calMonth === 12) { setCalMonth(1); setCalYear(calYear + 1); }
-    else setCalMonth(calMonth + 1);
+    if (calMonth === 12) { setCalMonth(1); setCalYear(y => y + 1); }
+    else setCalMonth(m => m + 1);
   };
+
+  // Años disponibles (año anterior, actual, siguiente)
+  const currentYear = colCurrentYear();
+  const availableYears = [currentYear - 1, currentYear, currentYear + 1];
 
   // ── Loading ────────────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '1rem' }}>
-        <div className="cw-spinner"></div>
-        <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Cargando tu información...</span>
+      <div className="emp-loading-screen">
+        <div className="emp-loading-logo">⏱️</div>
+        <div className="cw-spinner" />
+        <span>Cargando tu información...</span>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div className="cw-card" style={{ maxWidth: 400, padding: '2rem', textAlign: 'center' }}>
+      <div className="emp-error-screen">
+        <div className="cw-card" style={{ maxWidth: 380, padding: '2rem', textAlign: 'center' }}>
           <div style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>😕</div>
           <p style={{ color: 'var(--text-muted)', marginBottom: '1.5rem' }}>{error}</p>
           <button className="cw-btn cw-btn--primary" onClick={loadProfile}>Reintentar</button>
@@ -467,289 +672,255 @@ export default function EmployeeProfilePage() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
-      {/* ── Header ────────────────────────────────────────────────────────── */}
-      <div style={{
-        background: 'linear-gradient(135deg, #1e3a5f 0%, #2563eb 50%, #1e40af 100%)',
-        padding: '1.5rem 1.5rem 4rem',
-        position: 'relative', overflow: 'hidden',
-      }}>
-        <div style={{
-          position: 'absolute', top: -40, right: -40, width: 200, height: 200,
-          borderRadius: '50%', background: 'rgba(255,255,255,0.05)',
-        }} />
-        <div style={{
-          position: 'absolute', bottom: -30, left: '30%', width: 150, height: 150,
-          borderRadius: '50%', background: 'rgba(255,255,255,0.04)',
-        }} />
+    <div className="emp-shell">
+      {/* ════════════════════════════════════════════════════════
+          HEADER HERO
+          ════════════════════════════════════════════════════════ */}
+      <header className="emp-hero">
+        {/* Decoraciones */}
+        <div className="emp-hero__orb emp-hero__orb--1" />
+        <div className="emp-hero__orb emp-hero__orb--2" />
+        <div className="emp-hero__orb emp-hero__orb--3" />
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', position: 'relative' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <div style={{ fontSize: '1.2rem' }}>⏱️</div>
-            <span style={{ fontSize: '0.88rem', fontWeight: 700, color: 'rgba(255,255,255,0.8)' }}>
-              ChronosWork
-            </span>
+        {/* Top bar */}
+        <div className="emp-hero__topbar">
+          <div className="emp-hero__brand">
+            <span className="emp-hero__brand-icon">⏱️</span>
+            <span className="emp-hero__brand-name">ChronosWork</span>
           </div>
-          <button
-            onClick={handleSignOut}
-            style={{
-              background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.2)',
-              color: 'white', cursor: 'pointer', padding: '0.4rem 0.9rem',
-              borderRadius: 8, fontSize: '0.78rem', fontWeight: 600,
-              display: 'flex', alignItems: 'center', gap: '0.35rem',
-              backdropFilter: 'blur(8px)',
-            }}
-          >
+          <button className="emp-signout-btn" onClick={handleSignOut}>
             <MdLogout /> Salir
           </button>
         </div>
 
-        <div style={{ marginTop: '1.25rem', position: 'relative' }}>
-          <div style={{
-            width: 64, height: 64, borderRadius: '50%',
-            background: 'rgba(255,255,255,0.2)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: '1.8rem', marginBottom: '0.75rem',
-            border: '2px solid rgba(255,255,255,0.3)',
-          }}>
-            <MdPerson style={{ color: 'white' }} />
-          </div>
-          <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'white', marginBottom: '0.2rem' }}>
-            {employee?.nombre || user?.email}
-          </div>
-          <div style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.7)', marginBottom: '0.1rem' }}>
-            {employee?.cargo || 'Colaborador'}
-          </div>
-          <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.5)' }}>
-            C.C. {employee?.cedula}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Cards de resumen ──────────────────────────────────────────────── */}
-      <div style={{
-        padding: '0 1.25rem', marginTop: -32, marginBottom: '1.5rem',
-        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem',
-        position: 'relative', zIndex: 2,
-        maxWidth: 900, marginLeft: 'auto', marginRight: 'auto',
-      }}>
-        {[
-          {
-            label: 'Turnos este mes', value: shiftsThisMonth.length,
-            sub: `${totalHorasNetas.toFixed(0)}h netas`, icon: <MdCalendarMonth />, color: '#3b82f6',
-          },
-          {
-            label: 'Horas netas', value: totalHorasNetas.toFixed(1) + 'h',
-            sub: `${shiftsThisMonth.length} turnos`, icon: <MdAccessTime />, color: '#6366f1',
-          },
-          {
-            label: 'Estimado nómina', value: formatCurrency(totalEstimado),
-            sub: valorHora > 0 ? `${formatCurrency(valorHora)}/h` : null,
-            icon: <MdCalculate />, color: '#22c55e',
-          },
-        ].map(card => (
-          <div key={card.label} className="cw-card stat-card" style={{ padding: '1rem', textAlign: 'center' }}>
-            <div style={{
-              width: 36, height: 36, borderRadius: 10,
-              background: `${card.color}18`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '1.1rem', color: card.color, margin: '0 auto 0.5rem',
-            }}>
-              {card.icon}
-            </div>
-            <div style={{
-              fontSize: card.value.length > 8 ? '0.9rem' : '1.2rem',
-              fontWeight: 800, color: 'var(--text-primary)', lineHeight: 1.1,
-              marginBottom: '0.2rem', wordBreak: 'break-word',
-            }}>
-              {card.value}
-            </div>
-            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-              {card.label}
-            </div>
-            {card.sub && (
-              <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', opacity: 0.7, marginTop: '0.1rem' }}>
-                {card.sub}
-              </div>
+        {/* Perfil */}
+        <div className="emp-hero__profile">
+          <div className="emp-avatar">{initials}</div>
+          <div className="emp-hero__profile-info">
+            <h1 className="emp-hero__name">{employee?.nombre || user?.email}</h1>
+            <div className="emp-hero__cargo">{employee?.cargo || 'Colaborador'}</div>
+            {employee?.cedula && (
+              <div className="emp-hero__cedula">C.C. {employee.cedula}</div>
             )}
           </div>
-        ))}
-      </div>
+        </div>
 
-      {/* ── Tabs ──────────────────────────────────────────────────────────── */}
-      <div style={{ maxWidth: 900, margin: '0 auto', padding: '0 1.25rem' }}>
-        <div style={{
-          display: 'flex', gap: '0.25rem', marginBottom: '1.25rem',
-          background: 'var(--surface-1)', borderRadius: 10, padding: '0.25rem',
-          border: '1px solid var(--border-subtle)',
-        }}>
+        {/* Stats rápidas */}
+        <div className="emp-hero__stats">
+          <div className="emp-hero__stat">
+            <span className="emp-hero__stat-val">{resSemana?.total_turnos ?? 0}</span>
+            <span className="emp-hero__stat-label">Turnos semana</span>
+          </div>
+          <div className="emp-hero__stat-divider" />
+          <div className="emp-hero__stat">
+            <span className="emp-hero__stat-val">
+              {Number(resSemana?.total_horas_netas ?? 0).toFixed(1)}h
+            </span>
+            <span className="emp-hero__stat-label">Horas semana</span>
+          </div>
+          <div className="emp-hero__stat-divider" />
+          <div className="emp-hero__stat">
+            <span className="emp-hero__stat-val">{shiftsThisMonth.length}</span>
+            <span className="emp-hero__stat-label">Turnos mes</span>
+          </div>
+          <div className="emp-hero__stat-divider" />
+          <div className="emp-hero__stat">
+            <span className="emp-hero__stat-val">{totalHorasNetas.toFixed(0)}h</span>
+            <span className="emp-hero__stat-label">Horas mes</span>
+          </div>
+        </div>
+      </header>
+
+      {/* ════════════════════════════════════════════════════════
+          NAVEGACIÓN DE TABS
+          ════════════════════════════════════════════════════════ */}
+      <div className="emp-tabs-bar">
+        <div className="emp-tabs">
           {[
-            { id: 'turnos',    label: 'Mis Turnos',    icon: <MdCalendarMonth /> },
-            { id: 'novedades', label: 'Novedades',     icon: <MdEventBusy /> },
-            { id: 'prenomina', label: 'Pre-nómina',    icon: <MdCalculate /> },
+            { id: 'semana',    label: 'Esta Semana',  icon: <MdOutlineCalendarToday /> },
+            { id: 'turnos',    label: 'Mis Turnos',   icon: <MdCalendarMonth /> },
+            { id: 'novedades', label: 'Novedades',    icon: <MdEventBusy /> },
+            { id: 'prenomina', label: 'Pre-nómina',   icon: <MdCalculate /> },
           ].map(tab => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              style={{
-                flex: 1, padding: '0.5rem 0.5rem',
-                borderRadius: 8, border: 'none', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem',
-                fontSize: '0.78rem', fontWeight: 600, transition: 'all 0.2s',
-                background: activeTab === tab.id ? 'var(--primary)' : 'transparent',
-                color: activeTab === tab.id ? 'white' : 'var(--text-muted)',
-              }}
+              className={`emp-tab ${activeTab === tab.id ? 'emp-tab--active' : ''}`}
             >
-              {tab.icon} {tab.label}
+              {tab.icon}
+              <span>{tab.label}</span>
+              {tab.id === 'semana' && resSemana?.total_turnos > 0 && (
+                <span className="emp-tab__badge">{resSemana.total_turnos}</span>
+              )}
             </button>
           ))}
         </div>
+      </div>
 
-        {/* ═══════════════════════════════════════════════════════════════════
-            TAB: MIS TURNOS
-           ═══════════════════════════════════════════════════════════════════ */}
-        {activeTab === 'turnos' && (
-          <div className="animate-fade-in">
-            {/* Mini-calendario mensual con navegación */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-              <button onClick={prevMonth} style={{
-                background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-                color: 'var(--text-secondary)', cursor: 'pointer',
-                width: 30, height: 30, borderRadius: 6,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1rem',
-              }}>‹</button>
-              <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)', flex: 1, textAlign: 'center' }}>
-                {MESES[calMonth - 1]} {calYear}
-              </span>
-              <button onClick={nextMonth} style={{
-                background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-                color: 'var(--text-secondary)', cursor: 'pointer',
-                width: 30, height: 30, borderRadius: 6,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1rem',
-              }}>›</button>
-            </div>
-            <MonthlyShiftGrid
+      {/* ════════════════════════════════════════════════════════
+          CONTENIDO PRINCIPAL
+          ════════════════════════════════════════════════════════ */}
+      <main className="emp-main">
+
+        {/* ──────────────────────────────────────────────────────
+            TAB: ESTA SEMANA
+            ────────────────────────────────────────────────────── */}
+        {activeTab === 'semana' && (
+          <div className="emp-tab-content animate-fade-in">
+            <WeekView
               shifts={shifts}
               absences={absences}
-              month={calMonth}
-              year={calYear}
+              weekMonday={currentMonday}
+              onPrev={() => setCurrentMonday(m => shiftWeek(m, -1))}
+              onNext={() => setCurrentMonday(m => shiftWeek(m, +1))}
+              onGoToday={() => setCurrentMonday(getMondayOf(colTodayStr()))}
             />
 
-            {/* Lista de turnos del mes visible */}
-            {shiftsInCalMonth.length > 0 && (
+            {/* Turnos de la semana en detalle */}
+            {(() => {
+              const weekDays = getWeekDays(currentMonday);
+              const weekShifts = shifts.filter(s => weekDays.includes(isoToDateStr(s.start_time)));
+              if (weekShifts.length === 0) return (
+                <div className="emp-empty-state">
+                  <MdCalendarMonth style={{ fontSize: '3rem', opacity: 0.2 }} />
+                  <p>Sin turnos esta semana</p>
+                  <span>Cuando tu administrador programe turnos aparecerán aquí</span>
+                </div>
+              );
+              return (
+                <div className="emp-shifts-list">
+                  <div className="emp-section-title">
+                    <MdSchedule />
+                    Detalle de turnos — Semana del {fmtShortDate(currentMonday)} al {fmtShortDate(weekDays[6])}
+                  </div>
+                  {weekShifts
+                    .sort((a, b) => a.start_time.localeCompare(b.start_time))
+                    .map(s => <ShiftCard key={s.id} shift={s} />)}
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ──────────────────────────────────────────────────────
+            TAB: MIS TURNOS (Calendario + lista mensual)
+            ────────────────────────────────────────────────────── */}
+        {activeTab === 'turnos' && (
+          <div className="emp-tab-content animate-fade-in">
+            {/* Selector Mes + Año */}
+            <div className="emp-month-nav">
+              <button className="emp-nav-btn" onClick={prevMonth}><MdChevronLeft /></button>
+
+              <div className="emp-month-nav__center">
+                <select
+                  className="emp-month-select"
+                  value={calMonth}
+                  onChange={e => setCalMonth(Number(e.target.value))}
+                >
+                  {MESES.map((m, i) => (
+                    <option key={i+1} value={i+1}>{m}</option>
+                  ))}
+                </select>
+
+                <select
+                  className="emp-year-select"
+                  value={calYear}
+                  onChange={e => setCalYear(Number(e.target.value))}
+                >
+                  {availableYears.map(y => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </div>
+
+              <button className="emp-nav-btn" onClick={nextMonth}><MdChevronRight /></button>
+            </div>
+
+            {/* Calendariomensual */}
+            <div className="cw-card" style={{ marginBottom: '1.25rem', padding: '1.25rem' }}>
+              <MonthCalendar
+                shifts={shifts}
+                absences={absences}
+                month={calMonth}
+                year={calYear}
+              />
+            </div>
+
+            {/* Lista de turnos del mes */}
+            {shiftsInCalMonth.length > 0 ? (
               <>
-                <h3 style={{
-                  fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)',
-                  marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em',
-                }}>
-                  Turnos en {MESES[calMonth - 1]} ({shiftsInCalMonth.length})
-                </h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.5rem' }}>
+                <div className="emp-section-title">
+                  <MdSchedule />
+                  Turnos en {MESES[calMonth - 1]} {calYear} ({shiftsInCalMonth.length})
+                </div>
+                <div className="emp-shifts-list">
                   {shiftsInCalMonth.map(s => <ShiftCard key={s.id} shift={s} />)}
                 </div>
               </>
-            )}
-
-            {shiftsInCalMonth.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                <p style={{ fontWeight: 500 }}>Sin turnos en {MESES[calMonth - 1]}</p>
-                <p style={{ fontSize: '0.78rem' }}>
-                  {calPeriodo < currentMonth ? 'No se registraron turnos en este mes.' : 'Aún no se han programado turnos.'}
-                </p>
-              </div>
-            )}
-
-            {/* Próximos turnos (todos, sin límite) */}
-            {upcomingShifts.length > 0 && (
-              <div style={{ marginTop: '1rem' }}>
-                <h3 style={{
-                  fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)',
-                  marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em',
-                }}>
-                  Todos los próximos turnos ({upcomingShifts.length})
-                </h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                  {upcomingShifts.map(s => <ShiftCard key={s.id} shift={s} />)}
-                </div>
-              </div>
-            )}
-
-            {shifts.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
-                <MdCalendarMonth style={{ fontSize: '3rem', opacity: 0.3, display: 'block', margin: '0 auto 0.75rem' }} />
-                <p style={{ fontWeight: 500 }}>Aún no tienes turnos asignados</p>
-                <p style={{ fontSize: '0.78rem', marginTop: '0.35rem' }}>
-                  Cuando tu administrador programe tus turnos, aparecerán aquí.
-                </p>
+            ) : (
+              <div className="emp-empty-state">
+                <MdCalendarMonth style={{ fontSize: '3rem', opacity: 0.2 }} />
+                <p>Sin turnos en {MESES[calMonth - 1]} {calYear}</p>
+                <span>
+                  {calPeriodo < currentMonth
+                    ? 'No se registraron turnos en este período.'
+                    : 'Aún no se han programado turnos para este período.'}
+                </span>
               </div>
             )}
           </div>
         )}
 
-        {/* ═══════════════════════════════════════════════════════════════════
+        {/* ──────────────────────────────────────────────────────
             TAB: NOVEDADES
-           ═══════════════════════════════════════════════════════════════════ */}
+            ────────────────────────────────────────────────────── */}
         {activeTab === 'novedades' && (
-          <div className="animate-fade-in">
+          <div className="emp-tab-content animate-fade-in">
             {absences.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
-                <MdEventBusy style={{ fontSize: '3rem', opacity: 0.3, display: 'block', margin: '0 auto 0.75rem' }} />
-                <p style={{ fontWeight: 500 }}>Sin novedades registradas</p>
-                <p style={{ fontSize: '0.78rem', marginTop: '0.35rem' }}>
-                  No tienes vacaciones, incapacidades, licencias ni suspensiones.
-                </p>
+              <div className="emp-empty-state">
+                <MdEventBusy style={{ fontSize: '3rem', opacity: 0.2 }} />
+                <p>Sin novedades registradas</p>
+                <span>No tienes vacaciones, incapacidades, licencias ni suspensiones.</span>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+              <div className="emp-shifts-list">
                 {absences.map(a => {
-                  const cfg = ABSENCE_LABELS[a.tipo] || { label: a.tipo, icon: '📌', color: '#6366f1' };
+                  const cfg = ABSENCE_CFG[a.tipo] || { label: a.tipo, icon: '📌', color: '#6366f1' };
                   const dias = Math.ceil((new Date(a.fecha_fin) - new Date(a.fecha_inicio)) / 86400000) + 1;
-                  const esActiva = colNow() >= new Date(a.fecha_inicio) && colNow() <= new Date(a.fecha_fin);
-                  const esPasada = new Date(a.fecha_fin) < colNow();
+                  const nowStr = today;
+                  const esActiva = nowStr >= a.fecha_inicio && nowStr <= a.fecha_fin;
+                  const esPasada = a.fecha_fin < nowStr;
 
                   return (
-                    <div key={a.id} className="cw-card" style={{
-                      padding: '1rem 1.25rem',
-                      borderLeft: `3px solid ${cfg.color}`,
-                      opacity: esPasada ? 0.7 : 1,
-                    }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
-                        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
-                          <span style={{ fontSize: '1.3rem' }}>{cfg.icon}</span>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-                              <span style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>
-                                {cfg.label}
-                              </span>
-                              {esActiva && (
-                                <span style={{
-                                  fontSize: '0.62rem', fontWeight: 700, color: '#22c55e',
-                                  background: 'rgba(34,197,94,0.15)', padding: '0.08rem 0.45rem', borderRadius: 999,
-                                }}>VIGENTE</span>
-                              )}
-                            </div>
-                            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                              {formatDate(a.fecha_inicio)} → {formatDate(a.fecha_fin)}
-                              <span style={{ marginLeft: '0.4rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                                ({dias} {dias === 1 ? 'día' : 'días'})
-                              </span>
-                            </div>
-                          </div>
+                    <div
+                      key={a.id}
+                      className="emp-absence-card"
+                      style={{ borderLeftColor: cfg.color, opacity: esPasada ? 0.75 : 1 }}
+                    >
+                      <div className="emp-absence-card__icon">{cfg.icon}</div>
+                      <div className="emp-absence-card__body">
+                        <div className="emp-absence-card__header">
+                          <span className="emp-absence-card__tipo">{cfg.label}</span>
+                          {esActiva && <span className="emp-badge emp-badge--active">VIGENTE</span>}
+                          {esPasada && <span className="emp-badge emp-badge--past">Finalizada</span>}
                         </div>
-                        <span style={{
-                          fontSize: '0.72rem', fontWeight: 600,
+                        <div className="emp-absence-card__dates">
+                          {a.fecha_inicio} → {a.fecha_fin}
+                          <span className="emp-absence-card__dias">({dias} {dias === 1 ? 'día' : 'días'})</span>
+                        </div>
+                        {a.observaciones && (
+                          <p className="emp-absence-card__obs">{a.observaciones}</p>
+                        )}
+                      </div>
+                      <span
+                        className="emp-absence-card__status"
+                        style={{
                           color: a.aprobada ? '#22c55e' : '#f59e0b',
                           background: a.aprobada ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)',
-                          padding: '0.2rem 0.6rem', borderRadius: 999, whiteSpace: 'nowrap',
-                        }}>
-                          {a.aprobada ? '✓ Aprobada' : '⏳ Pendiente'}
-                        </span>
-                      </div>
-                      {a.observaciones && (
-                        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.5rem', marginLeft: '2rem' }}>
-                          {a.observaciones}
-                        </p>
-                      )}
+                        }}
+                      >
+                        {a.aprobada ? '✓ Aprobada' : '⏳ Pendiente'}
+                      </span>
                     </div>
                   );
                 })}
@@ -758,66 +929,40 @@ export default function EmployeeProfilePage() {
           </div>
         )}
 
-        {/* ═══════════════════════════════════════════════════════════════════
+        {/* ──────────────────────────────────────────────────────
             TAB: PRE-NÓMINA
-           ═══════════════════════════════════════════════════════════════════ */}
+            ────────────────────────────────────────────────────── */}
         {activeTab === 'prenomina' && (
-          <div className="animate-fade-in">
-            <div className="cw-card" style={{
-              padding: '1.5rem',
-              background: 'linear-gradient(135deg, rgba(99,102,241,0.08), var(--surface-1))',
-              borderColor: 'rgba(99,102,241,0.2)',
-              marginBottom: '1rem',
-            }}>
-              <div style={{
-                fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.5rem',
-                textTransform: 'uppercase', letterSpacing: '0.05em',
-              }}>
-                Estimado pre-nómina — {new Date().toLocaleDateString('es-CO', { month: 'long', year: 'numeric', timeZone: TZ })}
+          <div className="emp-tab-content animate-fade-in">
+            {/* Card principal */}
+            <div className="emp-prenomina-hero">
+              <div className="emp-prenomina-hero__label">
+                Estimado pre-nómina — {MESES[parseInt(today.slice(5,7),10) - 1]} {today.slice(0,4)}
               </div>
-              <div style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--primary)', marginBottom: '0.5rem' }}>
+              <div className="emp-prenomina-hero__value">
                 {formatCurrency(totalEstimado)}
               </div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+              <div className="emp-prenomina-hero__meta">
                 <span>⏱ {totalHorasNetas.toFixed(2)} horas netas</span>
                 <span>💵 {formatCurrency(valorHora)}/hora</span>
-                <span>📋 {shiftsThisMonth.length} turnos este mes</span>
+                <span>📋 {shiftsThisMonth.length} turnos</span>
               </div>
             </div>
 
             {/* Desglose semanal */}
             {weeklyBreakdown.length > 0 && (
               <div className="cw-card" style={{ padding: '1.25rem', marginBottom: '1rem' }}>
-                <h3 style={{
-                  fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)',
-                  marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em',
-                }}>
-                  Desglose semanal
-                </h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <div className="emp-section-title" style={{ marginBottom: '0.85rem' }}>
+                  <MdCalendarMonth /> Desglose semanal
+                </div>
+                <div className="emp-weekly-breakdown">
                   {weeklyBreakdown.map((w, i) => (
-                    <div key={w.label} style={{
-                      display: 'flex', alignItems: 'center', gap: '0.75rem',
-                      padding: '0.5rem 0.75rem', borderRadius: 8,
-                      background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-                    }}>
-                      <span style={{
-                        fontSize: '0.75rem', fontWeight: 700, color: '#6366f1',
-                        background: 'rgba(99,102,241,0.12)', borderRadius: 6,
-                        padding: '0.2rem 0.45rem',
-                      }}>{i + 1}ª</span>
-                      <span style={{ flex: 1, fontWeight: 600, fontSize: '0.82rem', color: 'var(--text-primary)' }}>
-                        {w.label}
-                      </span>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        {w.turnos} turnos · {w.dias}d
-                      </span>
-                      <span style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)', minWidth: '4rem', textAlign: 'right' }}>
-                        {w.horas.toFixed(1)}h
-                      </span>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', minWidth: '5rem', textAlign: 'right' }}>
-                        {formatCurrency(w.horas * valorHora)}
-                      </span>
+                    <div key={w.label} className="emp-week-row">
+                      <span className="emp-week-row__num">{i + 1}ª</span>
+                      <span className="emp-week-row__label">{w.label}</span>
+                      <span className="emp-week-row__meta">{w.turnos} turnos · {w.dias}d</span>
+                      <span className="emp-week-row__hours">{w.horas.toFixed(1)}h</span>
+                      <span className="emp-week-row__value">{formatCurrency(w.horas * valorHora)}</span>
                     </div>
                   ))}
                 </div>
@@ -825,42 +970,34 @@ export default function EmployeeProfilePage() {
             )}
 
             {/* Mes siguiente */}
-            {resumenMesSig?.total_turnos > 0 && (
-              <div className="cw-card" style={{
-                padding: '1rem 1.25rem', marginBottom: '1rem',
-                borderLeft: '3px solid var(--primary)',
-              }}>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
-                  📅 Proyectado siguiente mes
-                </div>
-                <div style={{ fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-                  {Number(resumenMesSig.total_horas_netas || 0).toFixed(1)}h programadas · {resumenMesSig.total_turnos} turnos
+            {resMesSig?.total_turnos > 0 && (
+              <div className="cw-card emp-next-month-card">
+                <div>📅 Proyectado mes siguiente</div>
+                <div>
+                  {Number(resMesSig.total_horas_netas || 0).toFixed(1)}h programadas
+                  · {resMesSig.total_turnos} turnos
                 </div>
               </div>
             )}
 
-            <div className="cw-alert" style={{
-              background: 'rgba(59,130,246,0.08)',
-              border: '1px solid rgba(59,130,246,0.2)',
-              color: 'var(--text-secondary)', borderRadius: 10, padding: '0.75rem 1rem',
-              fontSize: '0.78rem',
-            }}>
-              ℹ️ Este valor es un <strong>estimado de pre-nómina</strong> basado en tus horas netas del mes actual.
-              No incluye recargos nocturnos, dominicales, ni deducciones. El valor final lo calcula el área de Gestión Humana.
+            {/* Aviso */}
+            <div className="emp-alert-info">
+              ℹ️ Este valor es un <strong>estimado de pre-nómina</strong> basado en horas netas del mes actual.
+              No incluye recargos nocturnos, dominicales, ni deducciones. El valor final lo calcula Gestión Humana.
             </div>
 
             {shiftsThisMonth.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)', marginTop: '1rem' }}>
-                <MdCalculate style={{ fontSize: '2rem', opacity: 0.3, display: 'block', margin: '0 auto 0.5rem' }} />
+              <div className="emp-empty-state">
+                <MdCalculate style={{ fontSize: '2rem', opacity: 0.2 }} />
                 <p>No hay turnos registrados en el mes actual</p>
               </div>
             )}
           </div>
         )}
-      </div>
+      </main>
 
-      {/* Espacio final */}
-      <div style={{ paddingBottom: '3rem' }} />
+      {/* Bottom padding */}
+      <div style={{ paddingBottom: '2rem' }} />
     </div>
   );
 }
