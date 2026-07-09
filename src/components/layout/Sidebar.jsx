@@ -1,4 +1,4 @@
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { useAuth, ROLE_SAAS_ADMIN, ROLE_SUPER_ADMIN, ROLE_COORDINATOR } from '../../context/AuthContext';
 import {
   MdDashboard, MdPeople, MdEventBusy, MdCalendarMonth,
@@ -106,10 +106,10 @@ export default function Sidebar() {
   return (
     <aside className="cw-sidebar">
       {/* Header */}
-      <div className="cw-sidebar__header">
+      <Link to="/landing" className="cw-sidebar__header" style={{ textDecoration: 'none', color: 'inherit' }}>
         <div className="cw-sidebar__logo">⏱️</div>
         <div className="cw-sidebar__brand-text">ChronosWork</div>
-      </div>
+      </Link>
 
       {/* Badge de rol */}
       <div style={{
@@ -117,19 +117,19 @@ export default function Sidebar() {
         padding: '0.35rem 0.75rem',
         borderRadius: 8,
         background: isSaasAdmin
-          ? 'linear-gradient(135deg, rgba(99,102,241,0.25), rgba(124,58,237,0.2))'
-          : 'var(--surface-2)',
-        border: isSaasAdmin ? '1px solid rgba(99,102,241,0.3)' : '1px solid var(--border-subtle)',
+          ? 'linear-gradient(135deg, rgba(79,70,229,0.12), rgba(124,58,237,0.08))'
+          : 'var(--bg-glass)',
+        border: isSaasAdmin ? '1px solid rgba(79,70,229,0.25)' : '1px solid var(--border-subtle)',
         display: 'flex', alignItems: 'center', gap: '0.5rem',
       }}>
         {isSaasAdmin ? (
-          <MdAdminPanelSettings style={{ color: '#818cf8', fontSize: '1rem' }} />
+          <MdAdminPanelSettings style={{ color: 'var(--cw-accent)', fontSize: '1rem' }} />
         ) : (
           <MdBusiness style={{ color: 'var(--text-muted)', fontSize: '1rem' }} />
         )}
         <span style={{
           fontSize: '0.72rem', fontWeight: 700,
-          color: isSaasAdmin ? '#818cf8' : 'var(--text-muted)',
+          color: isSaasAdmin ? 'var(--cw-accent)' : 'var(--text-muted)',
           textTransform: 'uppercase', letterSpacing: '0.04em',
         }}>
           {getRoleLabel(userRole)}
@@ -176,8 +176,8 @@ export default function Sidebar() {
             style={{
               width: 32, height: 32, borderRadius: '50%',
               background: isSaasAdmin
-                ? 'linear-gradient(135deg, #6366f1, #7c3aed)'
-                : 'linear-gradient(135deg, #2563eb, #7c3aed)',
+                ? 'linear-gradient(135deg, var(--cw-accent), var(--cw-purple))'
+                : 'linear-gradient(135deg, var(--cw-accent), var(--cw-purple))',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: '0.75rem', fontWeight: 700, color: 'white', flexShrink: 0,
             }}

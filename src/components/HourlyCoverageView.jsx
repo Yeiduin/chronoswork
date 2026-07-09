@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { format, addDays, subDays } from 'date-fns';
+import { toISODay } from '../core/dateUtils';
 import {
   MdChevronLeft, MdChevronRight, MdPeople, MdAccessTime, MdWarning,
   MdCheckCircle, MdTrendingUp, MdViewWeek, MdToday, MdBarChart,
@@ -26,7 +27,7 @@ const isoDay = (d) => format(d, 'yyyy-MM-dd');
 // Lunes de la semana que contiene `date`.
 function mondayOf(date) {
   const d = new Date(date);
-  const dow = d.getDay() === 0 ? 7 : d.getDay();
+  const dow = toISODay(d);
   return subDays(d, dow - 1);
 }
 
@@ -153,7 +154,7 @@ export function HourlyCoverageView({ shifts, employees, demandSlots, areas = [],
     let requiredTotal = 0, coveredTotal = 0, hasDemand = false;
 
     weekMatrix.forEach((row) => {
-      const dow = row.date.getDay() === 0 ? 7 : row.date.getDay();
+      const dow = toISODay(row.date);
       row.coverage.forEach((count, h) => {
         manHours += count;
         if (count > peak) { peak = count; peakLabel = `${fmtDay(row.date)} ${HOUR_LABELS[h]}`; }
@@ -193,7 +194,7 @@ export function HourlyCoverageView({ shifts, employees, demandSlots, areas = [],
       let manHours = 0, required = 0, covered = 0, deficit = 0, hasDem = false;
       weekDays.forEach(d => {
         const { coverage } = getCoverageByHour(aShifts, isoDay(d));
-        const dow = d.getDay() === 0 ? 7 : d.getDay();
+        const dow = toISODay(d);
         coverage.forEach((count, h) => {
           manHours += count;
           const dem = aDemand(dow, h);
@@ -213,7 +214,7 @@ export function HourlyCoverageView({ shifts, employees, demandSlots, areas = [],
   const perDayBreakdown = useMemo(() => {
     if (selectedAreaId === 'all') return null;
     return weekMatrix.map(row => {
-      const dow = row.date.getDay() === 0 ? 7 : row.date.getDay();
+      const dow = toISODay(row.date);
       const empSet = new Set();
       let manHours = 0, required = 0, covered = 0, hasDem = false;
       row.coverage.forEach((count, h) => {
@@ -233,7 +234,7 @@ export function HourlyCoverageView({ shifts, employees, demandSlots, areas = [],
 
   // ── Datos del modo DÍA ───────────────────────────────────────────────
   const dayStr = isoDay(selectedDate);
-  const dayOfWeek = selectedDate.getDay() === 0 ? 7 : selectedDate.getDay();
+  const dayOfWeek = toISODay(selectedDate);
   const dayCov = useMemo(() => getCoverageByHour(scopedShifts, dayStr), [scopedShifts, dayStr]);
   const dayMaxChart = useMemo(() => {
     let m = 1;
@@ -338,7 +339,7 @@ export function HourlyCoverageView({ shifts, employees, demandSlots, areas = [],
 
                 {/* Filas por día */}
                 {weekMatrix.map((row) => {
-                  const dow = row.date.getDay() === 0 ? 7 : row.date.getDay();
+                  const dow = toISODay(row.date);
                   const isToday = isoDay(row.date) === isoDay(new Date());
                   return (
                     <div key={isoDay(row.date)} style={{ display: 'grid', gridTemplateColumns: `64px repeat(24, 1fr)`, gap: 3, marginBottom: 3 }}>

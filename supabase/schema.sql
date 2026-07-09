@@ -206,9 +206,9 @@ CREATE POLICY "tenant_update_own" ON tenants
     OR is_platform_admin()
   );
 
--- Platform admin puede insertar tenants directamente
+-- Solo platform_admin o la RPC register_new_company pueden insertar tenants
 CREATE POLICY "tenant_insert_platform" ON tenants
-  FOR INSERT WITH CHECK (true); -- Permitido durante registro
+  FOR INSERT WITH CHECK (is_platform_admin());
 
 -- Platform admin puede desactivar/eliminar tenants
 CREATE POLICY "tenant_delete_platform" ON tenants
@@ -222,7 +222,10 @@ CREATE POLICY "tenant_users_select" ON tenant_users
   );
 
 CREATE POLICY "tenant_users_insert" ON tenant_users
-  FOR INSERT WITH CHECK (true); -- Permitir durante registro
+  FOR INSERT WITH CHECK (
+    is_platform_admin()
+    OR tenant_id = auth_tenant_id()  -- solo insertar en su propio tenant
+  );
 
 -- ---- Políticas para: employees ----
 CREATE POLICY "employees_select" ON employees

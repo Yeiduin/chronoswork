@@ -1,85 +1,74 @@
-import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import { createCrudHook } from './createCrudHook';
 
+// ─── Factory: hook base para areas (solo fetch + estado + soft delete) ────────
+const useCrudAreas = createCrudHook({
+  tableName: 'areas',
+  selectQuery: `
+    *,
+    area_demand_slots(*),
+    area_employees(
+      id,
+      employee_id,
+      employees(
+        id, nombre, cedula, cargo, valor_hora, tipo_contrato, es_especial,
+        activo, horas_semanales_contrato, dias_descanso_semana,
+        jornada_preferida, solo_diurno, solo_nocturno, permite_partido,
+        horas_max_diarias, horas_nocturnas_max_semana, horas_max_semana,
+        dias_descanso_fijos, turno_predeterminado_id
+      )
+    )
+  `,
+  softDelete: true,
+  queryModifier: (query) => query.eq('activo', true).order('nombre'),
+});
+
+// ─── Helper: sanitizar campos numéricos vacíos → null ─────────────────────────
+function sanitizeNumeric(raw) {
+  const NUMERIC_FIELDS = [
+    'min_empleados_noche', 'min_empleados_dia', 'max_empleados_dia',
+    'min_horas_turno_override', 'max_horas_turno_override',
+    'slots_por_hora', 'snap_turnos_minutos', 'valor_hora_default',
+    'duracion_jornada_horas', 'dias_descanso', 'dias_descanso_default',
+    'horas_extras_max_dia', 'horas_extras_max_semana',
+    'descanso_min_entre_jornadas', 'dotacion_periodicidad_meses',
+    'break_minutos', 'nivel_riesgo_arl',
+  ];
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (NUMERIC_FIELDS.includes(k)) {
+      const empty = v === '' || v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+      out[k] = empty ? null : (isNaN(Number(v)) ? null : Number(v));
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+// ─── Hook público (preserva API original) ─────────────────────────────────────
 export function useAreas() {
   const { tenant } = useAuth();
-  const [areas, setAreas] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const {
+    data: areas,
+    loading,
+    error,
+    fetch: fetchAreas,
+    remove: deleteArea,
+  } = useCrudAreas();
 
-  const fetchAreas = useCallback(async () => {
-    if (!tenant) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data, error } = await supabase
-        .from('areas')
-        .select(`
-          *,
-          area_demand_slots(*),
-          area_employees(
-            id,
-            employee_id,
-            employees(
-              id, nombre, cedula, cargo, valor_hora, tipo_contrato, es_especial,
-              activo, horas_semanales_contrato, dias_descanso_semana,
-              jornada_preferida, solo_diurno, solo_nocturno, permite_partido,
-              horas_max_diarias, horas_nocturnas_max_semana, horas_max_semana,
-              dias_descanso_fijos, turno_predeterminado_id
-            )
-          )
-        `)
-        .eq('tenant_id', tenant.id)
-        .eq('activo', true)
-        .order('nombre');
-      if (error) throw error;
-      setAreas(data || []);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [tenant]);
-
-  useEffect(() => { fetchAreas(); }, [fetchAreas]);
-
-  // ─── Helper: sanitizar campos numéricos vacíos → null ──────────────────
-  // Si mandamos "" a una columna DECIMAL/INT, Postgres falla con
-  // "invalid input syntax for type numeric".
-  const sanitizeNumeric = (raw) => {
-    const NUMERIC_FIELDS = [
-      'min_empleados_noche', 'min_empleados_dia', 'max_empleados_dia',
-      'min_horas_turno_override', 'max_horas_turno_override',
-      'slots_por_hora', 'snap_turnos_minutos', 'valor_hora_default',
-      'duracion_jornada_horas', 'dias_descanso', 'dias_descanso_default',
-      'horas_extras_max_dia', 'horas_extras_max_semana',
-      'descanso_min_entre_jornadas', 'dotacion_periodicidad_meses',
-      'break_minutos', 'nivel_riesgo_arl',
-    ];
-    const out = {};
-    for (const [k, v] of Object.entries(raw)) {
-      if (NUMERIC_FIELDS.includes(k)) {
-        const empty = v === '' || v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
-        out[k] = empty ? null : (isNaN(Number(v)) ? null : Number(v));
-      } else {
-        out[k] = v;
-      }
-    }
-    return out;
-  };
-
-  // ─── Crear área con TODOS los campos laborales ──────────────────────────
+  // ═══ createArea: lógica específica (franjas_iniciales) ═════════════════════
   const createArea = async (areaData) => {
     const { franjas_iniciales, ...raw } = areaData;
     const dataToInsert = sanitizeNumeric(raw);
     // 1. Insertar el área
-    const { data, error } = await supabase
+    const { data, error: insErr } = await supabase
       .from('areas')
       .insert([{ ...dataToInsert, tenant_id: tenant.id }])
       .select()
       .single();
-    if (error) throw error;
+    if (insErr) throw insErr;
 
     // 2. Si se pidió franjas típicas del sector, las creamos automáticamente
     if (franjas_iniciales?.length) {
@@ -118,18 +107,18 @@ export function useAreas() {
     return data;
   };
 
-  // ─── Actualizar área ─────────────────────────────────────────────────────
+  // ═══ updateArea: lógica específica (propagación valor_hora_default) ════════
   const updateArea = async (id, updates) => {
     const { franjas_iniciales, ...raw } = updates;
     const dataToUpdate = sanitizeNumeric(raw);
-    const { data, error } = await supabase
+    const { data, error: updErr } = await supabase
       .from('areas')
       .update(dataToUpdate)
       .eq('id', id)
       .eq('tenant_id', tenant.id)
       .select()
       .single();
-    if (error) throw error;
+    if (updErr) throw updErr;
 
     // Si se actualizó valor_hora_default, propagar a empleados no especiales
     if (updates.valor_hora_default !== undefined) {
@@ -154,23 +143,15 @@ export function useAreas() {
     return data;
   };
 
-  const deleteArea = async (id) => {
-    const { error } = await supabase
-      .from('areas')
-      .update({ activo: false })
-      .eq('id', id)
-      .eq('tenant_id', tenant.id);
-    if (error) throw error;
-    await fetchAreas();
-  };
+  // ═══ Operaciones adicionales (no cubiertas por la factory) ═════════════════
 
   const deleteAllAreas = async () => {
-    const { error } = await supabase
+    const { error: delErr } = await supabase
       .from('areas')
       .update({ activo: false })
       .eq('tenant_id', tenant.id)
       .eq('activo', true);
-    if (error) throw error;
+    if (delErr) throw delErr;
     await fetchAreas();
   };
 
@@ -182,21 +163,21 @@ export function useAreas() {
       .eq('employee_id', employeeId)
       .eq('tenant_id', tenant.id);
 
-    const { error } = await supabase
+    const { error: insErr } = await supabase
       .from('area_employees')
       .insert([{ area_id: areaId, employee_id: employeeId, tenant_id: tenant.id }]);
-    if (error) throw error;
+    if (insErr) throw insErr;
     await fetchAreas();
   };
 
   /** Remueve un empleado de su área */
   const removeEmployee = async (employeeId) => {
-    const { error } = await supabase
+    const { error: delErr } = await supabase
       .from('area_employees')
       .delete()
       .eq('employee_id', employeeId)
       .eq('tenant_id', tenant.id);
-    if (error) throw error;
+    if (delErr) throw delErr;
     await fetchAreas();
   };
 

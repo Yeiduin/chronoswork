@@ -1,6 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase } from '../config/supabaseClient';
-import { useAuth } from '../context/AuthContext';
+import { createCrudHook } from './createCrudHook';
+import { logger } from '../config/logger';
+import {
+  DEFAULT_HORAS_SEMANALES, MAX_HORAS_SEMANALES_POR_EMPLEADO,
+  DEFAULT_HORAS_MENSUALES, DEFAULT_DIAS_DESCANSO,
+  DEFAULT_NIVEL_ARL, MAX_NIVEL_ARL,
+} from '../config/constants';
 
 // ═══════════════════════════════════════════════════════════════
 // Catálogos válidos (deben coincidir con CHECK constraints en BD)
@@ -19,9 +23,9 @@ const TIPOS_CUENTA_VALIDOS = new Set(['AHORROS','CORRIENTE']);
 const AFP_TIPOS_VALIDOS = new Set(['RAZON','PRIMAPROMEDIO']);
 
 // ═══════════════════════════════════════════════════════════════
-// Función principal de limpieza y validación
+// Función de limpieza y validación (exportada, parte de la API)
 // ═══════════════════════════════════════════════════════════════
-function cleanEmployeeData(data) {
+export function cleanEmployeeData(data) {
   const out = { ...data };
 
   const fieldsWithZeroDefault = ['numero_hijos', 'numero_dependientes'];
@@ -50,26 +54,26 @@ function cleanEmployeeData(data) {
   });
 
   if (out.horas_semanales_contrato === '' || out.horas_semanales_contrato === null || out.horas_semanales_contrato === undefined) {
-    out.horas_semanales_contrato = 42;
+    out.horas_semanales_contrato = DEFAULT_HORAS_SEMANALES;
   } else {
     const n = parseInt(String(out.horas_semanales_contrato), 10);
-    out.horas_semanales_contrato = (isNaN(n) || n <= 0) ? 42 : Math.min(n, 168);
+    out.horas_semanales_contrato = (isNaN(n) || n <= 0) ? DEFAULT_HORAS_SEMANALES : Math.min(n, MAX_HORAS_SEMANALES_POR_EMPLEADO);
   }
 
   if (out.horas_mensuales_contrato === '' || out.horas_mensuales_contrato === null) {
-    out.horas_mensuales_contrato = 182;
+    out.horas_mensuales_contrato = DEFAULT_HORAS_MENSUALES;
   } else { const n = parseInt(String(out.horas_mensuales_contrato), 10); out.horas_mensuales_contrato = isNaN(n) ? null : n; }
 
   if (out.dias_descanso_semana === '' || out.dias_descanso_semana === null) {
-    out.dias_descanso_semana = 1;
-  } else { const n = parseInt(String(out.dias_descanso_semana), 10); out.dias_descanso_semana = (n === 1 || n === 2) ? n : 1; }
+    out.dias_descanso_semana = DEFAULT_DIAS_DESCANSO;
+  } else { const n = parseInt(String(out.dias_descanso_semana), 10); out.dias_descanso_semana = (n === 1 || n === 2) ? n : DEFAULT_DIAS_DESCANSO; }
 
   if (out.nivel_riesgo_arl === '' || out.nivel_riesgo_arl === null) {
-    out.nivel_riesgo_arl = 1;
-  } else { const n = parseInt(String(out.nivel_riesgo_arl), 10); out.nivel_riesgo_arl = (isNaN(n) || n < 1 || n > 5) ? 1 : n; }
+    out.nivel_riesgo_arl = DEFAULT_NIVEL_ARL;
+  } else { const n = parseInt(String(out.nivel_riesgo_arl), 10); out.nivel_riesgo_arl = (isNaN(n) || n < 1 || n > MAX_NIVEL_ARL) ? DEFAULT_NIVEL_ARL : n; }
 
   if (out.tipo_contrato && !TIPOS_CONTRATO_VALIDOS.has(String(out.tipo_contrato).toUpperCase())) {
-    console.warn(`[cleanEmployeeData] tipo_contrato inválido: "${out.tipo_contrato}" → INDEFINIDO`);
+    logger.warn('useEmployees', `tipo_contrato inválido: "${out.tipo_contrato}" → INDEFINIDO`);
     out.tipo_contrato = 'INDEFINIDO';
   }
   if (out.tipo_documento && !TIPOS_DOC_VALIDOS.has(String(out.tipo_documento).toUpperCase())) out.tipo_documento = 'CC';
@@ -94,106 +98,37 @@ function cleanEmployeeData(data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Caché simple en memoria (TTL: 30 segundos para evitar
-// recargas innecesarias en cambios rápidos de página / filtros)
+// Factory: hook CRUD base para employees
 // ═══════════════════════════════════════════════════════════════
-const cache = { data: null, ts: 0, tenantId: null };
-const CACHE_TTL_MS = 30_000;
+const useCrudEmployees = createCrudHook({
+  tableName: 'employees',
+  cacheTTL: 30_000,
+  softDelete: true,
+  queryModifier: (query) => query.eq('activo', true).order('nombre'),
+  beforeCreate: cleanEmployeeData,
+  beforeUpdate: cleanEmployeeData,
+});
 
 // ═══════════════════════════════════════════════════════════════
-// Hook principal
+// Hook público (preserva API original)
 // ═══════════════════════════════════════════════════════════════
 export function useEmployees() {
-  const { tenant } = useAuth();
-  const [employees, setEmployees] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const mountedRef = useRef(true);
+  const {
+    data: employees,
+    loading,
+    error,
+    fetch: _fetch,
+    create: createEmployee,
+    update: updateEmployee,
+    remove: deleteEmployee,
+  } = useCrudEmployees();
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  const fetchEmployees = useCallback(async (force = false) => {
-    if (!tenant) return;
-    // Caché: si los datos son recientes y del mismo tenant, no recargar
-    if (!force && cache.data && cache.tenantId === tenant.id && Date.now() - cache.ts < CACHE_TTL_MS) {
-      if (mountedRef.current) setEmployees(cache.data);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const { data, error: fetchErr } = await supabase
-        .from('employees')
-        .select('*')
-        .eq('tenant_id', tenant.id)
-        .eq('activo', true)
-        .order('nombre');
-      if (fetchErr) throw fetchErr;
-      const result = data || [];
-      // Guardar en caché
-      cache.data = result;
-      cache.ts = Date.now();
-      cache.tenantId = tenant.id;
-      if (mountedRef.current) setEmployees(result);
-    } catch (err) {
-      if (mountedRef.current) setError(err.message);
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }, [tenant]);
-
-  useEffect(() => {
-    fetchEmployees();
-  }, [fetchEmployees]);
-
-  // Invalida la caché (para usar después de mutaciones)
-  const invalidateCache = useCallback(() => {
-    cache.ts = 0;
-    return fetchEmployees(true);
-  }, [fetchEmployees]);
-
-  const createEmployee = async (employeeData) => {
-    const cleaned = cleanEmployeeData(employeeData);
-    const { data, error: insertErr } = await supabase
-      .from('employees')
-      .insert([{ ...cleaned, tenant_id: tenant.id }])
-      .select()
-      .single();
-    if (insertErr) throw insertErr;
-    await invalidateCache();
-    return data;
-  };
-
-  const updateEmployee = async (id, updates) => {
-    const cleaned = cleanEmployeeData(updates);
-    const { data, error: updateErr } = await supabase
-      .from('employees')
-      .update(cleaned)
-      .eq('id', id)
-      .eq('tenant_id', tenant.id)
-      .select()
-      .single();
-    if (updateErr) throw updateErr;
-    await invalidateCache();
-    return data;
-  };
-
-  const deleteEmployee = async (id) => {
-    const { error: deleteErr } = await supabase
-      .from('employees')
-      .update({ activo: false })
-      .eq('id', id)
-      .eq('tenant_id', tenant.id);
-    if (deleteErr) throw deleteErr;
-    await invalidateCache();
-  };
+  // API original: fetchEmployees() fuerza recarga (pasa force=true)
+  const fetchEmployees = () => _fetch(true);
 
   return {
     employees, loading, error,
-    fetchEmployees: () => fetchEmployees(true),
+    fetchEmployees,
     createEmployee, updateEmployee, deleteEmployee,
     cleanEmployeeData,
   };

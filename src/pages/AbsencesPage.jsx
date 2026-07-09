@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useDragScroll } from '../hooks/useDragScroll';
 import { useAbsences } from '../hooks/useAbsences';
 import { useEmployees } from '../hooks/useEmployees';
 import { formatFecha } from '../core/dateUtils';
@@ -135,6 +136,7 @@ const NOVEDAD_COLORS = {
 export default function AbsencesPage() {
   const { absences, loading, createAbsence, deleteAbsence } = useAbsences();
   const { employees } = useEmployees();
+  const { ref: tableRef, handlers, style: dragStyle } = useDragScroll();
   const [showModal, setShowModal] = useState(false);
   const [search, setSearch] = useState('');
 
@@ -207,8 +209,8 @@ export default function AbsencesPage() {
             )}
           </div>
         ) : (
-          <div className="cw-table-wrapper">
-            <table className="cw-table">
+          <div className="cw-table-wrapper" ref={tableRef} {...handlers} style={dragStyle}>
+            <table className="cw-table cw-table--striped">
               <thead>
                 <tr>
                   <th>Colaborador</th>

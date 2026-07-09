@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useDragScroll } from '../hooks/useDragScroll';
 import { useShifts } from '../hooks/useShifts';
 import { useEmployees } from '../hooks/useEmployees';
 import { useAreas } from '../hooks/useAreas';
@@ -73,6 +74,7 @@ function Badge({ children, color = '#3b82f6' }) {
 // VISTA 1 — TABLA DE AUDITORÍA (desglose completo por concepto)
 // ════════════════════════════════════════════════════════════════════════════
 function VistaTabla({ resultados, searchTerm, sortCol, sortDir, onSort }) {
+  const { ref: tableRef, handlers, style: dragStyle } = useDragScroll();
   const filtered = useMemo(() => {
     let r = resultados;
     if (searchTerm) {
@@ -103,7 +105,7 @@ function VistaTabla({ resultados, searchTerm, sortCol, sortDir, onSort }) {
   };
 
   return (
-    <div className="cw-table-wrapper pn-table-wrapper">
+    <div className="cw-table-wrapper pn-table-wrapper" ref={tableRef} {...handlers} style={dragStyle}>
       <table className="cw-table pn-audit-table">
         <thead>
           <tr>
@@ -154,7 +156,7 @@ function VistaTabla({ resultados, searchTerm, sortCol, sortDir, onSort }) {
                     <span style={{ color: tieneExtras ? '#f59e0b' : 'var(--text-primary)' }}>
                       {totalH.toFixed(1)}h
                     </span>
-                  ) : <span style={{ opacity: 0.3 }}>—</span>}
+                  ) : <span style={{ opacity: 0.45 }}>—</span>}
                 </td>
                 {/* Conceptos */}
                 {CONCEPTOS.map(c => {
@@ -432,6 +434,8 @@ export default function PrenominaPage() {
   const [calculado, setCalculado] = useState(false);
   const [resultados, setResultados] = useState([]);
   const [calculando, setCalculando] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const autoCalcRef = useRef(false);
 
   // UI State
   const [activeView, setActiveView] = useState('tabla');   // tabla | tarjetas | conceptos
@@ -450,8 +454,8 @@ export default function PrenominaPage() {
   // Periodos para cargar
   const periodos = useMemo(() => [periodo], [periodo]);
 
-  const handlePrev = () => { setCalculado(false); if (mes === 1) { setMes(12); setAnio(anio - 1); } else setMes(mes - 1); };
-  const handleNext = () => { setCalculado(false); if (mes === 12) { setMes(1); setAnio(anio + 1); } else setMes(mes + 1); };
+  const handlePrev = () => { setCalculado(false); setCalculando(true); if (mes === 1) { setMes(12); setAnio(anio - 1); } else setMes(mes - 1); };
+  const handleNext = () => { setCalculado(false); setCalculando(true); if (mes === 12) { setMes(1); setAnio(anio + 1); } else setMes(mes + 1); };
 
   const handleSort = useCallback((col) => {
     if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -460,33 +464,52 @@ export default function PrenominaPage() {
 
   const handleCalcular = useCallback(() => {
     setCalculando(true);
-    setTimeout(() => {
-      // Construir mapa area por empleado
-      const areaByEmp = {};
-      areas.forEach(a => {
-        (a.area_employees || []).forEach(ae => {
-          if (ae.employee_id) areaByEmp[ae.employee_id] = a;
-        });
+    // Construir mapa area por empleado
+    const areaByEmp = {};
+    areas.forEach(a => {
+      (a.area_employees || []).forEach(ae => {
+        if (ae.employee_id) areaByEmp[ae.employee_id] = a;
       });
+    });
 
-      const res = employees.map(emp => {
-        const turnosEmp = shifts.filter(s => s.employee_id === emp.id);
-        const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos);
-        const empArea = areaByEmp[emp.id];
-        return {
-          ...emp,
-          ...calculo,
-          turnos: turnosEmp.length,
-          _areaId: empArea?.id || null,
-          _areaNombre: empArea?.nombre || 'Sin área',
-          _areaColor: empArea?.color || '#6366f1',
-        };
-      });
-      setResultados(res);
-      setCalculado(true);
-      setCalculando(false);
-    }, 120); // pequeño defer para que el spinner se vea
+    const res = employees.map(emp => {
+      const turnosEmp = shifts.filter(s => s.employee_id === emp.id);
+      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos);
+      const empArea = areaByEmp[emp.id];
+      return {
+        ...emp,
+        ...calculo,
+        turnos: turnosEmp.length,
+        _areaId: empArea?.id || null,
+        _areaNombre: empArea?.nombre || 'Sin área',
+        _areaColor: empArea?.color || '#6366f1',
+      };
+    });
+    setResultados(res);
+    setCalculado(true);
+    setCalculando(false);
   }, [employees, shifts, festivos, areas]);
+
+  // Auto-calcular al montar y al cambiar de mes/año
+  useEffect(() => {
+    if (employees.length > 0 && shifts.length > 0) {
+      handleCalcular();
+      autoCalcRef.current = true;
+    } else if (employees.length > 0 && !autoCalcRef.current && !calculando) {
+      // Sin turnos pero con empleados: mostrar resultados vacíos
+      setResultados(employees.map(emp => ({
+        ...emp,
+        turnos: 0,
+        total_bruto: 0,
+        total_horas_ordinarias: 0,
+        total_horas_extras: 0,
+        desglose: {},
+        advertencias: [],
+      })));
+      setCalculado(true);
+    }
+    setIsInitialLoad(false);
+  }, [mes, anio, employees, shifts.length, handleCalcular, calculando]);
 
   const handleExportCSV = () => {
     const headers = ['Empleado','Cédula','Cargo','Área','Valor/Hora','Turnos',
@@ -567,7 +590,7 @@ export default function PrenominaPage() {
               disabled={calculando}
             >
               {calculando ? <span className="cw-spinner-sm" /> : <MdCalculate />}
-              {calculando ? 'Calculando...' : calculado ? 'Recalcular' : 'Calcular Pre-nómina'}
+              {calculando ? 'Calculando...' : <><MdCalculate /> Recalcular</>}
             </button>
             {calculado && (
               <button id="btn-export-csv" className="pn-export-btn" onClick={handleExportCSV}>
@@ -609,28 +632,17 @@ export default function PrenominaPage() {
         </div>
       )}
 
-      {/* ════ ESTADO INICIAL ════ */}
-      {!calculado && (
-        <div className="pn-welcome">
-          <div className="pn-welcome__orb pn-welcome__orb--1" />
-          <div className="pn-welcome__orb pn-welcome__orb--2" />
-          <div className="pn-welcome__inner">
-            <div className="pn-welcome__icon">💰</div>
-            <h2 className="pn-welcome__title">Calcule la pre-nómina de {getNombreMes(mes)} {anio}</h2>
-            <p className="pn-welcome__desc">
-              El motor procesa <strong>{shifts.length} turno(s)</strong> de <strong>{employees.length} colaborador(es)</strong> con clasificación automática por tipo de hora según la normativa laboral colombiana vigente.
+      {/* ════ CARGA INICIAL ════ */}
+      {calculando && (
+        <div className="pn-welcome" style={{ minHeight: 200 }}>
+          <div className="pn-welcome__inner" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+            <div className="cw-spinner" />
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
+              Calculando pre-nómina de <strong>{getNombreMes(mes)} {anio}</strong>...
             </p>
-            <div className="pn-welcome__chips">
-              {Object.entries(GRUPOS).map(([k, g]) => (
-                <span key={k} className="pn-welcome__chip" style={{ borderColor: g.color + '40', color: g.color }}>
-                  {g.label}
-                </span>
-              ))}
-              <span className="pn-welcome__chip" style={{ borderColor: '#6366f140', color: '#6366f1' }}>12 Conceptos Legales</span>
-            </div>
-            <button className="pn-calc-btn pn-calc-btn--lg" onClick={handleCalcular} disabled={calculando}>
-              {calculando ? <><span className="cw-spinner-sm" /> Calculando...</> : <><MdCalculate /> Calcular Pre-nómina</>}
-            </button>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+              Procesando {shifts.length} turnos de {employees.length} colaboradores
+            </p>
           </div>
         </div>
       )}

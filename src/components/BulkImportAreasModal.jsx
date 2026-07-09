@@ -1,31 +1,32 @@
 // ============================================================
-// ChronosWork — Importación Masiva de Áreas v3
-// Soporta TODOS los campos laborales colombianos
+// ChronosWork — Importación Masiva de Áreas (wrapper)
+// Usa BulkImportModalGeneric internamente
 // ============================================================
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
-import {
-  MdClose, MdUpload, MdDownload, MdCheckCircle, MdError, MdInfo, MdDomain, MdWarning,
-} from 'react-icons/md';
-import { SECTORES, TIPOS_CONTRATO, PATRONES_ROTATIVOS, TIPOS_JORNADA, getAreasBySector, getFranjasBySector } from '../config/laborCatalog';
+import { MdDomain, MdInfo } from 'react-icons/md';
+import { SECTORES, TIPOS_CONTRATO, PATRONES_ROTATIVOS, TIPOS_JORNADA, getFranjasBySector } from '../config/laborCatalog';
+import BulkImportModalGeneric, { parseNumero } from './BulkImportModalGeneric';
 
-// ─── Catálogos para dropdowns ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// Catálogos para dropdowns
+// ═══════════════════════════════════════════════════════════════
 const SECTORES_VALUES = SECTORES.map(s => s.value);
 const TIPOS_CONTRATO_VALUES = TIPOS_CONTRATO.map(t => t.value);
 const PATRONES_VALUES = PATRONES_ROTATIVOS.map(p => p.value).filter(v => v !== 'PERSONALIZADO');
 const JORNADAS_VALUES = TIPOS_JORNADA.map(j => j.value);
 const NIVELES_ARL = [1, 2, 3, 4, 5];
-const DIAS_OPCIONES = ['L-V', 'L-S', 'L-D', 'Personalizado'];
-const DIAS_SEMANA = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
 const PALETTE_DEFAULTS = [
   '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b',
   '#10b981', '#3b82f6', '#ef4444', '#14b8a6', '#f97316',
 ];
 
-// ─── Normalización y mapeo de columnas ──────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// Mapeo de columnas
+// ═══════════════════════════════════════════════════════════════
 const COLUMN_ALIASES = {
   nombre:                       ['nombre', 'name', 'area', 'área', 'nombre del área', 'nombre area', 'departamento'],
   codigo_area:                  ['codigo', 'código', 'codigo_area', 'codigo interno', 'id interno'],
@@ -54,36 +55,15 @@ const COLUMN_ALIASES = {
   notas_operativas:             ['notas', 'observaciones', 'notas_operativas', 'comentarios'],
 };
 
-// Normaliza header: minúscula, sin espacios extras, SIN asterisco final
-function normalizeH(h) { return String(h || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/[*\s]+$/, '').trim(); }
-
-function findCol(headers, aliases) {
-  // Intento 1: match exacto con el header normalizado (sin asterisco)
-  for (const a of aliases) {
-    const i = headers.findIndex(h => normalizeH(h) === a);
-    if (i !== -1) return i;
-  }
-  // Intento 2: match que CONTENGA el alias (ej. "nombre *" contiene "nombre")
-  for (const a of aliases) {
-    const i = headers.findIndex(h => normalizeH(h).includes(a));
-    if (i !== -1) return i;
-  }
-  return -1;
-}
-function buildIdx(headers) {
-  const m = {};
-  for (const [f, aliases] of Object.entries(COLUMN_ALIASES)) m[f] = findCol(headers, aliases);
-  return m;
-}
-
-// ─── Helpers de parseo ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// Helpers específicos de áreas
+// ═══════════════════════════════════════════════════════════════
 function parseDiasTrabajo(val) {
   if (!val) return [1, 2, 3, 4, 5];
   const v = String(val).toUpperCase().trim();
-  if (v === 'L-V' || v === 'L-V') return [1, 2, 3, 4, 5];
+  if (v === 'L-V') return [1, 2, 3, 4, 5];
   if (v === 'L-S') return [1, 2, 3, 4, 5, 6];
   if (v === 'L-D' || v === 'TODOS') return [1, 2, 3, 4, 5, 6, 7];
-  // "L,M,X,J,V" o "LMXJV"
   if (v.includes(',') || v.match(/[LMXJVSD]/)) {
     const map = { L: 1, M: 2, X: 3, J: 4, V: 5, S: 6, D: 7 };
     const result = [];
@@ -94,18 +74,9 @@ function parseDiasTrabajo(val) {
   return [1, 2, 3, 4, 5];
 }
 
-function parseBool(val) {
-  const s = String(val || '').toLowerCase().trim();
-  return ['si', 'sí', 'yes', 'true', '1', 'x', '✓'].includes(s);
-}
-
-function parseNumero(val) {
-  const v = String(val || '').replace(/[^0-9.-]/g, '');
-  const n = parseFloat(v);
-  return isNaN(n) ? null : n;
-}
-
-// ─── Validación por fila ───────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// Validación por fila
+// ═══════════════════════════════════════════════════════════════
 function validateAreaRow(row) {
   const errors = [];
 
@@ -147,10 +118,7 @@ function validateAreaRow(row) {
 
   if (row.tipo_contrato_predominante) {
     const u = String(row.tipo_contrato_predominante).trim().toUpperCase();
-    // Si no está en la lista exacta, pero contiene un alias válido (ej. "TERMINO_INDEFINIDO" contiene "INDEFINIDO"),
-    // se considerará un warning (no error) y se normalizará durante el import.
     if (!TIPOS_CONTRATO_VALUES.includes(u)) {
-      // Mapeo flexible: si contiene la palabra clave, es recuperable
       const recoverable = TIPOS_CONTRATO_VALUES.some(t => u.includes(t.replace(/_/g, ' ')) || u.includes(t));
       if (!recoverable) {
         errors.push({ campo: 'tipo_contrato_predominante', msg: `"${row.tipo_contrato_predominante}" no es válido. Use: ${TIPOS_CONTRATO_VALUES.join(', ')}` });
@@ -177,7 +145,6 @@ function validateAreaRow(row) {
 
   if (row.dias_descanso) {
     const u = String(row.dias_descanso).toUpperCase().trim();
-    // Acepta "1", "2", "D", "S-D", "FIN DE SEMANA", "SAB-DOM"
     const validAliases = ['1', '2', 'D', 'S-D', 'SAB-DOM', 'FIN_DE_SEMANA', 'FIN SEMANA', 'DOMINGO'];
     if (!validAliases.includes(u)) {
       const n = parseInt(u, 10);
@@ -190,13 +157,14 @@ function validateAreaRow(row) {
   return errors;
 }
 
-// ─── Genera plantilla Excel con TODOS los campos ────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// Genera plantilla Excel de áreas
+// ═══════════════════════════════════════════════════════════════
 async function generateTemplate() {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'ChronosWork';
   wb.created = new Date();
 
-  // ── Hoja oculta con listas desplegables ──
   const wsL = wb.addWorksheet('__listas__');
   wsL.state = 'veryHidden';
   wsL.getColumn(1).values = ['Sector', ...SECTORES_VALUES];
@@ -209,7 +177,6 @@ async function generateTemplate() {
   wsL.getColumn(8).values = ['DiasTrabajo', 'L-V', 'L-S', 'L-D', 'L,M,X,J,V', 'L,M,X,J,V,S', 'L,M,X,J,V,S,D'];
   wsL.getColumn(9).values = ['SiNo', 'Si', 'No'];
 
-  // ── Hoja principal ──
   const ws = wb.addWorksheet('Áreas', { views: [{ state: 'frozen', ySplit: 1 }] });
 
   const columns = [
@@ -241,7 +208,6 @@ async function generateTemplate() {
 
   ws.columns = columns.map(c => ({ header: c.label, key: c.key, width: c.width }));
 
-  // Estilo de encabezados
   const hRow = ws.getRow(1);
   columns.forEach((c, i) => {
     const cell = ws.getCell(1, i + 1);
@@ -258,7 +224,6 @@ async function generateTemplate() {
   });
   hRow.height = 28;
 
-  // ── Data validations (filas 2-202) ──
   const maxRow = 202;
   const refSector = `__listas__!$A$2:$A$${SECTORES_VALUES.length + 1}`;
   const refTipoC = `__listas__!$B$2:$B$${TIPOS_CONTRATO_VALUES.length + 1}`;
@@ -311,7 +276,6 @@ async function generateTemplate() {
 
   ws.autoFilter = { from: 'A1', to: `${String.fromCharCode(64 + columns.length)}1` };
 
-  // ── Hoja de instrucciones ──
   const wsInfo = wb.addWorksheet('📋 Guía de uso');
   wsInfo.getColumn(1).width = 35;
   wsInfo.getColumn(2).width = 70;
@@ -385,177 +349,106 @@ async function generateTemplate() {
   URL.revokeObjectURL(url);
 }
 
-// ─── Componente principal ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// Preview columns
+// ═══════════════════════════════════════════════════════════════
+const PREVIEW_COLUMNS = [
+  { key: 'nombre',    label: 'Nombre' },
+  { key: 'sector',    label: 'Sector',    format: (v) => v || '—' },
+  { key: 'modo_operacion', label: 'Modo', format: (v) => v || '—' },
+  { key: 'patron_rotativo', label: 'Patrón', format: (v) => v || '—' },
+  { key: 'valor_hora_default', label: '$/h', format: (v) => parseNumero(v)?.toLocaleString('es-CO') || '—' },
+  { key: 'tipo_contrato_predominante', label: 'Contrato', format: (v) => v || '—' },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// COMPONENTE WRAPPER
+// ═══════════════════════════════════════════════════════════════
 export default function BulkImportAreasModal({ onClose, onBulkSave }) {
-  const [step, setStep] = useState('upload');
-  const [fileName, setFileName] = useState('');
-  const [parsedRows, setParsedRows] = useState([]);
-  const [parseError, setParseError] = useState('');
-  const [dragOver, setDragOver] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [results, setResults] = useState(null);
   const [applySector, setApplySector] = useState(true);
   const [applyFranjas, setApplyFranjas] = useState(true);
-  const fileInputRef = useRef(null);
 
-  const handleFile = useCallback((file) => {
-    if (!file) return;
-    setParseError('');
-    setFileName(file.name);
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target.result);
-        const wb = XLSX.read(data, { type: 'array' });
-        // 🐛 FIX: Elegir la hoja que tenga los datos correctos
-        // Prioridad: hoja con "nombre" + "valor_hora_default" como columnas
-        // Excluir __listas__ y hojas de guía
-        const findDataSheet = (wb) => {
-          for (const sn of wb.SheetNames) {
-            if (sn.startsWith('__')) continue;
-            if (sn.toLowerCase().includes('guía') || sn.toLowerCase().includes('guia')) continue;
-            if (sn.toLowerCase().includes('instrucciones')) continue;
-            if (sn.toLowerCase().includes('readme')) continue;
-            const ws = wb.Sheets[sn];
-            if (!ws) continue;
-            const json = XLSX.utils.sheet_to_json(ws, { defval: '', header: 1 });
-            if (json.length < 2) continue;
-            const headers = (json[0] || []).map(h => String(h || '').toLowerCase().trim().replace(/\s+/g, ' '));
-            // Debe tener al menos "nombre" como columna (acepta "nombre *", "nombre", "area", etc.)
-            const hasNombre = headers.some(h => {
-              const norm = h.toLowerCase().trim().replace(/[*\s]+$/, '').trim();
-              return ['nombre', 'name', 'area', 'área'].includes(norm);
-            });
-            if (hasNombre) return sn;
-          }
-          // Si no encontró, devuelve la primera no oculta
-          return wb.SheetNames.find(sn => !sn.startsWith('__')) || wb.SheetNames[0];
-        };
-        const wsname = findDataSheet(wb);
-        const ws = wb.Sheets[wsname];
-        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
-        if (!json.length) {
-          setParseError(`La hoja "${wsname}" no contiene filas con datos.`);
-          return;
-        }
-
-        const headers = Object.keys(json[0]);
-        const idxMap = buildIdx(headers);
-
-        const rows = json.map((row, i) => {
-          const r = { _row: i + 2 };
-          Object.keys(COLUMN_ALIASES).forEach(field => {
-            const colIdx = idxMap[field];
-            if (colIdx === -1) return;
-            // Busca el valor usando el nombre de la columna
-            const headerName = Object.keys(row)[colIdx];
-            r[field] = headerName != null ? row[headerName] : '';
-          });
-          r._errors = validateAreaRow(r);
-          return r;
-        });
-
-        setParsedRows(rows);
-        setStep('preview');
-      } catch (err) {
-        setParseError('No se pudo leer el archivo. Verifica que sea .xlsx, .xls o .csv válido.');
-        console.error(err);
-      }
-    };
-    reader.readAsArrayBuffer(file);
+  // ── Validación ─────────────────────────────────────────────
+  const validateRow = useCallback((row) => {
+    return validateAreaRow(row);
   }, []);
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files?.[0];
-    if (f) handleFile(f);
-  };
+  // ── Normalización ──────────────────────────────────────────
+  const normFn = useCallback((field, val) => {
+    if (val === null || val === undefined || val === '') return null;
+    const s = String(val).trim();
+    switch (field) {
+      case 'modo_operacion': {
+        const u = s.toUpperCase().replace(/[\/\-]/g, '_');
+        if (['OFICINA', '24_7'].includes(u)) return u;
+        return null;
+      }
+      case 'jornada_tipo': {
+        const u = s.toUpperCase();
+        return JORNADAS_VALUES.includes(u) ? u : null;
+      }
+      case 'sector': {
+        const u = s.toUpperCase();
+        return SECTORES_VALUES.includes(u) ? u : null;
+      }
+      case 'patron_rotativo': {
+        return PATRONES_VALUES.includes(s) ? s : null;
+      }
+      case 'tipo_contrato_predominante':
+      case 'tipo_contrato_default': {
+        const u = s.toUpperCase().replace(/\s+/g, '_');
+        if (TIPOS_CONTRATO_VALUES.includes(u)) return u;
+        if (u.includes('INDEFINIDO')) return 'INDEFINIDO';
+        if (u.includes('TERMINO') && u.includes('FIJO')) return 'TERMINO_FIJO';
+        if (u.includes('OBRA') || u.includes('LABOR')) return 'OBRA_LABOR';
+        if (u.includes('HORA')) return 'POR_HORAS';
+        if (u.includes('FIJO') || u === 'FIJO' || u === 'MENSUAL' || u === 'SALARIO_FIJO') return 'SALARIO_FIJO';
+        if (u.includes('PRESTACION') || u.includes('PRESTACIÓN') || u === 'CONTRATISTA' || u === 'OPS') return 'PRESTACION_SERVICIOS';
+        if (u.includes('APRENDIZ') || u === 'SENA') return 'APRENDIZAJE';
+        if (u.includes('OCASIONAL')) return 'OCASIONAL';
+        if (u.includes('TEMPORAL') || u === 'EST') return 'TEMPORAL';
+        return null;
+      }
+      case 'dias_descanso': {
+        const u = s.toUpperCase();
+        if (['1', 'D', 'DOMINGO'].includes(u)) return 1;
+        if (['2', 'S-D', 'SAB-DOM', 'FIN_DE_SEMANA', 'FIN SEMANA'].includes(u)) return 2;
+        const n = parseInt(u, 10);
+        return (n === 1 || n === 2) ? n : null;
+      }
+      case 'paga_auxilio_transporte':
+      case 'requiere_dotacion':
+      case 'requiere_epp':
+      case 'permite_turno_partido': {
+        const u = s.toLowerCase();
+        if (['no', 'false', '0'].includes(u)) return false;
+        return true;
+      }
+      default:
+        return val;
+    }
+  }, []);
 
-  const validRows = parsedRows.filter(r => r._errors.length === 0);
-  const invalidRows = parsedRows.filter(r => r._errors.length > 0);
-
-  const handleImport = async () => {
-    if (validRows.length === 0) return;
-    setStep('importing');
-    setProgress(0);
+  // ── Import ─────────────────────────────────────────────────
+  const handleImport = useCallback(async (validRows, setProgress) => {
     let successCount = 0;
     const errorList = [];
-
-    // Helper local: normaliza valores del Excel a los del CHECK constraint
-    const norm = (field, val) => {
-      if (val === null || val === undefined || val === '') return null;
-      const s = String(val).trim();
-      switch (field) {
-        case 'modo_operacion': {
-          const u = s.toUpperCase().replace(/[\/\-]/g, '_');
-          if (['OFICINA', '24_7'].includes(u)) return u;
-          return null;
-        }
-        case 'jornada_tipo': {
-          const u = s.toUpperCase();
-          return JORNADAS_VALUES.includes(u) ? u : null;
-        }
-        case 'sector': {
-          const u = s.toUpperCase();
-          return SECTORES_VALUES.includes(u) ? u : null;
-        }
-        case 'patron_rotativo': {
-          return PATRONES_VALUES.includes(s) ? s : null;
-        }
-        case 'tipo_contrato_predominante':
-        case 'tipo_contrato_default': {
-          const u = s.toUpperCase().replace(/\s+/g, '_');
-          if (TIPOS_CONTRATO_VALUES.includes(u)) return u;
-          // Intentar recuperar errores comunes del usuario
-          if (u.includes('INDEFINIDO')) return 'INDEFINIDO';
-          if (u.includes('TERMINO') && u.includes('FIJO')) return 'TERMINO_FIJO';
-          if (u.includes('OBRA') || u.includes('LABOR')) return 'OBRA_LABOR';
-          if (u.includes('HORA')) return 'POR_HORAS';
-          if (u.includes('FIJO') || u === 'FIJO' || u === 'MENSUAL' || u === 'SALARIO_FIJO') return 'SALARIO_FIJO';
-          if (u.includes('PRESTACION') || u.includes('PRESTACIÓN') || u === 'CONTRATISTA' || u === 'OPS') return 'PRESTACION_SERVICIOS';
-          if (u.includes('APRENDIZ') || u === 'SENA') return 'APRENDIZAJE';
-          if (u.includes('OCASIONAL')) return 'OCASIONAL';
-          if (u.includes('TEMPORAL') || u === 'EST') return 'TEMPORAL';
-          return null; // Inválido — usar el default del sector
-        }
-        case 'dias_descanso': {
-          const u = s.toUpperCase();
-          if (['1', 'D', 'DOMINGO'].includes(u)) return 1;
-          if (['2', 'S-D', 'SAB-DOM', 'FIN_DE_SEMANA', 'FIN SEMANA'].includes(u)) return 2;
-          const n = parseInt(u, 10);
-          return (n === 1 || n === 2) ? n : null;
-        }
-        case 'paga_auxilio_transporte':
-        case 'requiere_dotacion':
-        case 'requiere_epp':
-        case 'permite_turno_partido': {
-          const u = s.toLowerCase();
-          if (['no', 'false', '0'].includes(u)) return false;
-          return true;
-        }
-        default:
-          return val;
-      }
-    };
 
     for (let i = 0; i < validRows.length; i++) {
       const row = validRows[i];
       try {
-        const sector = norm('sector', row.sector) || '';
+        const sector = normFn('sector', row.sector) || '';
         const franjasAuto = (applyFranjas && sector) ? getFranjasBySector(sector) : [];
 
-        // Aplicar defaults del sector si la opción está activa
-        const modoOperacion = norm('modo_operacion', row.modo_operacion)
+        const modoOperacion = normFn('modo_operacion', row.modo_operacion)
           || (applySector && sector ? SECTORES.find(s => s.value === sector)?.defaults.modo : 'OFICINA');
-        const jornadaTipo = norm('jornada_tipo', row.jornada_tipo) || 'DIURNA';
-        const patronRotativo = norm('patron_rotativo', row.patron_rotativo);
-        const diasDescanso = norm('dias_descanso', row.dias_descanso) || 1;
+        const jornadaTipo = normFn('jornada_tipo', row.jornada_tipo) || 'DIURNA';
+        const patronRotativo = normFn('patron_rotativo', row.patron_rotativo);
+        const diasDescanso = normFn('dias_descanso', row.dias_descanso) || 1;
         const nivelArl = row.nivel_riesgo_arl ? (parseInt(row.nivel_riesgo_arl, 10) || 1) : 1;
-        const tipoContratoPredom = norm('tipo_contrato_predominante', row.tipo_contrato_predominante)
+        const tipoContratoPredom = normFn('tipo_contrato_predominante', row.tipo_contrato_predominante)
           || (applySector && sector ? SECTORES.find(s => s.value === sector)?.defaults.contrato : 'INDEFINIDO');
-        const tipoContratoDefault = norm('tipo_contrato_default', row.tipo_contrato_default)
+        const tipoContratoDefault = normFn('tipo_contrato_default', row.tipo_contrato_default)
           || tipoContratoPredom;
 
         let areaData = {
@@ -578,12 +471,12 @@ export default function BulkImportAreasModal({ onClose, onBulkSave }) {
           tipo_contrato_default: tipoContratoDefault,
           dias_descanso_default: diasDescanso,
           valor_hora_default: parseNumero(row.valor_hora_default),
-          paga_auxilio_transporte: norm('paga_auxilio_transporte', row.paga_auxilio_transporte),
+          paga_auxilio_transporte: normFn('paga_auxilio_transporte', row.paga_auxilio_transporte),
           nivel_riesgo_arl: nivelArl,
-          requiere_dotacion: norm('requiere_dotacion', row.requiere_dotacion),
-          requiere_epp: norm('requiere_epp', row.requiere_epp),
+          requiere_dotacion: normFn('requiere_dotacion', row.requiere_dotacion),
+          requiere_epp: normFn('requiere_epp', row.requiere_epp),
           break_minutos: row.break_minutos ? parseInt(row.break_minutos, 10) : 0,
-          permite_turno_partido: norm('permite_turno_partido', row.permite_turno_partido),
+          permite_turno_partido: normFn('permite_turno_partido', row.permite_turno_partido),
           notas_operativas: row.notas_operativas ? String(row.notas_operativas).trim() : '',
           color: PALETTE_DEFAULTS[i % PALETTE_DEFAULTS.length],
           night_shift_enabled: false,
@@ -593,7 +486,6 @@ export default function BulkImportAreasModal({ onClose, onBulkSave }) {
           franjas_iniciales: franjasAuto,
         };
 
-        // Si el sector es 24/7 por defecto, ajustamos
         if (applySector && sector) {
           const sec = SECTORES.find(s => s.value === sector);
           if (sec?.defaults.modo === '24_7' && !row.modo_operacion) {
@@ -610,225 +502,55 @@ export default function BulkImportAreasModal({ onClose, onBulkSave }) {
       setProgress(Math.round(((i + 1) / validRows.length) * 100));
     }
 
-    setResults({ success: successCount, errors: errorList, total: parsedRows.length });
-    setStep('done');
-  };
+    return { success: successCount, errors: errorList };
+  }, [applySector, applyFranjas, onBulkSave, normFn]);
 
-  return (
-    <div className="cw-modal-overlay" style={{ zIndex: 9999 }}>
-      <div className="cw-modal animate-slide-up" style={{ maxWidth: 820, width: '96vw', maxHeight: '92vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-
-        <div className="cw-modal__header">
-          <h3 className="cw-modal__title">
-            <MdDomain style={{ marginRight: 8, color: '#10b981' }} />
-            Importación Masiva de Áreas
-            {fileName && <span style={{ fontSize: '0.7rem', fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>{fileName}</span>}
-          </h3>
-          <button className="cw-modal__close" onClick={() => onClose(results?.success > 0)}><MdClose /></button>
-        </div>
-
-        {/* Tabs */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--border-subtle)', padding: '0 1.5rem', flexShrink: 0 }}>
-          {[
-            { key: 'upload',    label: '1. Subir' },
-            { key: 'preview',   label: '2. Revisar' },
-            { key: 'importing', label: '3. Importando' },
-            { key: 'done',      label: '4. Resultado' },
-          ].map(s => {
-            const order = ['upload', 'preview', 'importing', 'done'];
-            const active = step === s.key;
-            const passed = order.indexOf(step) > order.indexOf(s.key);
-            return (
-              <div key={s.key} style={{
-                padding: '0.6rem 1rem', fontSize: '0.75rem', fontWeight: active ? 700 : 400,
-                color: active ? '#10b981' : passed ? 'var(--cw-success)' : 'var(--text-muted)',
-                borderBottom: active ? '2px solid #10b981' : '2px solid transparent',
-              }}>{passed ? '✓ ' : ''}{s.label}</div>
-            );
-          })}
-        </div>
-
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem' }}>
-
-          {/* ══ UPLOAD ══ */}
-          {step === 'upload' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div style={{ background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 12, padding: '0.85rem 1rem' }}>
-                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' }}>
-                  <MdInfo style={{ color: '#34d399' }} /> 24 columnas disponibles con catálogos laborales colombianos
-                </div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  Solo <strong>nombre</strong> y <strong>valor_hora_default</strong> son obligatorios. El resto usa defaults inteligentes del sector.
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={applySector} onChange={e => setApplySector(e.target.checked)} />
-                  <span>Aplicar defaults del sector (salario, contrato, modo operación)</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={applyFranjas} onChange={e => setApplyFranjas(e.target.checked)} />
-                  <span>Crear franjas horarias típicas del sector</span>
-                </label>
-              </div>
-
-              <button className="cw-btn cw-btn--secondary" onClick={() => generateTemplate()} style={{ alignSelf: 'flex-start' }}>
-                <MdDownload /> Descargar plantilla Excel con catálogos
-              </button>
-
-              <div
-                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  border: `2px dashed ${dragOver ? '#10b981' : 'var(--border-subtle)'}`,
-                  borderRadius: 16, padding: '2rem 1rem', textAlign: 'center', cursor: 'pointer',
-                  background: dragOver ? 'rgba(16,185,129,0.06)' : 'var(--bg-glass)',
-                  transition: 'all 0.25s',
-                }}
-              >
-                <div style={{ fontSize: '2.2rem', marginBottom: '0.4rem' }}>📂</div>
-                <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.3rem' }}>
-                  Arrastra tu archivo aquí o haz clic para seleccionarlo
-                </div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  Acepta <strong>.xlsx</strong>, <strong>.xls</strong> y <strong>.csv</strong>
-                </div>
-                <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }}
-                  onChange={e => handleFile(e.target.files[0])} />
-              </div>
-
-              {parseError && (
-                <div className="cw-alert cw-alert--error">🚫 {parseError}</div>
-              )}
-            </div>
-          )}
-
-          {/* ══ PREVIEW ══ */}
-          {step === 'preview' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
-                <StatBox label="Filas" value={parsedRows.length} color="#6366f1" />
-                <StatBox label="Válidas" value={validRows.length} color="#10b981" />
-                <StatBox label="Con errores" value={invalidRows.length} color={invalidRows.length ? '#ef4444' : 'var(--text-muted)'} />
-              </div>
-
-              {invalidRows.length > 0 && (
-                <div style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, padding: '0.75rem' }}>
-                  <div style={{ fontWeight: 700, color: '#fca5a5', fontSize: '0.82rem', marginBottom: '0.4rem' }}>
-                    ⚠ {invalidRows.length} fila(s) con errores:
-                  </div>
-                  {invalidRows.slice(0, 5).map((r, i) => (
-                    <div key={i} style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginBottom: '0.3rem' }}>
-                      <strong>Fila {r._row}:</strong> {r.nombre || '(sin nombre)'}
-                      <ul style={{ margin: '0.2rem 0 0 1.2rem', color: '#fca5a5' }}>
-                        {r._errors.map((e, j) => <li key={j}>{e.msg}</li>)}
-                      </ul>
-                    </div>
-                  ))}
-                  {invalidRows.length > 5 && (
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                      ... y {invalidRows.length - 5} más
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {validRows.length > 0 && (
-                <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 8 }}>
-                  <table className="cw-table" style={{ fontSize: '0.72rem' }}>
-                    <thead>
-                      <tr>
-                        <th>✓</th><th>Fila</th><th>Nombre</th><th>Sector</th><th>Modo</th><th>Patrón</th><th>$/h</th><th>Contrato</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {validRows.map((r, i) => (
-                        <tr key={i}>
-                          <td><MdCheckCircle style={{ color: '#10b981' }} /></td>
-                          <td>{r._row}</td>
-                          <td>{r.nombre}</td>
-                          <td>{r.sector || '—'}</td>
-                          <td>{r.modo_operacion || (applySector && r.sector ? SECTORES.find(s => s.value === String(r.sector).toUpperCase())?.defaults.modo : '—')}</td>
-                          <td>{r.patron_rotativo || '—'}</td>
-                          <td>${parseNumero(r.valor_hora_default)?.toLocaleString('es-CO')}</td>
-                          <td>{r.tipo_contrato_predominante || (applySector && r.sector ? SECTORES.find(s => s.value === String(r.sector).toUpperCase())?.defaults.contrato : '—')}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              <div className="cw-modal__footer" style={{ padding: 0, borderTop: '1px solid var(--border-subtle)', paddingTop: '0.75rem' }}>
-                <button className="cw-btn cw-btn--secondary" onClick={() => { setStep('upload'); setParsedRows([]); setFileName(''); }}>
-                  ← Cambiar archivo
-                </button>
-                <button className="cw-btn cw-btn--primary" onClick={handleImport} disabled={validRows.length === 0}>
-                  ✅ Importar {validRows.length} área{validRows.length !== 1 ? 's' : ''}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* ══ IMPORTING ══ */}
-          {step === 'importing' && (
-            <div style={{ textAlign: 'center', padding: '2rem 1rem' }}>
-              <div className="cw-spinner" style={{ margin: '0 auto 1rem' }}></div>
-              <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Importando áreas...</div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
-                {progress}% completado · Creando franjas y aplicando defaults
-              </div>
-              <div style={{ background: 'var(--border-subtle)', height: 6, borderRadius: 3, marginTop: '0.75rem', overflow: 'hidden' }}>
-                <div style={{ background: '#10b981', height: '100%', width: `${progress}%`, transition: 'width 0.2s' }} />
-              </div>
-            </div>
-          )}
-
-          {/* ══ DONE ══ */}
-          {step === 'done' && results && (
-            <div style={{ textAlign: 'center', padding: '1rem 0' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>
-                {results.errors.length === 0 ? '🎉' : results.success > 0 ? '⚠️' : '🚫'}
-              </div>
-              <h3 style={{ marginBottom: '0.5rem' }}>
-                {results.errors.length === 0
-                  ? '¡Importación exitosa!'
-                  : results.success > 0
-                    ? 'Importación parcial'
-                    : 'No se pudo importar'}
-              </h3>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                <strong style={{ color: '#10b981' }}>{results.success}</strong> área(s) creada(s) ·
-                {' '}<strong style={{ color: results.errors.length ? '#ef4444' : 'var(--text-muted)' }}>{results.errors.length}</strong> error(es)
-              </div>
-              {results.errors.length > 0 && (
-                <div style={{ marginTop: '0.75rem', textAlign: 'left', maxHeight: 180, overflowY: 'auto', background: 'rgba(239,68,68,0.05)', padding: '0.5rem 0.75rem', borderRadius: 6, fontSize: '0.75rem' }}>
-                  {results.errors.map((e, i) => (
-                    <div key={i} style={{ color: '#fca5a5' }}>
-                      Fila {e.row} ({e.nombre}): {e.msg}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <button className="cw-btn cw-btn--primary" onClick={() => onClose(results.success > 0)} style={{ marginTop: '1rem' }}>
-                Cerrar
-              </button>
-            </div>
-          )}
-        </div>
+  // ── Upload info ────────────────────────────────────────────
+  const uploadInfoContent = (
+    <>
+      <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.85rem' }}>
+        <MdInfo style={{ color: '#34d399' }} /> 24 columnas disponibles con catálogos laborales colombianos
       </div>
+      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+        Solo <strong>nombre</strong> y <strong>valor_hora_default</strong> son obligatorios. El resto usa defaults inteligentes del sector.
+      </div>
+    </>
+  );
+
+  // ── Upload extras (checkboxes) ─────────────────────────────
+  const uploadExtras = (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
+        <input type="checkbox" checked={applySector} onChange={e => setApplySector(e.target.checked)} />
+        <span>Aplicar defaults del sector (salario, contrato, modo operación)</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
+        <input type="checkbox" checked={applyFranjas} onChange={e => setApplyFranjas(e.target.checked)} />
+        <span>Crear franjas horarias típicas del sector</span>
+      </label>
     </div>
   );
-}
 
-function StatBox({ label, value, color }) {
+  // ── Render ─────────────────────────────────────────────────
   return (
-    <div style={{ background: 'var(--bg-glass)', border: `1px solid ${color}30`, borderRadius: 8, padding: '0.5rem 0.75rem' }}>
-      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: '1.3rem', fontWeight: 700, color }}>{value}</div>
-    </div>
+    <BulkImportModalGeneric
+      title="Importación Masiva de Áreas"
+      icon={<MdDomain />}
+      entityName="área"
+      entityNamePlural="áreas"
+      columnAliases={COLUMN_ALIASES}
+      validateRow={validateRow}
+      generateTemplate={generateTemplate}
+      templateButtonLabel="Descargar plantilla Excel con catálogos"
+      templateButtonDisabled={false}
+      onImport={handleImport}
+      uploadInfoContent={uploadInfoContent}
+      uploadExtras={uploadExtras}
+      previewColumns={PREVIEW_COLUMNS}
+      previewRowKey="nombre"
+      importingMessage="Creando franjas y aplicando defaults"
+      onClose={onClose}
+      maxWidth={820}
+    />
   );
 }

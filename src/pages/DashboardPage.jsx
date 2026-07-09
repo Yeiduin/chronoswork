@@ -6,306 +6,212 @@ import { useEmployees } from '../hooks/useEmployees';
 import { useShifts } from '../hooks/useShifts';
 import { useAbsences } from '../hooks/useAbsences';
 import { useAreas } from '../hooks/useAreas';
-import { getPeriodoActual, formatFecha, getNombreMes } from '../core/dateUtils';
-import { formatCOP } from '../core/validators';
+import { getPeriodoActual, formatFecha, getNombreMes, toISODay } from '../core/dateUtils';
+import KpiCard from '../components/KpiCard';
+import TrendChart from '../components/TrendChart';
+import MiniBarChart from '../components/MiniBarChart';
+import StatGrid from '../components/StatGrid';
 import {
-  MdPeople, MdCalendarMonth, MdEventBusy, MdTrendingUp,
-  MdSchedule, MdCheckCircle, MdWarning, MdInfo,
+  MdPeople, MdCalendarMonth, MdEventBusy, MdSchedule,
+  MdWarning, MdCheckCircle, MdPersonAdd, MdEventNote,
+  MdWarningAmber, MdAttachMoney,
 } from 'react-icons/md';
 
-function StatCard({ icon, label, value, color, sublabel, onClick }) {
-  return (
-    <div 
-      className="cw-stat-card" 
-      style={{ '--stat-color': color, cursor: onClick ? 'pointer' : 'default' }}
-      onClick={onClick}
-    >
-      <div className="cw-stat-card__icon" style={{ background: `${color}18`, color }}>
-        {icon}
-      </div>
-      <div className="cw-stat-card__info">
-        <div className="cw-stat-card__value">{value}</div>
-        <div className="cw-stat-card__label">{label}</div>
-        {sublabel && (
-          <div className="cw-stat-card__delta" style={{ color }}>
-            {sublabel}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const prevPeriod = (p) => {
+  const [y, m] = p.split('-').map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+};
+const weekOfMonth = (ds) => Math.ceil(new Date(ds + 'T12:00:00').getDate() / 7);
+const hrsDiff = (s) => (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
+const sumHrs = (arr) => arr.reduce((acc, s) => acc + hrsDiff(s), 0);
+const localDate = (d) => {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
+// ─── Componente principal ─────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { user, tenant } = useAuth();
   const navigate = useNavigate();
   const { employees } = useEmployees();
   const { areas } = useAreas();
-  const periodoActual = getPeriodoActual();
-  const { shifts } = useShifts(periodoActual);
+  const periodo = getPeriodoActual();
+  const { shifts } = useShifts(periodo);
+  const { shifts: prevShifts } = useShifts(prevPeriod(periodo));
   const { absences } = useAbsences();
 
   const [templates, setTemplates] = useState([]);
   useEffect(() => {
     if (!tenant) return;
-    const fetchTpls = async () => {
-      const { data } = await supabase.from('shift_templates').select('*').eq('tenant_id', tenant.id).eq('activo', true);
-      setTemplates(data || []);
-    };
-    fetchTpls();
+    supabase.from('shift_templates').select('*')
+      .eq('tenant_id', tenant.id).eq('activo', true)
+      .then(({ data }) => setTemplates(data || []));
   }, [tenant]);
 
-  const [anio, mes] = periodoActual.split('-').map(Number);
+  const [anio, mes] = periodo.split('-').map(Number);
   const nombreMes = getNombreMes(mes);
-
-  // Métricas
-  const empleadosActivos = employees.length;
-  const turnosEsteMes = shifts.length;
   const hoyStr = new Date().toISOString().slice(0, 10);
-  const novedadesActivas = absences.filter(a => {
-    return hoyStr >= a.fecha_inicio && hoyStr <= a.fecha_fin;
-  }).length;
-  const horasAsignadas = shifts.reduce((acc, s) => {
-    const diff = (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
-    return acc + diff;
-  }, 0);
 
-  // Alertas de cobertura (desde hoy hasta fin de mes)
-  const alertasCobertura = useMemo(() => {
+  // ── Métricas ──
+  const activos = employees.length;
+  const turnos = shifts.length;
+  const horas = useMemo(() => sumHrs(shifts), [shifts]);
+  const horasPrev = useMemo(() => sumHrs(prevShifts), [prevShifts]);
+  const novedades = useMemo(
+    () => absences.filter(a => hoyStr >= a.fecha_inicio && hoyStr <= a.fecha_fin).length,
+    [absences, hoyStr],
+  );
+  const hayHist = prevShifts.length > 0;
+  const dTurnos = turnos - prevShifts.length;
+  const dHoras = Math.round(horas) - Math.round(horasPrev);
+
+  // ── Trend: horas por semana del mes ──
+  const trendData = useMemo(() => {
+    const w = {};
+    shifts.forEach(s => { const k = weekOfMonth(s.start_time.slice(0, 10)); w[k] = (w[k] || 0) + hrsDiff(s); });
+    return [1, 2, 3, 4, 5].map(n => ({ name: `Sem ${n}`, horas: Math.round(w[n] || 0) }));
+  }, [shifts]);
+
+  // ── Distribución por área (top 5) ──
+  const areaDist = useMemo(() => {
+    const m = {};
+    areas.forEach(a => { const c = a.area_employees?.length || 0; if (c) m[a.nombre] = c; });
+    return Object.entries(m).map(([l, v]) => ({ label: l, value: v })).sort((a, b) => b.value - a.value).slice(0, 5);
+  }, [areas]);
+
+  // ── Alertas de cobertura ──
+  const alertas = useMemo(() => {
     if (!areas.length || !templates.length) return [];
-    
-    const getLocalYYYYMMDD = (d) => {
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      return `${y}-${m}-${day}`;
-    };
-
-    const alerts = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Inicio del día local
-    
-    const daysInMonth = new Date(anio, mes, 0).getDate();
-    const daysToCheck = [];
-    
-    for (let i = 1; i <= daysInMonth; i++) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const dim = new Date(anio, mes, 0).getDate();
+    const days = [];
+    for (let i = 1; i <= dim; i++) {
       const d = new Date(anio, mes - 1, i);
-      if (d >= today) {
-        const dow = d.getDay() === 0 ? 7 : d.getDay();
-        daysToCheck.push({ date: d, dateStr: getLocalYYYYMMDD(d), dow });
-      }
+      if (d >= today) days.push({ d, ds: localDate(d), dow: toISODay(d) });
     }
-
+    const out = [];
     areas.forEach(area => {
-      const areaDias = area.dias_trabajo || [];
-      const areaTpls = templates.filter(t => t.area_id === area.id);
-      if (!areaTpls.length) return;
-
-      daysToCheck.forEach(day => {
-        if (!areaDias.includes(day.dow)) return;
-        
-        areaTpls.forEach(t => {
-          const isCovered = shifts.some(s => s.template_id === t.id && getLocalYYYYMMDD(new Date(s.start_time)) === day.dateStr);
-          if (!isCovered) {
-            alerts.push({
-              date: day.date,
-              dateStr: day.dateStr,
-              areaName: area.nombre,
-              templateName: t.nombre,
-              horario: `${t.hora_inicio.slice(0,5)} a ${t.hora_fin.slice(0,5)}`
-            });
-          }
+      const dias = area.dias_trabajo || [];
+      const tpls = templates.filter(t => t.area_id === area.id);
+      if (!tpls.length) return;
+      days.forEach(day => {
+        if (!dias.includes(day.dow)) return;
+        tpls.forEach(t => {
+          if (shifts.some(s => s.template_id === t.id && localDate(new Date(s.start_time)) === day.ds)) return;
+          out.push({ date: day.d, ds: day.ds, area: area.nombre, tpl: t.nombre, hr: `${t.hora_inicio.slice(0, 5)} a ${t.hora_fin.slice(0, 5)}` });
         });
       });
     });
-
-    // Ordenar por fecha
-    return alerts.sort((a, b) => a.date - b.date);
+    return out.sort((a, b) => b.date - a.date);
   }, [areas, templates, shifts, anio, mes]);
 
-  const hora = new Date().getHours();
-  const saludo = hora < 12 ? 'Buenos días' : hora < 18 ? 'Buenas tardes' : 'Buenas noches';
-  const adminName = user?.email?.split('@')[0] || 'Administrador';
+  // ── Saludo ──
+  const h = new Date().getHours();
+  const saludo = h < 12 ? 'Buenos días' : h < 18 ? 'Buenas tardes' : 'Buenas noches';
+  const name = user?.email?.split('@')[0] || 'Administrador';
+
+  // ── Acciones rápidas ──
+  const actions = [
+    { l: 'Nuevo Empleado', d: 'Registrar personal', i: <MdPersonAdd size={48} />, to: '/empleados', c: '#3b82f6' },
+    { l: 'Programar Turnos', d: 'Asignar horarios del mes', i: <MdEventNote size={48} />, to: '/programacion', c: '#10b981' },
+    { l: 'Registrar Novedad', d: 'Incapacidad, permiso, etc.', i: <MdWarningAmber size={48} />, to: '/novedades', c: '#f59e0b' },
+    { l: 'Liquidar Prenómina', d: 'Calcular pago del período', i: <MdAttachMoney size={48} />, to: '/prenomina', c: '#8b5cf6' },
+  ];
+
+  // ── Marco legal ──
+  const legal = [
+    { l: 'Jornada máx.', v: '42h/sem', c: '#10b981' }, { l: 'Extra diaria', v: '2h/día', c: '#f59e0b' },
+    { l: 'Extra semanal', v: '12h/sem', c: '#f59e0b' }, { l: 'Rec. nocturno', v: '+35%', c: '#3b82f6' },
+    { l: 'Dom. Ene-Jun', v: '+80%', c: '#8b5cf6' }, { l: 'Dom. Jul-Dic', v: '+90%', c: '#8b5cf6' },
+  ];
+
+  // ═══════════════════════════════════════════════════════════════════ RENDER
 
   return (
     <div className="page-wrapper animate-fade-in">
-      {/* Welcome */}
+      {/* ═══ Welcome ═══ */}
       <div className="dashboard-welcome">
         <h1>
           {saludo},{' '}
-          <span style={{
-            background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
-            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
-          }}>
-            {adminName}
-          </span>
-          👋
+          <span style={{ background: 'linear-gradient(135deg, var(--cw-accent), var(--cw-purple))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+            {name}
+          </span>{' '}👋
         </h1>
-        <p style={{ color: 'var(--text-muted)', marginTop: '0.25rem', fontSize: '0.9rem' }}>
-          {tenant?.razon_social || 'ChronosWork'} · Período activo:{' '}
-          <strong style={{ color: 'var(--text-secondary)' }}>{nombreMes} {anio}</strong>
+        <p className="dashboard-welcome__sub">
+          {tenant?.razon_social || 'ChronosWork'} · <strong>{nombreMes} {anio}</strong>
         </p>
       </div>
 
-      {/* Stats Grid */}
-      <div className="cw-grid cw-grid--4 dashboard-stats">
-        <StatCard
-          icon={<MdPeople />}
-          label="Empleados Activos"
-          value={empleadosActivos}
-          color="#3b82f6"
-          sublabel={`Personal en nómina`}
-          onClick={() => navigate('/empleados')}
-        />
-        <StatCard
-          icon={<MdCalendarMonth />}
-          label="Turnos Asignados"
-          value={turnosEsteMes}
-          color="#10b981"
-          sublabel={`En ${nombreMes}`}
-          onClick={() => navigate('/programacion')}
-        />
-        <StatCard
-          icon={<MdSchedule />}
-          label="Horas Programadas"
-          value={Math.round(horasAsignadas)}
-          color="#8b5cf6"
-          sublabel="Horas totales del mes"
-          onClick={() => navigate('/programacion')}
-        />
-        <StatCard
-          icon={<MdEventBusy />}
-          label="Novedades Activas"
-          value={novedadesActivas}
-          color={novedadesActivas > 0 ? '#f59e0b' : '#10b981'}
-          sublabel={novedadesActivas > 0 ? 'Personal no disponible' : 'Todo el personal disponible'}
-          onClick={() => navigate('/novedades')}
-        />
+      {/* ═══ KPIs ═══ */}
+      <StatGrid columns={4}>
+        <KpiCard icon={<MdPeople />} title="Empleados Activos" value={activos} color="#3b82f6" subtitle="Personal en nómina" onClick={() => navigate('/empleados')} />
+        <KpiCard icon={<MdCalendarMonth />} title="Turnos del Mes" value={turnos} color="#10b981" subtitle={`En ${nombreMes}`} delta={hayHist ? { value: Math.abs(dTurnos), positive: dTurnos >= 0 } : undefined} onClick={() => navigate('/programacion')} />
+        <KpiCard icon={<MdSchedule />} title="Horas Programadas" value={Math.round(horas)} color="#8b5cf6" subtitle="Total del mes" delta={hayHist ? { value: Math.abs(dHoras), positive: dHoras >= 0 } : undefined} onClick={() => navigate('/programacion')} />
+        <KpiCard icon={<MdEventBusy />} title="Novedades Activas" value={novedades} color={novedades > 0 ? '#ef4444' : '#10b981'} subtitle={novedades > 0 ? 'Personal no disponible' : 'Todo disponible'} onClick={() => navigate('/novedades')} />
+      </StatGrid>
+
+      {/* ═══ Charts Row ═══ */}
+      <div className="dashboard-charts">
+        <TrendChart title="📊 Horas por Semana" data={trendData} dataKey="horas" xKey="name" type="area" color="#3b82f6" height={220} />
+        <div className="cw-card" style={{ padding: '1.25rem' }}>
+          <div className="cw-card__header"><h3 className="cw-card__title">👥 Distribución por Área</h3></div>
+          <MiniBarChart data={areaDist} height={180} showValues />
+        </div>
       </div>
 
-      {/* Alertas de Cobertura */}
-      {alertasCobertura.length > 0 && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <div className="cw-card" style={{ border: '1px solid #fca5a5', background: 'rgba(239, 68, 68, 0.03)' }}>
-            <div className="cw-card__header" style={{ paddingBottom: '0.5rem' }}>
-              <h3 className="cw-card__title" style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <MdWarning size={20} /> ¡Atención! Turnos sin personal asignado
-              </h3>
-            </div>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', padding: '0 1.25rem 1rem' }}>
-              Los siguientes turnos para el mes actual no tienen personal asignado. Contrata personal o asigna horas extra para cubrirlos.
-            </p>
-            <div style={{ maxHeight: '250px', overflowY: 'auto', padding: '0 1.25rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {alertasCobertura.map((alerta, i) => (
-                <div key={i} style={{ 
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  background: 'var(--bg-glass)', border: '1px solid #fca5a560', 
-                  padding: '0.75rem 1rem', borderRadius: 8, fontSize: '0.85rem'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ fontWeight: 700, color: 'var(--text-primary)', width: '90px' }}>
-                      {formatFecha(alerta.dateStr)}
-                    </div>
-                    <div>
-                      <span className="cw-badge cw-badge--red" style={{ marginRight: '0.5rem' }}>{alerta.areaName}</span>
-                      <strong style={{ color: 'var(--text-secondary)' }}>{alerta.templateName}</strong>
-                    </div>
-                  </div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: '#ef4444' }}>
-                    {alerta.horario}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Body */}
-      <div className="dashboard-body">
-        {/* Quick Access */}
-        <div className="cw-card">
+      {/* ═══ Coverage Alerts ═══ */}
+      {alertas.length > 0 ? (
+        <div className="cw-card dashboard-alerts">
           <div className="cw-card__header">
-            <h3 className="cw-card__title">⚡ Accesos Rápidos</h3>
+            <h3 className="cw-card__title" style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <MdWarning size={20} /> Alertas de Cobertura ({alertas.length})
+            </h3>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {[
-              { label: 'Registrar nuevo empleado', icon: '👤', href: '/empleados', color: '#3b82f6' },
-              { label: 'Programar turnos del mes', icon: '📅', href: '/programacion', color: '#10b981' },
-              { label: 'Registrar novedad', icon: '📋', href: '/novedades', color: '#f59e0b' },
-              { label: 'Liquidar prenómina', icon: '💰', href: '/prenomina', color: '#8b5cf6' },
-            ].map(item => (
-              <a
-                key={item.href}
-                href={item.href}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '0.875rem',
-                  padding: '0.875rem', borderRadius: '10px',
-                  background: 'var(--bg-glass)', border: '1px solid var(--border-subtle)',
-                  color: 'var(--text-primary)', textDecoration: 'none',
-                  transition: 'var(--transition)', fontWeight: 500, fontSize: '0.875rem',
-                }}
-                onMouseEnter={e => {
-                  e.currentTarget.style.borderColor = item.color + '60';
-                  e.currentTarget.style.background = item.color + '10';
-                }}
-                onMouseLeave={e => {
-                  e.currentTarget.style.borderColor = 'var(--border-subtle)';
-                  e.currentTarget.style.background = 'var(--bg-glass)';
-                }}
-              >
-                <span style={{
-                  width: 36, height: 36, borderRadius: 8,
-                  background: item.color + '18', display: 'flex',
-                  alignItems: 'center', justifyContent: 'center', fontSize: '1.1rem',
-                }}>
-                  {item.icon}
-                </span>
-                {item.label}
-                <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.9rem' }}>→</span>
-              </a>
-            ))}
-          </div>
-        </div>
-
-        {/* Legal Info */}
-        <div className="cw-card">
-          <div className="cw-card__header">
-            <h3 className="cw-card__title">⚖️ Marco Legal Activo (2026)</h3>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {[
-              { label: 'Jornada Ordinaria Máxima', value: '42 hrs/semana', icon: <MdCheckCircle />, color: '#10b981' },
-              { label: 'Límite Horas Extra Diarias', value: '2 horas', icon: <MdWarning />, color: '#f59e0b' },
-              { label: 'Límite Horas Extra Semanales', value: '12 horas', icon: <MdWarning />, color: '#f59e0b' },
-              { label: 'Recargo Nocturno (19:00-06:00)', value: '+35%', icon: <MdInfo />, color: '#3b82f6' },
-              { label: 'Recargo Dominical (Ene-Jun 2026)', value: '+80%', icon: <MdInfo />, color: '#8b5cf6' },
-              { label: 'Recargo Dominical (Jul-Dic 2026)', value: '+90%', icon: <MdInfo />, color: '#8b5cf6' },
-            ].map(item => (
-              <div key={item.label} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '0.625rem 0.75rem', background: 'var(--bg-glass)',
-                borderRadius: 8, fontSize: '0.82rem',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
-                  <span style={{ color: item.color, fontSize: '1rem' }}>{item.icon}</span>
-                  {item.label}
-                </div>
-                <span style={{ fontWeight: 700, color: item.color, fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
-                  {item.value}
-                </span>
+          <p className="dashboard-alerts__desc">Los siguientes turnos del mes actual no tienen personal asignado.</p>
+          <div className="dashboard-alerts__list">
+            {alertas.map((a, i) => (
+              <div key={i} className="cw-alert cw-alert--warning">
+                <span className="cw-alert__date">{formatFecha(a.ds)}</span>
+                <span className="cw-badge cw-badge--red">{a.area}</span>
+                <strong className="cw-alert__template">{a.tpl}</strong>
+                <span className="cw-alert__time">{a.hr}</span>
               </div>
             ))}
           </div>
-          <div style={{
-            marginTop: '1rem', padding: '0.6rem 0.75rem',
-            background: 'rgba(59,130,246,0.08)', borderRadius: 8,
-            fontSize: '0.75rem', color: 'var(--text-muted)',
-            border: '1px solid rgba(59,130,246,0.15)',
-          }}>
-            📜 Ley 2101 de 2021 + Reforma Laboral Ley 2466 de 2025
-          </div>
         </div>
+      ) : (
+        <div className="cw-glass-panel dashboard-coverage-ok">
+          <MdCheckCircle size={20} /> Todas las áreas con cobertura completa
+        </div>
+      )}
+
+      {/* ═══ Quick Actions ═══ */}
+      <div className="dashboard-section">
+        <h3 className="dashboard-section__title">⚡ Acciones Rápidas</h3>
+        <div className="dashboard-quick-actions">
+          {actions.map(item => (
+            <div key={item.to} className="cw-card cw-quick-action" onClick={() => navigate(item.to)} role="button" tabIndex={0}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(item.to); } }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = item.c + '60'; e.currentTarget.style.boxShadow = `0 0 24px ${item.c}18`; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-subtle)'; e.currentTarget.style.boxShadow = ''; }}>
+              <div className="cw-quick-action__icon" style={{ color: item.c }}>{item.i}</div>
+              <div className="cw-quick-action__label">{item.l}</div>
+              <div className="cw-quick-action__desc">{item.d}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ═══ Legal Framework ═══ */}
+      <div className="cw-glass-panel dashboard-legal">
+        <span className="dashboard-legal__title">⚖️ Marco Legal 2026</span>
+        {legal.map(item => (
+          <div key={item.l} className="dashboard-legal__item">
+            <span className="dashboard-legal__label">{item.l}</span>
+            <span className="dashboard-legal__value" style={{ color: item.c }}>{item.v}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { MdClose, MdWarning, MdInfo } from 'react-icons/md';
 import { supabase } from '../config/supabaseClient';
+import { logger } from '../config/logger';
 import { useAuth } from '../context/AuthContext';
 import { getDatesByOption } from '../core/dateUtils';
 import { format } from 'date-fns';
@@ -115,7 +116,7 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
             .limit(1);
           if (active) setHasExistingShifts(!!data?.length);
         } catch (err) {
-          console.error(err);
+          logger.error('AutoAssignModal', err);
         } finally {
           if (active) setConflictLoading(false);
         }
@@ -148,7 +149,7 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
           if (active) setHasExistingShifts(false);
         }
       } catch (err) {
-        console.error(err);
+        logger.error('AutoAssignModal', err);
       } finally {
         if (active) setConflictLoading(false);
       }
@@ -156,7 +157,7 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
 
     checkConflicts();
     return () => { active = false; };
-  }, [targetScope, dateRangeOption, customStart, customEnd, selectedArea, tenant]);
+  }, [targetScope, dateRangeOption, customStart, customEnd, selectedArea?.id, tenant?.id]);
 
   const handleConfirm = async () => {
     if (dateRangeOption === 'custom' && (!customStart || !customEnd)) {

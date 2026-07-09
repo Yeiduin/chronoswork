@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { MdCalendarMonth } from 'react-icons/md';
 import { format } from 'date-fns';
 import ShiftCell from './ShiftCell';
+import { toISODay } from '../../core/dateUtils';
 
 const DIAS_LABELS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
@@ -143,7 +144,7 @@ export default function SchedulingGrid({
                   </td>
                   {dias.map(dia => {
                     const dateStr = format(dia, 'yyyy-MM-dd');
-                    const dow = dia.getDay() === 0 ? 7 : dia.getDay();
+                    const dow = toISODay(dia);
                     const shiftsOnDate = getShiftsForEmployeeDate(emp.id, dateStr);
                     const novedad = tieneNovedad(emp.id, dateStr);
                     const novedadInfo = novedad ? getNovedad(emp.id, dateStr) : null;

@@ -15,8 +15,8 @@ npm install
 ### 2. Configurar variables de entorno
 Renombra `.env.example` a `.env` y completa:
 ```
-VITE_SUPABASE_URL=https://nazvmxcbrmqzsfxlowkx.supabase.co
-VITE_SUPABASE_ANON_KEY=tu_anon_key
+VITE_SUPABASE_URL=<tu-url-supabase>
+VITE_SUPABASE_ANON_KEY=<tu-anon-key>
 ```
 
 ### 3. Configurar Supabase
@@ -44,7 +44,7 @@ Frontend (React + Vite)  →  Supabase (PostgreSQL + Auth)
 ### Stack
 | Capa | Tecnología |
 |------|-----------|
-| Frontend | React 18 + Vite |
+| Frontend | React 19 + Vite 8 |
 | Estilos | CSS Custom Design System + Bootstrap 5 |
 | Backend/BaaS | Supabase (PostgreSQL + Auth JWT) |
 | Seguridad | Row Level Security (RLS) |

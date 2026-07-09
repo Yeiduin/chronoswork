@@ -1,126 +1,45 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../config/supabaseClient';
+import { logger } from '../config/logger';
 import { useAuth } from '../context/AuthContext';
 import { generateAutomaticShifts } from '../core/generateAutomaticShifts';
+import { createCrudHook } from './createCrudHook';
 
 // Activar/desactivar Edge Function (true = servidor, false = navegador)
-let USE_EDGE_FUNCTION = true;
+const USE_EDGE_FUNCTION = true;
 
-// ═══════════════════════════════════════════════════════════════
-// Caché de shifts por tenant y período
-// ═══════════════════════════════════════════════════════════════
-const shiftsCache = new Map(); // key: `${tenantId}::${periodosKey}` → { data, ts }
-const CACHE_TTL_MS = 15_000;
-
-function getCached(tenantId, key) {
-  const entry = shiftsCache.get(`${tenantId}::${key}`);
-  if (entry && Date.now() - entry.ts < CACHE_TTL_MS) return entry.data;
-  return null;
-}
-
-function setCache(tenantId, key, data) {
-  shiftsCache.set(`${tenantId}::${key}`, { data, ts: Date.now() });
-  // Limpiar entradas viejas si el caché crece demasiado
-  if (shiftsCache.size > 20) {
-    const now = Date.now();
-    for (const [k, v] of shiftsCache) {
-      if (now - v.ts > CACHE_TTL_MS * 4) shiftsCache.delete(k);
+// ─── Factory: hook base para shifts (fetch con caché + CRUD) ──────────────────
+const useCrudShifts = createCrudHook({
+  tableName: 'shifts',
+  selectQuery: '*, employees(nombre, cedula, valor_hora)',
+  cacheTTL: 15_000,
+  queryModifier: (query, _tenant, periodo) => {
+    query = query.order('start_time');
+    if (periodo) {
+      if (Array.isArray(periodo)) query = query.in('periodo', periodo);
+      else query = query.eq('periodo', periodo);
     }
-  }
-}
+    return query;
+  },
+});
 
+// ─── Hook público (preserva API original) ─────────────────────────────────────
 export function useShifts(periodo = null) {
   const { tenant } = useAuth();
-  const [shifts, setShifts] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const mountedRef = useRef(true);
+  const {
+    data: shifts,
+    loading,
+    error,
+    fetch: _fetch,
+    create: createShift,
+    update: updateShift,
+    remove: deleteShift,
+    invalidate,
+  } = useCrudShifts(periodo);
 
-  const periodosKey = Array.isArray(periodo) ? periodo.join(',') : periodo;
+  // API original: fetchShifts() fuerza recarga
+  const fetchShifts = () => _fetch(true);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  const fetchShifts = useCallback(async (force = false) => {
-    if (!tenant) return;
-
-    if (!force) {
-      const cached = getCached(tenant.id, periodosKey);
-      if (cached) {
-        if (mountedRef.current) setShifts(cached);
-        return;
-      }
-    }
-
-    setLoading(true);
-    try {
-      let query = supabase
-        .from('shifts')
-        .select('*, employees(nombre, cedula, valor_hora)')
-        .eq('tenant_id', tenant.id)
-        .order('start_time');
-
-      if (periodo) {
-        if (Array.isArray(periodo)) query = query.in('periodo', periodo);
-        else query = query.eq('periodo', periodo);
-      }
-
-      const { data, error: fetchErr } = await query;
-      if (fetchErr) throw fetchErr;
-      const result = data || [];
-      setCache(tenant.id, periodosKey, result);
-      if (mountedRef.current) setShifts(result);
-    } catch (err) {
-      if (mountedRef.current) setError(err.message);
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }, [tenant, periodosKey]);
-
-  useEffect(() => {
-    fetchShifts();
-  }, [fetchShifts]);
-
-  const invalidateCache = useCallback(() => {
-    shiftsCache.delete(`${tenant?.id}::${periodosKey}`);
-    return fetchShifts(true);
-  }, [tenant, periodosKey, fetchShifts]);
-
-  const createShift = async (shiftData) => {
-    const { data, error: insertErr } = await supabase
-      .from('shifts')
-      .insert([{ ...shiftData, tenant_id: tenant.id }])
-      .select()
-      .single();
-    if (insertErr) throw insertErr;
-    await invalidateCache();
-    return data;
-  };
-
-  const updateShift = async (id, updates) => {
-    const { data, error: updateErr } = await supabase
-      .from('shifts')
-      .update(updates)
-      .eq('id', id)
-      .eq('tenant_id', tenant.id)
-      .select()
-      .single();
-    if (updateErr) throw updateErr;
-    await invalidateCache();
-    return data;
-  };
-
-  const deleteShift = async (id) => {
-    const { error: deleteErr } = await supabase
-      .from('shifts')
-      .delete()
-      .eq('id', id)
-      .eq('tenant_id', tenant.id);
-    if (deleteErr) throw deleteErr;
-    await invalidateCache();
-  };
+  // ═══ Operaciones específicas (no cubiertas por la factory) ═════════════════
 
   const bulkInsertShifts = async (shiftsArray) => {
     const withTenant = shiftsArray.map(s => ({ ...s, tenant_id: tenant.id }));
@@ -129,7 +48,7 @@ export function useShifts(periodo = null) {
       .insert(withTenant)
       .select();
     if (insertErr) throw insertErr;
-    await invalidateCache();
+    await invalidate();
     return data;
   };
 
@@ -139,7 +58,7 @@ export function useShifts(periodo = null) {
     if (empIds.length > 0) query = query.in('employee_id', empIds);
     const { error: delErr, count } = await query;
     if (delErr) throw delErr;
-    await invalidateCache();
+    await invalidate();
     return count || 0;
   };
 
@@ -152,7 +71,7 @@ export function useShifts(periodo = null) {
     if (empIds.length > 0) query = query.in('employee_id', empIds);
     const { error: delErr, count } = await query;
     if (delErr) throw delErr;
-    await invalidateCache();
+    await invalidate();
     return count || 0;
   };
 
@@ -163,6 +82,7 @@ export function useShifts(periodo = null) {
     });
   };
 
+  // ═══ autoAssignShifts: algoritmo completo (inalterado) ═════════════════════
   const autoAssignShifts = async (params) => {
     const { employees, templates, absences, existingShifts, year, month, diasTrabajo,
       diasToProcess, areaId, modoOperacion, laborLimits, nightShiftConfig, patronRotativo,
@@ -171,30 +91,30 @@ export function useShifts(periodo = null) {
     if (!tenant) return { error: 'No hay tenant activo.', inserted: 0, alertaDias: [] };
     if (!Array.isArray(employees) || !employees.length) return { error: 'No hay empleados en el área.', inserted: 0, alertaDias: [] };
 
-    // ── Intentar Edge Function (servidor) ──────────────────────────────────
+    // ── Intentar Edge Function (servidor) ────────────────────────────────────
     if (USE_EDGE_FUNCTION) {
       try {
-        const { data: result, error } = await supabase.functions.invoke('auto-assign', {
+        const { data: result, error: fnErr } = await supabase.functions.invoke('auto-assign', {
           body: { tenant_id: tenant.id, params }
         });
 
-        if (!error && result && !result.error) {
-          await invalidateCache();
+        if (!fnErr && result && !result.error) {
+          await invalidate();
           return result;
         }
-        console.warn('[autoAssign] Edge Function falló o retornó error:', error?.message || result?.error);
+        logger.warn('useShifts', 'Edge Function falló o retornó error:', fnErr?.message || result?.error);
       } catch (e) {
-        console.warn('[autoAssign] Edge Function no disponible:', e.message, '→ algoritmo local');
+        logger.warn('useShifts', 'Edge Function no disponible:', e.message, '→ algoritmo local');
       }
     }
 
-    // ── Fallback: algoritmo local ──────────────────────────────────────────
+    // ── Fallback: algoritmo local ────────────────────────────────────────────
     let demandSlots = [];
     if (areaId) {
       try {
         const { data } = await supabase.from('area_demand_slots').select('*').eq('area_id', areaId).eq('tenant_id', tenant.id);
         demandSlots = data || [];
-      } catch (e) { console.warn('[autoAssign] demandSlots:', e.message); }
+      } catch (e) { logger.warn('useShifts', 'demandSlots:', e.message); }
     }
 
     let areaConfig = {};
@@ -204,7 +124,7 @@ export function useShifts(periodo = null) {
           .select('modo_operacion, estrategia_asignacion, min_empleados_noche, noche_solo_empleados_dedicados, permite_dia_cubrir_noche, slots_por_hora, snap_turnos_minutos, balancear_carga, rotar_slots_entre_asesores, permitir_horas_extras, permitir_turno_partido, min_horas_turno_override, max_horas_turno_override')
           .eq('id', areaId).single();
         areaConfig = ad || {};
-      } catch (e) { console.warn('[autoAssign] areaConfig:', e.message); }
+      } catch (e) { logger.warn('useShifts', 'areaConfig:', e.message); }
       try {
         const { data: hc } = await supabase.from('areas')
           .select('min_empleados_dia, max_empleados_dia, hora_inicio_dia, hora_fin_dia').eq('id', areaId).single();
@@ -243,7 +163,7 @@ export function useShifts(periodo = null) {
     });
 
     if (!Array.isArray(shiftsToInsert) || shiftsToInsert.length === 0) {
-      await invalidateCache();
+      await invalidate();
       return { inserted: 0, skipped: 0, alertaDias: warnings || [] };
     }
 
@@ -267,11 +187,11 @@ export function useShifts(periodo = null) {
       s.start_time && s.end_time && new Date(s.end_time) > new Date(s.start_time)
     );
     if (invalidShifts.length > 0) {
-      console.warn(`[autoAssign] ${invalidShifts.length} turno(s) inválido(s) descartado(s)`);
+      logger.warn('useShifts', `${invalidShifts.length} turno(s) inválido(s) descartado(s)`);
       warnings.push(`Se descartaron ${invalidShifts.length} turno(s) con horario inválido.`);
     }
     if (validShifts.length === 0) {
-      await invalidateCache();
+      await invalidate();
       return { inserted: 0, skipped: invalidShifts.length, alertaDias: warnings || [] };
     }
 
@@ -286,13 +206,13 @@ export function useShifts(periodo = null) {
       inserted += chunk.length;
     }
 
-    await invalidateCache();
+    await invalidate();
     return { inserted, skipped: invalidShifts.length, alertaDias: warnings || [] };
   };
 
   return {
     shifts, loading, error,
-    fetchShifts: () => fetchShifts(true),
+    fetchShifts,
     createShift, updateShift, deleteShift,
     bulkInsertShifts, getShiftsForEmployee,
     autoAssignShifts, clearShiftsByPeriodo, clearShiftsByDateRange,

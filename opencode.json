@@ -1,0 +1,177 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "instructions": ["AGENTS.md"],
+
+  // No fijamos "model" aquí a propósito: el usuario elige el modelo que
+  // quiera (local vía Ollama, o cualquier otro conectado con /connect) desde
+  // la TUI con /models, o pasando --model al arrancar. El equipo de agentes
+  // y las skills están diseñados para potenciar CUALQUIER modelo que se use.
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama Local",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "qwen2.5-coder-7b-opencode": {
+          "name": "qwen2.5-coder-7b-opencode",
+          "tools": true
+        },
+        "qwen2.5-coder-14b-opencode": {
+          "name": "qwen2.5-coder-14b-opencode",
+          "tools": true
+        },
+        "llama3.1:8b": {
+          "name": "llama3.1:8b",
+          "tools": true
+        }
+      }
+    }
+  },
+
+  "permission": {
+    "edit": "allow",
+    "bash": {
+      "*": "allow"
+    },
+    "webfetch": "allow",
+    "websearch": "allow",
+    "doom_loop": "allow",
+    "external_directory": "allow"
+  },
+
+  "agent": {
+    "orquestador": {
+      "description": "Director de Proyecto y Full-Stack Senior. Coordina a todo el equipo de agentes especialistas. USAR SIEMPRE COMO AGENTE PRINCIPAL.",
+      "mode": "primary",
+      "prompt": "{file:./agent/orquestador.md}",
+      "temperature": 0.2,
+      "permission": {
+        "task": {
+          "*": "allow"
+        }
+      }
+    },
+    "analista": {
+      "description": "Consultor técnico y de negocio. Transforma ideas en requerimientos y define el stack tecnológico gratuito. Invócalo al iniciar un proyecto o feature nueva.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/analista.md}",
+      "temperature": 0.3,
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "webfetch": "ask",
+        "websearch": "ask"
+      }
+    },
+    "arquitecto": {
+      "description": "Arquitecto de software y desarrollador senior. Crea la estructura de carpetas, configura el entorno y escribe el código base y las features.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/arquitecto.md}",
+      "temperature": 0.15,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "ask",
+          "npm *": "allow",
+          "git *": "allow"
+        }
+      }
+    },
+    "disenador": {
+      "description": "Diseñador UX/UI y maquetador frontend. Define paleta, tipografía y construye interfaces responsivas y atractivas.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/disenador.md}",
+      "temperature": 0.4,
+      "permission": {
+        "edit": "allow",
+        "bash": "ask"
+      }
+    },
+    "qa-tester": {
+      "description": "Ingeniero de QA. Busca bugs, prueba edge cases y corrige fallos lógicos. Invócalo después de que el Arquitecto o el Diseñador terminen una feature.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/qa-tester.md}",
+      "temperature": 0.2,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "ask",
+          "npm test*": "allow",
+          "npm run*": "allow"
+        }
+      }
+    },
+    "auditor": {
+      "description": "Auditor de código senior. Hace code review final, refactoriza para rendimiento y seguridad. Invócalo cuando una feature o el proyecto esté 'terminado'.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/auditor.md}",
+      "temperature": 0.15,
+      "permission": {
+        "edit": "allow",
+        "bash": "ask"
+      }
+    },
+    "revisor-logico": {
+      "description": "Revisor especializado en correctitud lógica: condicionales, bucles, cálculos, estado compartido. Distinto del Auditor (seguridad/rendimiento/estilo). Invócalo después de que Arquitecto/Diseñador escriban lógica no trivial, antes de dar la feature por terminada.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/revisor-logico.md}",
+      "temperature": 0.15,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "npm test*": "allow",
+          "npm run*": "allow",
+          "node *": "allow"
+        }
+      }
+    },
+    "critico-adversarial": {
+      "description": "Crítico de planes y diseños ANTES de implementar. Ataca propuestas, planes y decisiones de arquitectura buscando supuestos no verificados, casos límite ocultos y alternativas no consideradas. No revisa código ya escrito (eso es Auditor/Revisor Lógico/QA) — actúa en la fase de planificación, antes de que se invierta tiempo construyendo. Invócalo tras @analista o @arquitecto para cualquier decisión de alcance medio/grande, ANTES de delegar la implementación.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/critico-adversarial.md}",
+      "temperature": 0.3,
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "webfetch": "ask",
+        "websearch": "ask"
+      }
+    },
+    "investigador": {
+      "description": "Investigador de documentación oficial y web. Úsalo SIEMPRE que se necesite información actualizada de librerías/APIs, o cuando otro agente lleve más de 2 intentos fallidos intentando resolver un error sin éxito. Es de solo lectura, no modifica código.",
+      "mode": "subagent",
+      "prompt": "{file:./agent/investigador.md}",
+      "temperature": 0.2,
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "webfetch": "allow",
+        "websearch": "allow"
+      }
+    },
+    "vigilante": {
+      "description": "Ingeniero de procesos y estabilidad. Úsalo INMEDIATAMENTE cuando un comando bash se quede colgado/sin responder, cuando se repita el mismo error 2+ veces (doom loop), cuando un servidor no arranque, o cuando haya que matar/reiniciar procesos (node, puertos ocupados, etc).",
+      "mode": "subagent",
+      "prompt": "{file:./agent/vigilante.md}",
+      "temperature": 0.1,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": "ask",
+          "*Get-Process*": "allow",
+          "*Stop-Process*": "allow",
+          "*taskkill*": "allow",
+          "*kill -9*": "allow",
+          "*netstat*": "allow",
+          "*lsof*": "allow",
+          "*ps aux*": "allow"
+        }
+      }
+    }
+  }
+}
+

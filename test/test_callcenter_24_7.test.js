@@ -187,7 +187,7 @@ diasToProcess.forEach(d => {
   const dateStr = format(d, 'yyyy-MM-dd');
   const nextDate = addDays(d, 1);
   const nextStr = format(nextDate, 'yyyy-MM-dd');
-  const nightShifts = shifts.filter(s => s.start_time === `${dateStr}T22:00`);
+  const nightShifts = shifts.filter(s => String(s.start_time).startsWith(`${dateStr}T22:00`));
   if (nightShifts.length >= 1) nightCovered++;
   else nightMissed++;
 });

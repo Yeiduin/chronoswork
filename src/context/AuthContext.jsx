@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../config/supabaseClient';
+import { logger } from '../config/logger';
 
 const AuthContext = createContext(null);
 
@@ -66,7 +67,7 @@ export function AuthProvider({ children }) {
         .maybeSingle();
 
       if (tuError) {
-        console.error('fetchUserData error:', tuError.message);
+        logger.error('AuthContext', 'fetchUserData error:', tuError.message);
         // Fallback sin join
         const { data: tuBasic } = await supabase
           .from('tenant_users')
@@ -99,7 +100,7 @@ export function AuthProvider({ children }) {
         }
       }
     } catch (err) {
-      console.error('Error crítico fetchUserData:', err);
+      logger.error('AuthContext', 'Error crítico fetchUserData:', err);
     } finally {
       setLoading(false);
     }

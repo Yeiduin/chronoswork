@@ -316,8 +316,8 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
   const snapSlots = Math.max(1, Math.round((snapMinutos / 60) * slotsPorHora));
   const minSlots = Math.round(minHoras * slotsPorHora);
 
-  const minEmpDia = minEmpleadosDia ?? null;
-  const maxEmpDia = maxEmpleadosDia ?? null;
+  let minEmpDia: number | null = minEmpleadosDia ?? null;
+  let maxEmpDia: number | null = maxEmpleadosDia ?? null;
 
   // ─── Construir días ────────────────────────────────────────────────────────
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -339,6 +339,15 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
   const empByClass: Record<EmpClass, Employee[]> = { NIGHT_ONLY: [], DAY_ONLY: [], MIXED: [], ANY: [] };
   const activeEmployees = employees.filter(e => e.activo !== false);
   activeEmployees.forEach(e => { empByClass[classifyEmployee(e)].push(e); });
+
+  // ── v5.1: OFICINA automático ──
+  if (modoOperacion === 'OFICINA' && maxEmpDia == null) {
+    const officeWorkers = activeEmployees.length;
+    if (officeWorkers > 0) {
+      maxEmpDia = officeWorkers;
+      minEmpDia = officeWorkers;
+    }
+  }
 
   // ─── Configuración nocturna ────────────────────────────────────────────────
   const nightConfig = is247 ? {

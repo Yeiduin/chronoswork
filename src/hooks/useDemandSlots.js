@@ -1,39 +1,21 @@
-import { useState, useCallback, useEffect } from 'react';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
+import { createCrudHook } from './createCrudHook';
 
+// ─── Factory: hook base para area_demand_slots (solo fetch + estado) ──────────
+const useCrudSlots = createCrudHook({
+  tableName: 'area_demand_slots',
+  guard: (_tenant, areaId) => !!areaId,       // si no hay areaId, data = []
+  queryModifier: (query, _tenant, areaId) =>
+    query.eq('area_id', areaId).order('day_of_week').order('start_hour'),
+});
+
+// ─── Hook público (preserva API original) ─────────────────────────────────────
 export function useDemandSlots(areaId) {
   const { tenant } = useAuth();
-  const [demandSlots, setDemandSlots] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const { data: demandSlots, loading, error, setError, fetch: fetchDemandSlots } = useCrudSlots(areaId);
 
-  const fetchDemandSlots = useCallback(async () => {
-    if (!tenant || !areaId) {
-      setDemandSlots([]);
-      return;
-    }
-    setLoading(true);
-    try {
-      const { data, error: err } = await supabase
-        .from('area_demand_slots')
-        .select('*')
-        .eq('tenant_id', tenant.id)
-        .eq('area_id', areaId)
-        .order('day_of_week')
-        .order('start_hour');
-      if (err) throw err;
-      setDemandSlots(data || []);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [tenant, areaId]);
-
-  useEffect(() => {
-    fetchDemandSlots();
-  }, [fetchDemandSlots]);
+  // ── Operaciones de grupo (no estándar CRUD) ──────────────────────────────────
 
   const createDemandSlotGroup = async (days, start_hour, end_hour, required_staff) => {
     if (!tenant || !areaId || !days.length) return;
@@ -48,7 +30,6 @@ export function useDemandSlots(areaId) {
         end_hour,
         required_staff
       }));
-
       const { data, error: err } = await supabase
         .from('area_demand_slots')
         .insert(inserts)
@@ -65,7 +46,6 @@ export function useDemandSlots(areaId) {
   const updateDemandSlotGroup = async (groupId, days, start_hour, end_hour, required_staff) => {
     if (!tenant || !areaId) return;
     try {
-      // Reemplazo completo: borrar viejo grupo, insertar nuevo con el mismo groupId
       const { error: delErr } = await supabase
         .from('area_demand_slots')
         .delete()
@@ -81,7 +61,7 @@ export function useDemandSlots(areaId) {
       const inserts = days.map(d => ({
         tenant_id: tenant.id,
         area_id: areaId,
-        group_id: groupId, // Mantenemos el ID
+        group_id: groupId,
         day_of_week: d,
         start_hour,
         end_hour,
@@ -131,7 +111,6 @@ export function useDemandSlots(areaId) {
    */
   const bulkReplaceDaySlots = async (days, segments) => {
     if (!tenant || !areaId || !days.length) return;
-    setLoading(true);
     try {
       // 1. Borrar todos los slots de esos días en una query
       const { error: delErr } = await supabase
@@ -165,7 +144,6 @@ export function useDemandSlots(areaId) {
       // 3. UN SOLO fetch — los datos ya son correctos, el draft no colapsa
       await fetchDemandSlots();
     } catch (err) {
-      setLoading(false);
       setError(err.message);
       throw err;
     }

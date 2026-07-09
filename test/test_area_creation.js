@@ -2,7 +2,7 @@
 // ChronosWork — Tests de creación de Áreas y Empleados
 // Tests locales (sin Supabase) que validan:
 //  - Tipos de contrato: 9 combinaciones
-//  - Modos operación: 2 (OFICINA, 24_7)
+//  - Modos operación: 3 (OFICINA, 24_7, 24_7_NIGHT_SPLIT)
 //  - Tipos jornada: 4 (DIURNA, NOCTURNA, MIXTA, POR_TURNOS)
 //  - Patrones rotativos: 9
 //  - Niveles ARL: 5
@@ -118,7 +118,7 @@ test('TEST 4.1: Hay 14 sectores', () => {
 
 test('TEST 4.2: Cada sector tiene defaults válidos', () => {
   const contratoValidos = TIPOS_CONTRATO.map(t => t.value);
-  const modosValidos = ['OFICINA', '24_7'];
+  const modosValidos = ['OFICINA', '24_7', '24_7_NIGHT_SPLIT'];
   for (const s of SECTORES) {
     assert(s.defaults.contrato, `${s.value} sin contrato default`);
     assertInArray(s.defaults.contrato, contratoValidos, `${s.value} contrato inválido: ${s.defaults.contrato}`);

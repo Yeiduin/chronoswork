@@ -300,8 +300,8 @@ export function DemandCurveEditor({ area, embedded }) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: 'rgba(8, 12, 26, 0.25)',
-                backdropFilter: 'blur(1px)',
+                background: 'rgba(255, 255, 255, 0.6)',
+                backdropFilter: 'blur(2px)',
                 borderRadius: 14,
                 zIndex: 10,
               }}>

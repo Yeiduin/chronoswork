@@ -8,6 +8,16 @@ export const MAX_HORAS_SEMANALES = 42;         // Ley 2101/2021
 export const MAX_EXTRAS_DIARIAS = 2;
 export const MAX_EXTRAS_SEMANALES = 12;
 
+// --- DEFAULTS DE EMPLEADO ---
+export const DEFAULT_HORAS_SEMANALES = 42;
+export const MAX_HORAS_SEMANALES_POR_EMPLEADO = 168;
+export const DEFAULT_HORAS_MENSUALES = 182;
+export const DEFAULT_DIAS_DESCANSO = 1;
+export const DEFAULT_NIVEL_ARL = 1;
+export const MAX_NIVEL_ARL = 5;
+export const SALARIO_MINIMO_DIARIO = 47366; // ~$1,421,000 / 30 (2025)
+export const FACTOR_SALARIO_MENSUAL_A_HORA = 240; // divisor estándar: 30 días × 8 horas
+
 // --- BANDAS HORARIAS ---
 export const INICIO_DIURNA = 6;   // 06:00
 export const FIN_DIURNA = 19;     // 19:00

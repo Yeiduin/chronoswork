@@ -23,6 +23,30 @@ serve(async (req: Request) => {
   }
 
   try {
+    // ── 0. Verificar autenticación del llamador ──────────────────────────
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "No autorizado: token JWT requerido." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+
+    // Verificar JWT con el cliente anónimo (sin service_role)
+    const supabaseUser = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: { user: caller }, error: authError } = await supabaseUser.auth.getUser();
+    if (authError || !caller) {
+      return new Response(
+        JSON.stringify({ error: "Token inválido o expirado." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const body = await req.json();
     const { tenant_id, params } = body;
 
@@ -33,12 +57,25 @@ serve(async (req: Request) => {
       );
     }
 
-    // ── Crear cliente Supabase (service_role para bypass RLS) ────────────────
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    // Verificar que el usuario pertenece al tenant solicitado
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey, {
       auth: { persistSession: false },
     });
+
+    const { data: tenantUser } = await supabase
+      .from("tenant_users")
+      .select("id")
+      .eq("user_id", caller.id)
+      .eq("tenant_id", tenant_id)
+      .maybeSingle();
+
+    if (!tenantUser) {
+      return new Response(
+        JSON.stringify({ error: "Acceso denegado: no perteneces a este tenant." }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     // ── Cargar datos desde BD si no vienen en el request ─────────────────────
     let { employees, templates, absences, demandSlots, areaConfig } = params;

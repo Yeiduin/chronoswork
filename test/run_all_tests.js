@@ -9,6 +9,9 @@ const tests = [
   { name: 'Tests de catálogo (areas, empleados, turnos)', file: 'test_area_creation.js' },
   { name: 'Tests de payloads de área (sectores, defaults)', file: 'test_area_payloads.js' },
   { name: 'Tests de cleanEmployeeData (hook useEmployees)', file: 'test_clean_employee_data.js' },
+  { name: 'Tests de headcount v5 (priorización)', file: 'test_headcount_v5.test.js' },
+  { name: 'Tests call center 24/7 (caso real)', file: 'test_callcenter_24_7.test.js' },
+  { name: 'Tests de Excel empleados (plantilla)', file: 'test_excel_empleados.js' },
 ];
 
 console.log('═══════════════════════════════════════════════════════════');
@@ -17,7 +20,6 @@ console.log('══════════════════════�
 
 let totalPass = 0;
 let totalFail = 0;
-let totalBugs = 0;
 
 for (const t of tests) {
   console.log(`\n${'─'.repeat(60)}`);

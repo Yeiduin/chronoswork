@@ -24,25 +24,14 @@ import ConfigPage from './pages/ConfigPage';
 
 // New role-specific pages
 import SaasDashboardPage from './pages/SaasDashboardPage';
+import LandingPage from './pages/LandingPage';
 import EmployeeProfilePage from './pages/EmployeeProfilePage';
 
 import NotFoundPage from './pages/NotFoundPage';
 
 // ── Layouts ───────────────────────────────────────────────────────────────────
 
-function AdminLayout({ children }) {
-  return (
-    <div className="app-shell">
-      <Sidebar />
-      <div className="main-content">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-// El SaaS_Admin tiene un shell simplificado (sin sidebar operativo)
-function SaasLayout({ children }) {
+function AppShell({ children }) {
   return (
     <div className="app-shell">
       <Sidebar />
@@ -64,7 +53,7 @@ function EmployeeLayout({ children }) {
   );
 }
 
-// ── Smart Root Redirect: redirige según el rol del usuario autenticado ────────
+// ── Smart Root Redirect: landing page para visitantes, dashboard para autenticados ──
 function RootRedirect() {
   const { user, userRole, loading } = useAuth();
 
@@ -77,7 +66,9 @@ function RootRedirect() {
     );
   }
 
-  if (!user) return <Navigate to="/login" replace />;
+  // Usuario no autenticado → landing page
+  if (!user) return <LandingPage />;
+  // Usuario autenticado → dashboard según rol
   return <Navigate to={getRoleRedirect(userRole)} replace />;
 }
 
@@ -97,13 +88,15 @@ export default function App() {
 
           {/* ── Ruta Raíz: redirección inteligente por rol ───────────────── */}
           <Route path="/" element={<RootRedirect />} />
+          {/* Landing page siempre accesible */}
+          <Route path="/landing" element={<LandingPage />} />
 
           {/* ── SaaS Admin Dashboard ─────────────────────────────────────── */}
           <Route
             path="/saas-dashboard"
             element={
               <ProtectedRoute allowedRoles={[ROLE_SAAS_ADMIN]}>
-                <SaasLayout><SaasDashboardPage /></SaasLayout>
+                <AppShell><SaasDashboardPage /></AppShell>
               </ProtectedRoute>
             }
           />
@@ -113,7 +106,7 @@ export default function App() {
             path="/dashboard"
             element={
               <ProtectedRoute allowedRoles={ADMIN_ROLES}>
-                <AdminLayout><DashboardPage /></AdminLayout>
+                <AppShell><DashboardPage /></AppShell>
               </ProtectedRoute>
             }
           />
@@ -121,7 +114,7 @@ export default function App() {
             path="/empleados"
             element={
               <ProtectedRoute allowedRoles={ADMIN_ROLES}>
-                <AdminLayout><EmployeesPage /></AdminLayout>
+                <AppShell><EmployeesPage /></AppShell>
               </ProtectedRoute>
             }
           />
@@ -129,7 +122,7 @@ export default function App() {
             path="/novedades"
             element={
               <ProtectedRoute allowedRoles={ADMIN_ROLES}>
-                <AdminLayout><AbsencesPage /></AdminLayout>
+                <AppShell><AbsencesPage /></AppShell>
               </ProtectedRoute>
             }
           />
@@ -137,7 +130,7 @@ export default function App() {
             path="/areas"
             element={
               <ProtectedRoute allowedRoles={ADMIN_ROLES}>
-                <AdminLayout><AreasPage /></AdminLayout>
+                <AppShell><AreasPage /></AppShell>
               </ProtectedRoute>
             }
           />
@@ -145,7 +138,7 @@ export default function App() {
             path="/programacion"
             element={
               <ProtectedRoute allowedRoles={ADMIN_ROLES}>
-                <AdminLayout><SchedulingPage /></AdminLayout>
+                <AppShell><SchedulingPage /></AppShell>
               </ProtectedRoute>
             }
           />
@@ -153,7 +146,7 @@ export default function App() {
             path="/prenomina"
             element={
               <ProtectedRoute allowedRoles={ADMIN_ROLES}>
-                <AdminLayout><PrenominaPage /></AdminLayout>
+                <AppShell><PrenominaPage /></AppShell>
               </ProtectedRoute>
             }
           />
@@ -161,7 +154,7 @@ export default function App() {
             path="/configuracion"
             element={
               <ProtectedRoute allowedRoles={[ROLE_SUPER_ADMIN]}>
-                <AdminLayout><ConfigPage /></AdminLayout>
+                <AppShell><ConfigPage /></AppShell>
               </ProtectedRoute>
             }
           />

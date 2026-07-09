@@ -60,7 +60,7 @@ export default function ConfigPage() {
             </div>
             <div style={{
               fontSize: '1.75rem', fontWeight: 900,
-              background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+              background: 'linear-gradient(135deg, var(--cw-accent), var(--cw-purple))',
               WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
             }}>
               {plan.nombre}

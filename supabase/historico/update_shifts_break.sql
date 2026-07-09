@@ -48,9 +48,9 @@ BEGIN
     RAISE EXCEPTION 'LÍMITE_EXCEDIDO: El turno supera el máximo diario permitido de horas para el empleado.';
   END IF;
 
-  -- Límite Semanal: 54 horas (Nota: se puede ajustar al de la ley 2101 si es necesario, 42h)
-  IF (v_semana_horas + v_horas_turno) > 54 THEN
-    RAISE EXCEPTION 'LÍMITE_SEMANAL_EXCEDIDO: El turno supera el límite semanal de horas del CST colombiano.';
+  -- Límite Semanal: 42 horas (Ley 2101/2021 — jornada máxima legal en Colombia)
+  IF (v_semana_horas + v_horas_turno) > 42 THEN
+    RAISE EXCEPTION 'LÍMITE_SEMANAL_EXCEDIDO: El turno supera el límite semanal de 42 horas (Ley 2101/2021).';
   END IF;
 
   RETURN NEW;

@@ -16,6 +16,8 @@
 import { useState, useMemo } from 'react';
 import { format, eachDayOfInterval, getDay, parseISO } from 'date-fns';
 import ExcelJS from 'exceljs';
+import { toISODay } from '../core/dateUtils';
+import { logger } from '../config/logger';
 import {
   MdClose, MdDownload, MdTableChart, MdWarning, MdInfo, MdCheckCircle,
 } from 'react-icons/md';
@@ -38,7 +40,7 @@ function getDateRange(option, customStart, customEnd) {
   switch (option) {
     case 'this_week': {
       const d = new Date(hoy);
-      const dow = d.getDay() === 0 ? 7 : d.getDay();
+      const dow = toISODay(d);
       const start = new Date(d);
       start.setDate(d.getDate() - dow + 1);
       const end = new Date(start);
@@ -47,7 +49,7 @@ function getDateRange(option, customStart, customEnd) {
     }
     case 'next_week': {
       const d = new Date(hoy);
-      const dow = d.getDay() === 0 ? 7 : d.getDay();
+      const dow = toISODay(d);
       const start = new Date(d);
       start.setDate(d.getDate() + (7 - dow) + 1);
       const end = new Date(start);
@@ -209,7 +211,7 @@ export function ExportShiftsModal({
       // Damos tiempo a que el navegador dispare la descarga antes de cerrar
       setTimeout(() => onClose?.(), 350);
     } catch (err) {
-      console.error('Error generando Excel:', err);
+      logger.error('ExportShiftsModal', 'Error generando Excel:', err);
       setError('Error generando el archivo: ' + (err.message || err));
     } finally {
       setExporting(false);

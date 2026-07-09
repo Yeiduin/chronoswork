@@ -6,6 +6,16 @@ import { format, parseISO, startOfWeek, endOfWeek, eachDayOfInterval, isWithinIn
 import { es } from 'date-fns/locale';
 
 /**
+ * Convierte getDay() (0=Dom) a ISO (7=Dom).
+ */
+export function toISODay(fecha) {
+  const d = fecha instanceof Date ? fecha : new Date(fecha);
+  if (isNaN(d.getTime())) return 1;
+  const day = d.getDay();
+  return day === 0 ? 7 : day;
+}
+
+/**
  * Formatea una fecha ISO a formato legible en español
  */
 export function formatFecha(fecha, formatStr = 'dd/MM/yyyy') {
@@ -126,7 +136,7 @@ export function getDatesByOption(option, customStart, customEnd) {
   switch (option) {
     case 'this_week': {
       const start = new Date(hoy);
-      const day = start.getDay() === 0 ? 7 : start.getDay();
+      const day = toISODay(start);
       start.setDate(start.getDate() - day + 1); // Monday
       const end = new Date(start);
       end.setDate(end.getDate() + 6); // Sunday
@@ -134,13 +144,13 @@ export function getDatesByOption(option, customStart, customEnd) {
     }
     case 'rest_of_week': {
       const end = new Date(hoy);
-      const day = end.getDay() === 0 ? 7 : end.getDay();
+      const day = toISODay(end);
       end.setDate(end.getDate() + (7 - day)); // Upcoming Sunday
       return getDays(hoy, end);
     }
     case 'next_week': {
       const start = new Date(hoy);
-      const day = start.getDay() === 0 ? 7 : start.getDay();
+      const day = toISODay(start);
       start.setDate(start.getDate() + (7 - day) + 1); // Next Monday
       const end = new Date(start);
       end.setDate(end.getDate() + 6); // Next Sunday
@@ -209,4 +219,19 @@ export function getNombreMes(mes) {
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
   ];
   return meses[mes - 1] || '';
+}
+
+/**
+ * Determina si una fecha es domingo o festivo.
+ * @param {Date|string} fecha
+ * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' (desde BD o fallback).
+ * @returns {boolean}
+ */
+export function esDominicalOFestivo(fecha, festivos = []) {
+  const d = fecha instanceof Date ? fecha : new Date(fecha);
+  if (isNaN(d.getTime())) return false;
+  const esDOM = d.getDay() === 0;
+  const dateStr = d.toISOString().slice(0, 10);
+  const esFestivo = Array.isArray(festivos) ? festivos.includes(dateStr) : false;
+  return esDOM || esFestivo;
 }

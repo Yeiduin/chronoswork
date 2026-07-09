@@ -1,8 +1,7 @@
 // ============================================================
 // ChronosWork — Página de Empleados
-// Lista todos los empleados con JOIN a area_employees y areas
-// para mostrar el nombre del área en la columna "ÁREA".
 // ============================================================
+import { useDragScroll } from '../hooks/useDragScroll';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../config/supabaseClient';
@@ -12,7 +11,7 @@ import EmployeeForm from '../components/EmployeeForm';
 import BulkImportModal from '../components/BulkImportModal';
 import {
   MdAdd, MdUpload, MdEdit, MdDelete, MdSearch,
-  MdRefresh, MdPeople, MdPersonAdd, MdCheckCircle, MdContentCopy,
+  MdRefresh, MdPeople, MdPersonAdd, MdCheckCircle, MdContentCopy, MdClose,
 } from 'react-icons/md';
 
 // ── Modal de provisión de cuenta de empleado ─────────────────────────────────
@@ -79,7 +78,7 @@ function ProvisionAccountModal({ employee, onClose }) {
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>C.C. {employee.cedula} · {employee.cargo}</div>
               </div>
 
-              <div className="cw-alert" style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1.25rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              <div className="cw-alert cw-alert--info" style={{ borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1.25rem', fontSize: '0.8rem' }}>
                 ℹ️ Se creará una cuenta de acceso con correo institucional y contraseña temporal.
                 El colaborador podrá cambiar su contraseña al ingresar por primera vez.
               </div>
@@ -153,6 +152,7 @@ function ProvisionAccountModal({ employee, onClose }) {
 export default function EmployeesPage() {
   const { tenant } = useAuth();
   const { areas, assignEmployee, removeEmployee } = useAreas();
+  const { ref: tableRef, handlers, style: dragStyle } = useDragScroll();
 
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -165,6 +165,7 @@ export default function EmployeesPage() {
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [showImport, setShowImport] = useState(false);
   const [provisioningEmployee, setProvisioningEmployee] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, nombre }
 
   // ─── Cargar empleados con su área asignada (vía JOIN) ─────────────────
   const fetchEmployees = async () => {
@@ -234,16 +235,19 @@ export default function EmployeesPage() {
   };
 
   // ─── Eliminar empleado (soft delete) ──────────────────────────────────
-  const handleDelete = async (id) => {
-    if (!confirm('¿Eliminar este empleado?')) return;
+  const handleDelete = async () => {
+    if (!deleteConfirm) return;
+    const { id } = deleteConfirm;
     const { error } = await supabase
       .from('employees')
       .update({ activo: false })
       .eq('id', id);
     if (error) {
       alert('Error al eliminar: ' + error.message);
+      setDeleteConfirm(null);
       return;
     }
+    setDeleteConfirm(null);
     await fetchEmployees();
   };
 
@@ -297,19 +301,19 @@ export default function EmployeesPage() {
   }, [employees, searchTerm, filterArea, filterEstado]);
 
   return (
-    <div className="cw-page">
+    <div className="page-wrapper animate-fade-in">
       {/* Header */}
-      <div className="cw-page__header">
-        <div>
-          <h2 className="cw-page__title">
+      <div className="page-header">
+        <div className="page-header__info">
+          <h1 className="page-title">
             <MdPeople style={{ marginRight: 8, color: '#10b981' }} />
             Colaboradores registrados
-          </h2>
-          <p className="cw-page__subtitle">
+          </h1>
+          <p className="page-subtitle">
             Gestión de personal, contratos y seguridad social
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div className="page-header__actions">
           <button
             className="cw-btn cw-btn--secondary"
             onClick={fetchEmployees}
@@ -396,8 +400,8 @@ export default function EmployeesPage() {
               : '🔍 Ningún empleado coincide con los filtros.'}
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="cw-table" style={{ width: '100%' }}>
+          <div ref={tableRef} {...handlers} style={dragStyle}>
+            <table className="cw-table cw-table--striped" style={{ width: '100%' }}>
               <thead>
                 <tr>
                   <th style={{ minWidth: 90 }}>CÉDULA</th>
@@ -496,7 +500,7 @@ export default function EmployeesPage() {
                           </button>
                           <button
                             className="cw-btn cw-btn--icon cw-btn--danger"
-                            onClick={() => handleDelete(emp.id)}
+                            onClick={() => setDeleteConfirm({ id: emp.id, nombre: emp.nombre })}
                             title="Eliminar"
                           >
                             <MdDelete />
@@ -546,6 +550,28 @@ export default function EmployeesPage() {
           employee={provisioningEmployee}
           onClose={() => { setProvisioningEmployee(null); fetchEmployees(); }}
         />
+      )}
+
+      {/* Confirmar eliminación de empleado */}
+      {deleteConfirm && (
+        <div className="cw-modal-overlay" onClick={(e) => e.target === e.currentTarget && setDeleteConfirm(null)}>
+          <div className="cw-modal animate-slide-up" style={{ maxWidth: 420 }}>
+            <div className="cw-modal__header">
+              <h3 className="cw-modal__title">🗑️ Eliminar colaborador</h3>
+              <button className="cw-modal__close" onClick={() => setDeleteConfirm(null)}><MdClose /></button>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0 1.25rem', marginBottom: '1.25rem' }}>
+              ¿Eliminar a <strong style={{ color: 'var(--text-primary)' }}>{deleteConfirm.nombre}</strong>?
+              El colaborador se marcará como inactivo. Esta acción se puede revertir desde la base de datos.
+            </p>
+            <div className="cw-modal__footer">
+              <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
+              <button className="cw-btn cw-btn--danger" onClick={handleDelete}>
+                <MdDelete /> Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -4,7 +4,7 @@ import { useEmployees } from '../hooks/useEmployees';
 import { useAbsences } from '../hooks/useAbsences';
 import { useAreas } from '../hooks/useAreas';
 import { supabase } from '../config/supabaseClient';
-import { getDiasMes, getNombreMes, getDatesByOption } from '../core/dateUtils';
+import { getDiasMes, getNombreMes, getDatesByOption, toISODay } from '../core/dateUtils';
 import { MdWarning, MdCheckCircle } from 'react-icons/md';
 import { format } from 'date-fns';
 import { ErrorBoundary } from '../components/ErrorBoundary';
@@ -29,7 +29,7 @@ export default function SchedulingPage() {
   const [viewMode, setViewMode] = useState(() => {
     const d = now.getDate();
     const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startDow = firstDay.getDay() === 0 ? 7 : firstDay.getDay();
+    const startDow = toISODay(firstDay);
     const weekIndex = Math.floor(((startDow - 1) + (d - 1)) / 7) + 1;
     return `weekly_${weekIndex}`;
   });
@@ -66,7 +66,7 @@ export default function SchedulingPage() {
     let currentWeek = [];
     diasTodos.forEach(d => {
       if (currentWeek.length === 0 && d.getDay() !== 1) {
-        const prevDaysCount = (d.getDay() === 0 ? 7 : d.getDay()) - 1;
+        const prevDaysCount = toISODay(d) - 1;
         for (let i = prevDaysCount; i > 0; i--) {
           const prevDay = new Date(d);
           prevDay.setDate(d.getDate() - i);
@@ -338,7 +338,7 @@ export default function SchedulingPage() {
 
   const turnosAsignados = shifts.length;
   const diasSinCobertura = dias.filter(dia => {
-    const dowISO = dia.getDay() === 0 ? 7 : dia.getDay();
+    const dowISO = toISODay(dia);
     if (selectedArea && !diasTrabajoArea.includes(dowISO)) return false;
     const dateStr = format(dia, 'yyyy-MM-dd');
     return !filteredEmployees.some(emp => shifts.some(s => s.employee_id === emp.id && s.start_time.startsWith(dateStr)));

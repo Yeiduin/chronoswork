@@ -6,16 +6,16 @@ export default function NotFoundPage() {
   const homeRoute = getRoleRedirect(userRole);
 
   return (
-    <div style={{
+    <div className="animate-fade-in" style={{
       minHeight: '100vh', display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center',
       background: 'var(--bg-primary)', color: 'var(--text-primary)', textAlign: 'center',
       padding: '2rem',
     }}>
-      <div style={{ fontSize: '6rem', marginBottom: '1rem' }}>⏱️</div>
-      <h1 style={{
+      <div className="empty-state__icon" style={{ fontSize: '6rem', marginBottom: '1rem' }}>⏱️</div>
+      <h1 className="page-title" style={{
         fontSize: '8rem', fontWeight: 900,
-        background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+        background: 'linear-gradient(135deg, var(--cw-accent), var(--cw-purple))',
         WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
         lineHeight: 1, marginBottom: '0.5rem',
       }}>404</h1>

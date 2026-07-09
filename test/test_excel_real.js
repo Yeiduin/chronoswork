@@ -1,8 +1,7 @@
 // Test E2E: simula exactamente la importación del Excel que enviaste
 
-import { readFileSync, readFileSyncSync } from 'fs';
+import { readFileSync } from 'fs';
 import * as XLSX from 'xlsx';
-import { open } from 'fs/promises';
 
 const SECTORES_VALUES = ['RETAIL','HOTELERIA','RESTAURANTE','SALUD','SEGURIDAD','INDUSTRIA','CONSTRUCCION','LOGISTICA','OFICINA','EDUCACION','AGRO','TECNOLOGIA','CALL_CENTER','OTRO'];
 const TIPOS_CONTRATO_VALUES = ['INDEFINIDO','TERMINO_FIJO','OBRA_LABOR','POR_HORAS','SALARIO_FIJO','PRESTACION_SERVICIOS','APRENDIZAJE','OCASIONAL','TEMPORAL'];
@@ -62,8 +61,16 @@ function norm(field, val) {
   }
 }
 
+// ── Ruta del Excel a probar ──
+const excelPath = process.argv[2];
+if (!excelPath) {
+  console.error('❌ ERROR: Debes pasar la ruta del archivo Excel como argumento.');
+  console.error('   Uso: node test/test_excel_real.js <ruta/al/archivo.xlsx>');
+  process.exit(1);
+}
+
 // ── Simular la lectura del Excel ──
-const data = readFileSync('/workspace/attachments/efd1bdca__c574f912-dc23-47c8-8949-69032d663f75.xlsx');
+const data = readFileSync(excelPath);
 const wb = XLSX.read(data, { type: 'buffer' });
 console.log('Hojas del archivo:', wb.SheetNames);
 

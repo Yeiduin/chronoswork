@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../config/supabaseClient';
+import { logger } from '../config/logger';
 import {
   MdCalendarMonth, MdEventBusy, MdCalculate,
   MdLogout, MdSchedule, MdAccessTime, MdChevronLeft, MdChevronRight,
@@ -571,7 +573,7 @@ export default function EmployeeProfilePage() {
       setProfile(data);
     } catch (err) {
       setError('No se pudo cargar tu perfil. Contacta a tu administrador.');
-      console.error('[EmployeeProfile]', err);
+      logger.error('EmployeeProfilePage', err);
     } finally {
       setLoading(false);
     }
@@ -684,10 +686,10 @@ export default function EmployeeProfilePage() {
 
         {/* Top bar */}
         <div className="emp-hero__topbar">
-          <div className="emp-hero__brand">
+          <Link to="/landing" className="emp-hero__brand" style={{ textDecoration: 'none', color: 'inherit' }}>
             <span className="emp-hero__brand-icon">⏱️</span>
             <span className="emp-hero__brand-name">ChronosWork</span>
-          </div>
+          </Link>
           <button className="emp-signout-btn" onClick={handleSignOut}>
             <MdLogout /> Salir
           </button>

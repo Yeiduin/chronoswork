@@ -23,7 +23,7 @@ import { format, addDays } from 'date-fns';
 import {
   PATRONES_ROTATIVOS,
 } from '../config/laborCatalog.js';
-import { getLocalISOString } from './dateUtils.js';
+import { getLocalISOString, toISODay } from './dateUtils.js';
 
 // ── Defaults legales Colombia (Ley 2101/2021 + Ley 2466/2025) ────────────
 export const LEGAL_DEFAULTS_CO = {
@@ -459,12 +459,12 @@ export function generateAutomaticShifts({
     const n = parseInt(v, 10);
     return (!isNaN(n) && n > 0) ? n : null;
   };
-  const minDia = parseHeadcount(minEmpleadosDia);
-  const maxDia = parseHeadcount(maxEmpleadosDia);
+  let minDia = parseHeadcount(minEmpleadosDia);
+  let maxDia = parseHeadcount(maxEmpleadosDia);
   const objetivoNoche = nightConfig ? Math.max(0, nightConfig.minStaff || 0) : 0;
   // Objetivo de personas DIURNAS = techo del día menos las de la noche.
-  const objetivoDia = maxDia != null ? Math.max(0, maxDia - objetivoNoche) : null;
-  const usaHeadcount = maxDia != null; // si hay techo, usamos la curva como FORMA
+  let objetivoDia = maxDia != null ? Math.max(0, maxDia - objetivoNoche) : null;
+  let usaHeadcount = maxDia != null; // si hay techo, usamos la curva como FORMA
 
   // ── v5: Hora a la que arranca el día (default 04:00, configurable) ────
   const dayStartSlot = Math.max(
@@ -489,7 +489,7 @@ export function generateAutomaticShifts({
     .map(d => ({
       date: d,
       dateStr: dateToStr(d),
-      dayOfWeek: d.getDay() === 0 ? 7 : d.getDay(),
+      dayOfWeek: toISODay(d),
       isWeekend: d.getDay() === 0 || d.getDay() === 6,
     }))
     .filter(d => diasTrabajoArea.includes(d.dayOfWeek));
@@ -501,6 +501,20 @@ export function generateAutomaticShifts({
   // ── Particionar empleados por jornada efectiva ───────────────────────
   const empByClass = { NIGHT_ONLY: [], DAY_ONLY: [], MIXED: [], ANY: [] };
   employees.forEach(emp => { empByClass[classifyEmployee(emp)].push(emp); });
+
+  // ── v5.1: OFICINA automático ──
+  // En modo OFICINA sin headcount configurado, asumimos que TODOS los
+  // empleados trabajan todos los días (horario fijo de oficina).
+  // Esto evita que el algoritmo deje empleados con menos horas que otros.
+  if (modoOperacion === 'OFICINA' && maxDia == null) {
+    const officeWorkers = employees.length;
+    if (officeWorkers > 0) {
+      maxDia = officeWorkers;
+      minDia = officeWorkers;
+      objetivoDia = officeWorkers;
+      usaHeadcount = true;
+    }
+  }
 
   // ── Configuración de slots nocturnos ────────────────────────────────
   let nightStartSlot = null, nightEndRaw = null;
@@ -659,7 +673,7 @@ export function generateAutomaticShifts({
   const getRawDemandVecFor = (dateObj) => {
     const ds = dateToStr(dateObj);
     if (rawDemandCache[ds]) return rawDemandCache[ds];
-    const dow = dateObj.getDay() === 0 ? 7 : dateObj.getDay();
+    const dow = toISODay(dateObj);
     const isWk = dateObj.getDay() === 0 || dateObj.getDay() === 6;
     const raw = buildDemandVector(dow, demandSlots, employees.length, isWk, slotsPorHora);
     rawDemandCache[ds] = raw;

@@ -10,22 +10,10 @@ import {
   MAX_EXTRAS_SEMANALES,
   RECARGOS,
 } from '../config/constants';
+import { esDominicalOFestivo } from './dateUtils';
 
 const INICIO_DIURNA_H = 6;   // 06:00
 const FIN_DIURNA_H = 19;     // 19:00
-
-/**
- * Determina si una fecha es domingo o festivo.
- * @param {Date|string} fecha
- * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' (desde BD o fallback).
- */
-export function esDominicalOFestivo(fecha, festivos = []) {
-  const d = new Date(fecha);
-  const esDOM = d.getDay() === 0;
-  const dateStr = d.toISOString().slice(0, 10);
-  const esFestivo = Array.isArray(festivos) ? festivos.includes(dateStr) : false;
-  return esDOM || esFestivo;
-}
 
 /**
  * Determina si una fecha cae en el período A (Ene-Jun) o B (Jul-Dic) del 2026

@@ -5,6 +5,7 @@ import { supabase } from '../../config/supabaseClient';
 import { getLocalISOString } from '../../core/dateUtils';
 import { formatCOP } from '../../core/validators';
 import { buildDescansos } from '../../core/generateAutomaticShifts';
+import { logger } from '../../config/logger';
 
 export default function ShiftModal({ employee, fecha, areaId, areaTemplates, breakPolicy, onClose, onSave, onDelete, existingShift }) {
   const [selected, setSelected] = useState(existingShift?.template_id || null);
@@ -76,7 +77,7 @@ export default function ShiftModal({ employee, fecha, areaId, areaTemplates, bre
       });
       onClose();
     } catch (err) {
-      console.error(err);
+      logger.error('ShiftModal', err);
     } finally {
       setLoading(false);
     }

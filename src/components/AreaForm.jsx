@@ -9,7 +9,7 @@ import { useAreas } from '../hooks/useAreas';
 import {
   TIPOS_CONTRATO, TIPOS_TURNO, PATRONES_ROTATIVOS,
   SECTORES, AREAS_POR_SECTOR, FRANJAS_POR_SECTOR,
-  TIPOS_JORNADA, getAreasBySector, getFranjasBySector, getSectorDefaults,
+  getAreasBySector, getFranjasBySector, getSectorDefaults,
   SMLV_2025, AUX_TRANSPORTE_2025, SMLV_HORA_2025,
 } from '../config/laborCatalog';
 import {
@@ -51,8 +51,6 @@ function buildDefaultsForSector(sector) {
     // 24/7 trabaja todos los días; oficina, L-V.
     dias_trabajo: es247 ? [1, 2, 3, 4, 5, 6, 7] : [1, 2, 3, 4, 5],
     patron_rotativo: null,
-    jornada_tipo: 'DIURNA',
-    duracion_jornada_horas: 8,
     dias_descanso: 1,
     dias_descanso_default: 1,
     nivel_riesgo_arl: 1,
@@ -82,8 +80,6 @@ export default function AreaFormModal({ area, onClose }) {
         centro_costo: area.centro_costo || '',
         // Jornada
         modo_operacion: area.modo_operacion || 'OFICINA',
-        jornada_tipo: area.jornada_tipo || 'DIURNA',
-        duracion_jornada_horas: area.duracion_jornada_horas || 8,
         dias_trabajo: area.dias_trabajo || [1, 2, 3, 4, 5],
         dias_descanso: area.dias_descanso || 1,
         dias_descanso_default: area.dias_descanso_default || 1,
@@ -142,8 +138,6 @@ export default function AreaFormModal({ area, onClose }) {
       sub_sector: '',
       centro_costo: '',
       modo_operacion: 'OFICINA',
-      jornada_tipo: 'DIURNA',
-      duracion_jornada_horas: 8,
       dias_trabajo: [1, 2, 3, 4, 5],
       dias_descanso: 1,
       dias_descanso_default: 1,
@@ -380,7 +374,6 @@ export default function AreaFormModal({ area, onClose }) {
                   onClick={() => setForm(p => ({
                     ...p,
                     modo_operacion: 'OFICINA',
-                    jornada_tipo: 'DIURNA',
                     dias_trabajo: [1, 2, 3, 4, 5],
                     patron_rotativo: null,
                     night_shift_enabled: false,
@@ -411,26 +404,6 @@ export default function AreaFormModal({ area, onClose }) {
                   icono="📞" titulo="24/7 Call Center"
                   desc="Empleados dedicados a la noche + slots dinámicos de día (recomendado call centers)"
                   color="#10b981" />
-              </div>
-            </div>
-
-            {/* Tipo de jornada */}
-            <div className="cw-form-group">
-              <label className="cw-label">Tipo de jornada (CST art. 158-164)</label>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.4rem' }}>
-                {TIPOS_JORNADA.map(j => (
-                  <button key={j.value} type="button"
-                    onClick={() => setForm(p => ({ ...p, jornada_tipo: j.value }))}
-                    style={{
-                      padding: '0.5rem 0.4rem', borderRadius: 8, cursor: 'pointer',
-                      border: `2px solid ${form.jornada_tipo === j.value ? 'var(--cw-accent)' : 'var(--border-subtle)'}`,
-                      background: form.jornada_tipo === j.value ? 'var(--cw-accent)18' : 'var(--bg-glass)',
-                      textAlign: 'center', fontSize: '0.75rem', fontWeight: 600,
-                    }}>{j.label.split(' ')[0]}</button>
-                ))}
-              </div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
-                {TIPOS_JORNADA.find(j => j.value === form.jornada_tipo)?.desc}
               </div>
             </div>
 
