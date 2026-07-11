@@ -3,8 +3,10 @@
 // Crea un usuario en Supabase Auth para un empleado existente
 // usando la service_role key de forma segura (server-side).
 //
-// Despliegue: Supabase Dashboard → Edge Functions → New Function
-// Nombre de la función: provision-employee
+// v2 — Email institucional basado en nombre del empleado:
+//   carlosandresrape@empresa.chronoswork.app
+//   Contraseña inicial = número de cédula
+//   Login dual: email o cédula
 // ============================================================
 
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
@@ -12,29 +14,98 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function generateSecurePassword(length = 12): string {
-  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const lower = "abcdefghjkmnpqrstuvwxyz";
-  const digits = "23456789";
-  const special = "@#$%&*";
-  const all = upper + lower + digits + special;
+/**
+ * Normaliza un texto: quita tildes/acentos, convierte a minúscula,
+ * elimina todo lo que no sea letra ASCII.
+ */
+function normalizeText(text: string): string {
+  return text
+    .normalize("NFD")                        // descompone acentos
+    .replace(/[\u0300-\u036f]/g, "")         // elimina diacríticos
+    .replace(/ñ/gi, "n")                     // ñ → n (después de NFD queda "ñ" intacta en algunos casos)
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");                 // solo letras ASCII
+}
 
-  const arr = new Uint8Array(length);
-  crypto.getRandomValues(arr);
+/**
+ * Genera la parte local del email institucional a partir del nombre completo.
+ *
+ * Reglas colombianas:
+ *   - 1 palabra  → se usa completa
+ *   - 2 palabras → nombre completo + 2 primeras letras del apellido
+ *   - 3 palabras → nombre completo + 2 primeras letras del apellido
+ *   - 4+ palabras → nombres completos + 2 primeras letras de cada apellido (últimos 2)
+ *
+ * Ejemplo: "Carlos Andrés Ramírez Pérez" → "carlosandresrape"
+ */
+function buildEmailLocalPart(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).map(normalizeText).filter(Boolean);
 
-  let password = "";
-  // Garantizar al menos un caracter de cada categoría
-  password += upper[arr[0] % upper.length];
-  password += lower[arr[1] % lower.length];
-  password += digits[arr[2] % digits.length];
-  password += special[arr[3] % special.length];
+  if (parts.length === 0) return "empleado";
+  if (parts.length === 1) return parts[0];
 
-  for (let i = 4; i < length; i++) {
-    password += all[arr[i] % all.length];
+  if (parts.length === 2) {
+    // nombre + apellido
+    return parts[0] + parts[1].slice(0, 2);
   }
 
-  // Mezclar el password para no predecir el patrón
-  return password.split("").sort(() => Math.random() - 0.5).join("");
+  if (parts.length === 3) {
+    // nombre1 + nombre2 o apellido1 — asumimos: nombre apellido1 apellido2
+    // Pero también puede ser: nombre1 nombre2 apellido
+    // Heurística colombiana: últimas 1 palabra es apellido si solo hay 3
+    const nombres = parts.slice(0, 2).join("");
+    const apellido = parts[2].slice(0, 2);
+    return nombres + apellido;
+  }
+
+  // 4+ palabras: últimas 2 son apellidos, el resto son nombres
+  const apellidos = parts.slice(-2);
+  const nombres = parts.slice(0, -2);
+  const nombresStr = nombres.join("");
+  const apellidosStr = apellidos.map(a => a.slice(0, 2)).join("");
+  return nombresStr + apellidosStr;
+}
+
+/**
+ * Genera un slug limpio a partir de la razón social del tenant.
+ * "Mi Empresa S.A.S." → "miempresasas"
+ */
+function buildDomainSlug(razonSocial: string): string {
+  const slug = normalizeText(razonSocial);
+  return slug || "empresa";
+}
+
+/**
+ * Busca un email disponible. Si el base ya existe, agrega sufijo numérico (2, 3, 4...).
+ * Máximo 99 intentos para evitar loops infinitos.
+ *
+ * Busca en employees.email_institucional (DB local) que es mucho más eficiente
+ * que iterar sobre auth.users.
+ */
+async function findAvailableEmail(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  localPart: string,
+  domain: string,
+): Promise<string> {
+  for (let suffix = 0; suffix < 100; suffix++) {
+    const candidate = suffix === 0
+      ? `${localPart}@${domain}`
+      : `${localPart}${suffix + 1}@${domain}`;
+
+    // Buscar si ya existe un empleado con ese email institucional
+    const { data: existing } = await supabaseAdmin
+      .from("employees")
+      .select("id")
+      .eq("email_institucional", candidate)
+      .maybeSingle();
+
+    if (!existing) {
+      return candidate;
+    }
+  }
+
+  // Fallback extremo: usar timestamp
+  return `${localPart}${Date.now()}@${domain}`;
 }
 
 const corsHeaders = {
@@ -142,29 +213,49 @@ serve(async (req: Request) => {
       });
     }
 
-    // ── 4. Obtener el NIT del tenant para generar el email institucional ───
+    // ── 4. Obtener el tenant para generar el dominio del email ─────────────
     const { data: tenant } = await supabaseUserClient
       .from("tenants")
       .select("nit, razon_social")
       .eq("id", callerTenantId)
       .maybeSingle();
 
-    const nitSlug = (tenant?.nit || "empresa").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-    const emailBase = email_override || `${cedula}@${nitSlug}.chronoswork.internal`;
-
-    // ── 5. Generar contraseña temporal segura ─────────────────────────────
-    const tempPassword = generateSecurePassword(14);
-
-    // ── 6. Crear el usuario en Supabase Auth usando service_role ──────────
+    // ── 5. Generar email institucional basado en el nombre ─────────────────
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
       { auth: { autoRefreshToken: false, persistSession: false } }
     );
 
+    let emailFinal: string;
+
+    if (email_override) {
+      // Si se proporciona un email personalizado, usarlo directamente
+      emailFinal = email_override;
+    } else {
+      const localPart = buildEmailLocalPart(nombre);
+      const domainSlug = buildDomainSlug(tenant?.razon_social || "empresa");
+      const domain = `${domainSlug}.chronoswork.app`;
+      emailFinal = await findAvailableEmail(supabaseAdmin, localPart, domain);
+    }
+
+    // ── 6. Contraseña inicial = número de cédula ──────────────────────────
+    const initialPassword = cedula.toString().trim();
+
+    // Validar que la cédula cumple el mínimo de Supabase (6 chars)
+    if (initialPassword.length < 6) {
+      return new Response(JSON.stringify({
+        error: "La cédula del empleado es demasiado corta para usarla como contraseña inicial (mínimo 6 caracteres)."
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // ── 7. Crear el usuario en Supabase Auth usando service_role ──────────
     const { data: newAuthUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
-      email: emailBase,
-      password: tempPassword,
+      email: emailFinal,
+      password: initialPassword,
       email_confirm: true, // Confirmar email automáticamente (no necesita verificación)
       app_metadata: {
         role: "empleado",
@@ -183,7 +274,7 @@ serve(async (req: Request) => {
       // Si el email ya existe, devolver error descriptivo
       if (createError.message?.includes("already")) {
         return new Response(JSON.stringify({
-          error: `El correo ${emailBase} ya está registrado. Use un email personalizado con el campo email_override.`
+          error: `El correo ${emailFinal} ya está registrado. Use un email personalizado con el campo email_override.`
         }), {
           status: 409,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -194,11 +285,11 @@ serve(async (req: Request) => {
 
     const newUserId = newAuthUser.user.id;
 
-    // ── 7. Vincular el auth_user_id al empleado en la DB ─────────────────
+    // ── 8. Vincular el auth_user_id y email_institucional al empleado ───────
     // Usamos supabaseAdmin para saltar RLS en esta operación crítica
     const { error: linkError } = await supabaseAdmin
       .from("employees")
-      .update({ auth_user_id: newUserId })
+      .update({ auth_user_id: newUserId, email_institucional: emailFinal })
       .eq("id", employee_id);
 
     if (linkError) {
@@ -207,7 +298,7 @@ serve(async (req: Request) => {
       throw new Error(`Error al vincular la cuenta: ${linkError.message}`);
     }
 
-    // ── 8. Crear entrada en tenant_users para el nuevo empleado ───────────
+    // ── 9. Crear entrada en tenant_users para el nuevo empleado ───────────
     const { error: tuInsertError } = await supabaseAdmin
       .from("tenant_users")
       .upsert({
@@ -223,16 +314,16 @@ serve(async (req: Request) => {
       throw new Error(`Error al registrar el rol del empleado: ${tuInsertError.message}`);
     }
 
-    // ── 9. Respuesta exitosa (credenciales se muestran UNA SOLA VEZ) ───────
+    // ── 10. Respuesta exitosa ─────────────────────────────────────────────
     return new Response(JSON.stringify({
       success: true,
       message: "Cuenta de empleado creada exitosamente.",
       credentials: {
-        email: emailBase,
-        password: tempPassword, // Solo se retorna aquí, NUNCA se almacena en DB
+        email: emailFinal,
+        password: initialPassword,
         employee_id: employee_id,
         auth_user_id: newUserId,
-        nota: "⚠️ Entregue estas credenciales físicamente al colaborador. No se volverán a mostrar.",
+        nota: "⚠️ La contraseña inicial es el número de cédula del colaborador. Puede ingresar con su correo o con su número de cédula.",
       },
     }), {
       status: 200,

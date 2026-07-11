@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../config/supabaseClient';
 import { logger } from '../config/logger';
+import { isCedulaInput } from '../core/validators';
 
 const AuthContext = createContext(null);
 
@@ -139,8 +140,37 @@ export function AuthProvider({ children }) {
     tenantId: tenant?.id ?? null,
   }), [userRole, tenant]);
 
+  // ── Resolver de login: cédula → email ─────────────────────────────────────
+  const resolveLoginIdentifier = async (identifier) => {
+    const trimmed = String(identifier).trim();
+
+    // Si ya es un email (contiene @), devolverlo tal cual
+    if (trimmed.includes('@')) return trimmed;
+
+    // Si es un número de cédula, buscar el email institucional en employees
+    if (isCedulaInput(trimmed)) {
+      const { data: emp, error } = await supabase
+        .from('employees')
+        .select('email_institucional')
+        .eq('cedula', trimmed)
+        .not('auth_user_id', 'is', null)
+        .maybeSingle();
+
+      if (error || !emp?.email_institucional) {
+        throw new Error('No se encontró una cuenta vinculada a ese número de cédula.');
+      }
+
+      return emp.email_institucional;
+    }
+
+    // Si no es ni email ni cédula válida, devolver tal cual y dejar que falle el login
+    return trimmed;
+  };
+
   // ── Auth Actions ──────────────────────────────────────────────────────────
-  const signIn = async (email, password) => {
+  const signIn = async (identifier, password) => {
+    // Resolver cédula → email si es necesario
+    const email = await resolveLoginIdentifier(identifier);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data;

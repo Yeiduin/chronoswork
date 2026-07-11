@@ -102,3 +102,40 @@ export function formatCOP(valor) {
     minimumFractionDigits: 0,
   }).format(valor);
 }
+
+/**
+ * Detecta si el input de login es un número de cédula (solo dígitos, 5-15 chars).
+ */
+export function isCedulaInput(input) {
+  const cleaned = String(input).trim();
+  return /^\d{5,15}$/.test(cleaned);
+}
+
+/**
+ * Valida un identificador de login: acepta email válido O número de cédula.
+ * Retorna { valid, isCedula, message? }
+ */
+export function validarLoginIdentifier(input) {
+  const trimmed = String(input).trim();
+  if (!trimmed) {
+    return { valid: false, isCedula: false, message: 'Ingrese su correo o número de cédula.' };
+  }
+
+  // Si parece cédula (solo dígitos)
+  if (/^\d+$/.test(trimmed)) {
+    if (trimmed.length < 5 || trimmed.length > 15) {
+      return { valid: false, isCedula: true, message: 'El número de cédula debe tener entre 5 y 15 dígitos.' };
+    }
+    return { valid: true, isCedula: true };
+  }
+
+  // Si contiene @, validar como email
+  if (trimmed.includes('@')) {
+    const emailResult = validarEmail(trimmed);
+    return { ...emailResult, isCedula: false };
+  }
+
+  // No es ni email ni cédula
+  return { valid: false, isCedula: false, message: 'Ingrese un correo electrónico válido o su número de cédula.' };
+}
+

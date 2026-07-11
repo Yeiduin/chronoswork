@@ -11,7 +11,7 @@ import EmployeeForm from '../components/EmployeeForm';
 import BulkImportModal from '../components/BulkImportModal';
 import {
   MdAdd, MdUpload, MdEdit, MdDelete, MdSearch,
-  MdRefresh, MdPeople, MdPersonAdd, MdCheckCircle, MdContentCopy, MdClose,
+  MdRefresh, MdPeople, MdPersonAdd, MdCheckCircle, MdContentCopy, MdClose, MdVpnKey,
 } from 'react-icons/md';
 
 // ── Modal de provisión de cuenta de empleado ─────────────────────────────────
@@ -79,8 +79,8 @@ function ProvisionAccountModal({ employee, onClose }) {
               </div>
 
               <div className="cw-alert cw-alert--info" style={{ borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1.25rem', fontSize: '0.8rem' }}>
-                ℹ️ Se creará una cuenta de acceso con correo institucional y contraseña temporal.
-                El colaborador podrá cambiar su contraseña al ingresar por primera vez.
+                ℹ️ Se creará una cuenta de acceso con correo institucional basado en el nombre del colaborador.
+                La contraseña inicial será su número de cédula. Podrá ingresar con el correo o con su cédula.
               </div>
 
               {error && <div className="cw-alert cw-alert--error" style={{ marginBottom: '1rem' }}>🚫 {error}</div>}
@@ -104,14 +104,14 @@ function ProvisionAccountModal({ employee, onClose }) {
               <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
                 <MdCheckCircle style={{ fontSize: '3rem', color: '#22c55e' }} />
                 <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.5rem' }}>¡Cuenta creada exitosamente!</h3>
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Entregue estas credenciales físicamente al colaborador.</p>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Entregue estas credenciales físicamente al colaborador. Puede ingresar con su correo o su número de cédula.</p>
               </div>
 
-              <div className="cw-alert" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: '0.6rem 0.9rem', marginBottom: '1.25rem', fontSize: '0.75rem', color: '#ef4444', fontWeight: 600 }}>
-                ⚠️ Esta información solo se mostrará UNA VEZ. Cópiela antes de cerrar.
+              <div className="cw-alert" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: '0.6rem 0.9rem', marginBottom: '1rem', fontSize: '0.75rem', color: '#ef4444', fontWeight: 600 }}>
+                ⚠️ La contraseña inicial es el número de cédula del colaborador. Se recomienda que la cambie al primer ingreso.
               </div>
 
-              {[['Correo', 'email'], ['Contraseña', 'password']].map(([label, field]) => (
+              {[['Correo institucional', 'email'], ['Contraseña (cédula)', 'password']].map(([label, field]) => (
                 <div key={field} className="cw-form-group">
                   <label className="cw-label">{label}</label>
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -133,6 +133,10 @@ function ProvisionAccountModal({ employee, onClose }) {
                 </div>
               ))}
 
+              <div className="cw-alert cw-alert--info" style={{ borderRadius: 8, padding: '0.6rem 0.9rem', marginBottom: '0.5rem', fontSize: '0.75rem' }}>
+                📌 <strong>Login del colaborador:</strong> Puede ingresar con el correo de arriba <strong>o</strong> con su número de cédula como usuario.
+              </div>
+
               <button
                 type="button"
                 className="cw-btn cw-btn--primary"
@@ -143,6 +147,67 @@ function ProvisionAccountModal({ employee, onClose }) {
               </button>
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Modal para ver credenciales (Email y Cédula) ────────────────────────────
+function ViewCredentialsModal({ employee, onClose }) {
+  const [copied, setCopied] = useState({ email: false, password: false });
+
+  const copyToClipboard = (field, text) => {
+    navigator.clipboard.writeText(text);
+    setCopied(prev => ({ ...prev, [field]: true }));
+    setTimeout(() => setCopied(prev => ({ ...prev, [field]: false })), 2000);
+  };
+
+  return (
+    <div className="cw-modal-overlay">
+      <div className="cw-modal" style={{ maxWidth: 450 }}>
+        <div className="cw-modal-header">
+          <h2 className="cw-modal-title">Credenciales de Acceso</h2>
+          <button className="cw-icon-btn" onClick={onClose} aria-label="Cerrar modal"><MdClose /></button>
+        </div>
+        <div className="cw-modal-body">
+          <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+            <MdVpnKey style={{ fontSize: '3rem', color: 'var(--cw-accent)' }} />
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.5rem' }}>
+              {employee.nombre}
+            </h3>
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+              El colaborador puede usar cualquiera de estos datos para iniciar sesión.
+            </p>
+          </div>
+
+          {[['Correo institucional', employee.email_institucional, 'email'], ['Cédula (usuario/contraseña)', employee.cedula, 'password']].map(([label, value, field]) => (
+            <div key={field} className="cw-form-group">
+              <label className="cw-label">{label}</label>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <input
+                  className="cw-input"
+                  readOnly
+                  value={value || 'No disponible'}
+                  style={{ fontFamily: 'monospace', flex: 1, color: value ? 'inherit' : 'var(--text-muted)' }}
+                />
+                {value && (
+                  <button
+                    type="button"
+                    className="cw-btn cw-btn--secondary"
+                    onClick={() => copyToClipboard(field, value)}
+                    style={{ flexShrink: 0, minWidth: 80, fontSize: '0.78rem' }}
+                  >
+                    {copied[field] ? <><MdCheckCircle /> Copiado</> : <><MdContentCopy /> Copiar</>}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+
+          <div className="cw-alert cw-alert--info" style={{ borderRadius: 8, padding: '0.6rem 0.9rem', marginTop: '1rem', fontSize: '0.75rem' }}>
+            📌 <strong>Nota:</strong> Si el empleado cambió su contraseña inicial, la nueva contraseña no será visible aquí por seguridad. En caso de pérdida, deberá usar la opción de recuperación por correo.
+          </div>
         </div>
       </div>
     </div>
@@ -165,6 +230,7 @@ export default function EmployeesPage() {
   const [editingEmployee, setEditingEmployee] = useState(null);
   const [showImport, setShowImport] = useState(false);
   const [provisioningEmployee, setProvisioningEmployee] = useState(null);
+  const [viewCredentialsEmployee, setViewCredentialsEmployee] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, nombre }
 
   // ─── Cargar empleados con su área asignada (vía JOIN) ─────────────────
@@ -472,9 +538,19 @@ export default function EmployeesPage() {
                       </td>
                       <td>
                         {emp.auth_user_id ? (
-                          <span style={{ fontSize: '0.72rem', color: '#22c55e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <MdCheckCircle /> Vinculada
-                          </span>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                            <span style={{ fontSize: '0.72rem', color: '#22c55e', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <MdCheckCircle /> Vinculada
+                            </span>
+                            <button
+                              type="button"
+                              className="cw-btn cw-btn--secondary"
+                              style={{ padding: '0.1rem 0.4rem', fontSize: '0.65rem', borderRadius: 4 }}
+                              onClick={() => setViewCredentialsEmployee(emp)}
+                            >
+                              <MdVpnKey /> Credenciales
+                            </button>
+                          </div>
                         ) : emp.activo ? (
                           <button
                             id={`btn-provision-emp-${emp.id}`}
@@ -545,10 +621,22 @@ export default function EmployeesPage() {
         />
       )}
 
+      {/* Modal de provisión de cuenta */}
       {provisioningEmployee && (
         <ProvisionAccountModal
           employee={provisioningEmployee}
-          onClose={() => { setProvisioningEmployee(null); fetchEmployees(); }}
+          onClose={(shouldRefresh) => {
+            setProvisioningEmployee(null);
+            if (shouldRefresh === true) fetchEmployees();
+          }}
+        />
+      )}
+
+      {/* Modal para ver credenciales */}
+      {viewCredentialsEmployee && (
+        <ViewCredentialsModal
+          employee={viewCredentialsEmployee}
+          onClose={() => setViewCredentialsEmployee(null)}
         />
       )}
 
@@ -576,5 +664,3 @@ export default function EmployeesPage() {
     </div>
   );
 }
-
-

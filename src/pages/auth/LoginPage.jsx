@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth, getRoleRedirect } from '../../context/AuthContext';
-import { validarEmail } from '../../core/validators';
-import { MdVisibility, MdVisibilityOff, MdLockOutline, MdMailOutline, MdArrowBack, MdCheckCircle } from 'react-icons/md';
+import { validarEmail, validarLoginIdentifier } from '../../core/validators';
+import { MdVisibility, MdVisibilityOff, MdLockOutline, MdMailOutline, MdArrowBack, MdCheckCircle, MdBadge } from 'react-icons/md';
 
 // ── Vista de "Olvidé mi contraseña" ──────────────────────────────────────────
 function ForgotPasswordView({ onBack }) {
@@ -130,7 +130,7 @@ export default function LoginPage() {
   const { signIn, user, userRole, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
-  const [form, setForm] = useState({ email: '', password: '' });
+  const [form, setForm] = useState({ identifier: '', password: '' });
   const [errors, setErrors] = useState({});
   const [apiError, setApiError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -152,8 +152,8 @@ export default function LoginPage() {
 
   const validate = () => {
     const newErrors = {};
-    const emailV = validarEmail(form.email);
-    if (!emailV.valid) newErrors.email = emailV.message;
+    const idV = validarLoginIdentifier(form.identifier);
+    if (!idV.valid) newErrors.identifier = idV.message;
     if (!form.password) newErrors.password = 'Ingrese su contraseña.';
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -164,13 +164,15 @@ export default function LoginPage() {
     if (!validate()) return;
     setLoading(true);
     try {
-      await signIn(form.email, form.password);
+      await signIn(form.identifier, form.password);
     } catch (err) {
       const msg = (err.message || '').toLowerCase();
       if (msg.includes('invalid')) {
-        setApiError('Credenciales incorrectas. Verifique su correo y contraseña.');
+        setApiError('Credenciales incorrectas. Verifique su correo/cédula y contraseña.');
       } else if (msg.includes('email not confirmed')) {
         setApiError('Su correo aún no ha sido confirmado. Revise su bandeja de entrada.');
+      } else if (msg.includes('no se encontró')) {
+        setApiError(err.message);
       } else {
         setApiError(err.message || 'Error al iniciar sesión. Intente nuevamente.');
       }
@@ -200,25 +202,25 @@ export default function LoginPage() {
               {apiError && <div className="cw-alert cw-alert--error mb-3">{apiError}</div>}
 
               <form onSubmit={handleSubmit} id="login-form">
-                {/* Email */}
+                {/* Identificador: email o cédula */}
                 <div className="cw-form-group">
-                  <label className="cw-label" htmlFor="email">
-                    Correo Corporativo <span className="required">*</span>
+                  <label className="cw-label" htmlFor="identifier">
+                    Correo o Número de Cédula <span className="required">*</span>
                   </label>
                   <div style={{ position: 'relative' }}>
-                    <InputIcon icon={MdMailOutline} />
+                    <InputIcon icon={MdBadge} />
                     <input
-                      id="email"
-                      name="email"
-                      type="email"
-                      className={`cw-input pl-icon${errors.email ? ' error' : ''}`}
-                      placeholder="admin@empresa.com"
-                      value={form.email}
+                      id="identifier"
+                      name="identifier"
+                      type="text"
+                      className={`cw-input pl-icon${errors.identifier ? ' error' : ''}`}
+                      placeholder="correo@empresa.com o 1234567890"
+                      value={form.identifier}
                       onChange={handleChange}
-                      autoComplete="email"
+                      autoComplete="username"
                     />
                   </div>
-                  {errors.email && <span className="cw-input-error">{errors.email}</span>}
+                  {errors.identifier && <span className="cw-input-error">{errors.identifier}</span>}
                 </div>
 
                 {/* Password */}
