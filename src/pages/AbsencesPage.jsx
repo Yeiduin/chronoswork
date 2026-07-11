@@ -5,7 +5,7 @@ import { useEmployees } from '../hooks/useEmployees';
 import { formatFecha, formatDuracionNovedad } from '../core/dateUtils';
 import { validarRangoFechas } from '../core/validators';
 import { TIPOS_NOVEDAD, ABSENCE_CFG } from '../config/constants';
-import { MdAdd, MdClose, MdDelete, MdEventBusy, MdSearch, MdCheck } from 'react-icons/md';
+import { MdAdd, MdClose, MdDelete, MdEventBusy, MdSearch, MdCheck, MdAttachFile } from 'react-icons/md';
 
 function AbsenceModal({ onClose, onSave, employees }) {
   const [form, setForm] = useState({
@@ -322,6 +322,20 @@ export default function AbsencesPage() {
                         {abs.observaciones && (
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem', fontStyle: 'italic' }}>
                             "{abs.observaciones}"
+                          </div>
+                        )}
+                        {abs.soporte_url && (
+                          <div style={{ marginTop: '0.35rem' }}>
+                            <a
+                              href={abs.soporte_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="cw-badge cw-badge--blue"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}
+                              title="Ver documento soporte"
+                            >
+                              <MdAttachFile /> Ver Soporte
+                            </a>
                           </div>
                         )}
                       </td>

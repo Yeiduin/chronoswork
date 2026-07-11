@@ -560,9 +560,11 @@ export default function EmployeeProfilePage() {
     fecha_inicio: '', 
     fecha_fin: '', 
     hora_inicio: '',
+    hora_inicio: '',
     hora_fin: '',
     observaciones: '' 
   });
+  const [soporteFile, setSoporteFile] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleRequestAbsence = async (e) => {
@@ -580,6 +582,33 @@ export default function EmployeeProfilePage() {
 
     setIsSubmitting(true);
     try {
+      let soporte_url = null;
+
+      // Si hay un archivo seleccionado, subirlo primero
+      if (soporteFile) {
+        // Validar tamaño (5MB máx)
+        if (soporteFile.size > 5 * 1024 * 1024) {
+          throw new Error('El archivo supera el tamaño máximo permitido de 5MB.');
+        }
+
+        const fileExt = soporteFile.name.split('.').pop();
+        const fileName = `${employee.id}_${Date.now()}.${fileExt}`;
+        const filePath = `${employee.tenant_id}/${fileName}`; // Organizar por tenant
+
+        const { error: uploadError } = await supabase.storage
+          .from('documentos_soporte')
+          .upload(filePath, soporteFile);
+
+        if (uploadError) throw new Error('Error al subir el documento: ' + uploadError.message);
+
+        // Obtener URL pública (asumiendo que el bucket lo permite, o guardamos el path)
+        const { data: publicUrlData } = supabase.storage
+          .from('documentos_soporte')
+          .getPublicUrl(filePath);
+
+        soporte_url = publicUrlData.publicUrl;
+      }
+
       const dataToSave = {
         tenant_id: employee.tenant_id,
         employee_id: employee.id,
@@ -591,12 +620,14 @@ export default function EmployeeProfilePage() {
         hora_fin: absenceForm.por_horas ? absenceForm.hora_fin : null,
         estado: 'pendiente',
         aprobada: false, // fallback 
-        observaciones: absenceForm.observaciones
+        observaciones: absenceForm.observaciones,
+        soporte_url: soporte_url
       };
       const { error } = await supabase.from('absences').insert(dataToSave);
       if (error) throw error;
       setShowAbsenceModal(false);
       setAbsenceForm({ tipo: 'vacaciones', por_horas: false, fecha_inicio: '', fecha_fin: '', hora_inicio: '', hora_fin: '', observaciones: '' });
+      setSoporteFile(null);
       loadProfile();
     } catch (err) {
       alert('Error al solicitar novedad: ' + err.message);
@@ -1169,6 +1200,20 @@ export default function EmployeeProfilePage() {
                     placeholder={absenceForm.tipo === 'otro' ? 'Especifica el tipo de novedad detalladamente...' : 'Describe brevemente el motivo...'}
                     required={absenceForm.tipo === 'otro'}
                   ></textarea>
+                </div>
+
+                <div className="cw-form-group">
+                  <label>Documento Soporte (Opcional)</label>
+                  <input
+                    type="file"
+                    className="cw-input"
+                    style={{ padding: '0.4rem' }}
+                    accept=".pdf,image/png,image/jpeg,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    onChange={e => setSoporteFile(e.target.files[0])}
+                  />
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                    Soporta PDF, JPG, PNG o Word (Max. 5MB)
+                  </div>
                 </div>
               </form>
             </div>
