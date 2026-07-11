@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import {
@@ -8,24 +9,22 @@ import { useAuth } from './context/AuthContext';
 import ProtectedRoute from './components/layout/ProtectedRoute';
 import Sidebar from './components/layout/Sidebar';
 
-// Auth pages
+// Auth pages (eager — pequeñas, necesarias para login)
 import LoginPage from './pages/auth/LoginPage';
 import RegisterPage from './pages/auth/RegisterPage';
 import ResetPasswordPage from './pages/auth/ResetPasswordPage';
 
-// Admin pages
-import DashboardPage from './pages/DashboardPage';
-import EmployeesPage from './pages/EmployeesPage';
-import AbsencesPage from './pages/AbsencesPage';
-import AreasPage from './pages/AreasPage';
-import SchedulingPage from './pages/SchedulingPage';
-import PrenominaPage from './pages/PrenominaPage';
-import ConfigPage from './pages/ConfigPage';
-
-// New role-specific pages
-import SaasDashboardPage from './pages/SaasDashboardPage';
-import LandingPage from './pages/LandingPage';
-import EmployeeProfilePage from './pages/EmployeeProfilePage';
+// Pages pesadas (lazy — se cargan bajo demanda)
+const LandingPage = lazy(() => import('./pages/LandingPage'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const EmployeesPage = lazy(() => import('./pages/EmployeesPage'));
+const AbsencesPage = lazy(() => import('./pages/AbsencesPage'));
+const AreasPage = lazy(() => import('./pages/AreasPage'));
+const SchedulingPage = lazy(() => import('./pages/SchedulingPage'));
+const PrenominaPage = lazy(() => import('./pages/PrenominaPage'));
+const ConfigPage = lazy(() => import('./pages/ConfigPage'));
+const SaasDashboardPage = lazy(() => import('./pages/SaasDashboardPage'));
+const EmployeeProfilePage = lazy(() => import('./pages/EmployeeProfilePage'));
 
 import NotFoundPage from './pages/NotFoundPage';
 
@@ -75,10 +74,21 @@ function RootRedirect() {
 // ── Roles para rutas operativas (Super_Admin y Coordinator) ───────────────────
 const ADMIN_ROLES = [ROLE_SUPER_ADMIN, ROLE_COORDINATOR];
 
+// Fallback de carga para lazy pages
+function PageFallback() {
+  return (
+    <div className="loading-overlay" style={{ minHeight: '100vh' }}>
+      <div className="cw-spinner"></div>
+      <span>Cargando...</span>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <Suspense fallback={<PageFallback />}>
         <Routes>
           {/* ── Rutas Públicas ───────────────────────────────────────────── */}
           <Route path="/login" element={<LoginPage />} />
@@ -172,6 +182,7 @@ export default function App() {
           {/* ── 404 ──────────────────────────────────────────────────────── */}
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
+        </Suspense>
       </AuthProvider>
     </BrowserRouter>
   );

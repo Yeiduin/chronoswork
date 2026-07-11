@@ -17,7 +17,7 @@ const useCrudAbsences = createCrudHook({
 
 // ─── Hook público (preserva API original) ─────────────────────────────────────
 export function useAbsences() {
-  const { data: absences, loading, error, fetch: fetchAbsences, create: createAbsence, remove: deleteAbsence } = useCrudAbsences();
+  const { data: absences, loading, error, fetch: fetchAbsences, create: createAbsence, update: updateAbsence, remove: deleteAbsence } = useCrudAbsences();
 
   /**
    * Verifica si un empleado tiene novedad activa en un rango de fechas.
@@ -25,6 +25,7 @@ export function useAbsences() {
   const tieneNovedad = (employeeId, fecha) =>
     absences.some(a =>
       a.employee_id === employeeId &&
+      (a.estado === 'aprobada' || a.aprobada === true) && // Fallback compatibilidad temporal
       fecha >= a.fecha_inicio &&
       fecha <= a.fecha_fin
     );
@@ -35,9 +36,17 @@ export function useAbsences() {
   const getNovedad = (employeeId, fecha) =>
     absences.find(a =>
       a.employee_id === employeeId &&
+      (a.estado === 'aprobada' || a.aprobada === true) &&
       fecha >= a.fecha_inicio &&
       fecha <= a.fecha_fin
     );
 
-  return { absences, loading, error, fetchAbsences, createAbsence, deleteAbsence, tieneNovedad, getNovedad };
+  /**
+   * Actualiza el estado de una novedad (Aprobar/Rechazar)
+   */
+  const updateAbsenceStatus = async (id, nuevoEstado) => {
+    return updateAbsence(id, { estado: nuevoEstado, aprobada: nuevoEstado === 'aprobada' });
+  };
+
+  return { absences, loading, error, fetchAbsences, createAbsence, updateAbsenceStatus, deleteAbsence, tieneNovedad, getNovedad };
 }

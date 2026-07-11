@@ -10,7 +10,8 @@ export default defineConfig({
     {
       ...strip({
         include: ['src/**/*.{js,jsx}'],
-        functions: ['console.log', 'console.warn', 'console.debug', 'console.info', 'console.dir', 'console.table', 'console.trace'],
+        // Solo debug: logger.js usa console.error/info/warn para producción
+        functions: ['console.log', 'console.debug', 'console.dir', 'console.table', 'console.trace'],
       }),
       enforce: 'pre',
     },
@@ -34,7 +35,7 @@ export default defineConfig({
           if (id.includes('node_modules/exceljs') || id.includes('node_modules/xlsx')) {
             return 'vendor-excel';
           }
-          if (id.includes('node_modules/bootstrap') || id.includes('node_modules/react-icons')) {
+          if (id.includes('node_modules/react-icons')) {
             return 'vendor-ui';
           }
           if (id.includes('node_modules/date-fns')) {

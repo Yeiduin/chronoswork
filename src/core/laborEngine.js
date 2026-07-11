@@ -4,6 +4,56 @@
 // Procesa timestamps ISO 8601 y clasifica horas por concepto legal
 // ============================================================
 
+/**
+ * @typedef {Object} ClasificacionTurno
+ * @property {number} horas_ordinarias - Horas ordinarias diurnas en día laboral
+ * @property {number} HON - Horas ordinarias nocturnas
+ * @property {number} HOD_A - Horas ordinarias dominicales período A (Ene-Jun)
+ * @property {number} HOD_B - Horas ordinarias dominicales período B (Jul-Dic)
+ * @property {number} HCDN_A - Horas compuestas dominical-nocturnas período A
+ * @property {number} HCDN_B - Horas compuestas dominical-nocturnas período B
+ * @property {number} HED - Horas extras diurnas
+ * @property {number} HEN - Horas extras nocturnas
+ * @property {number} HEDD_A - Horas extras diurnas dominicales período A
+ * @property {number} HEDD_B - Horas extras diurnas dominicales período B
+ * @property {number} HEND_A - Horas extras nocturnas dominicales período A
+ * @property {number} HEND_B - Horas extras nocturnas dominicales período B
+ * @property {number} total_minutos - Total de minutos del turno procesado
+ * @property {Array<string>} advertencias - Advertencias legales durante el procesamiento
+ */
+
+/**
+ * @typedef {Object} ConceptoMonetario
+ * @property {number} horas - Cantidad de horas del concepto
+ * @property {number} factor - Factor de recargo aplicado (1 + recargo)
+ * @property {number} valor - Valor monetario calculado
+ */
+
+/**
+ * @typedef {Object} DesgloseMonetario
+ * @property {ConceptoMonetario} horas_ordinarias
+ * @property {ConceptoMonetario} HON
+ * @property {ConceptoMonetario} HOD_A
+ * @property {ConceptoMonetario} HOD_B
+ * @property {ConceptoMonetario} HCDN_A
+ * @property {ConceptoMonetario} HCDN_B
+ * @property {ConceptoMonetario} HED
+ * @property {ConceptoMonetario} HEN
+ * @property {ConceptoMonetario} HEDD_A
+ * @property {ConceptoMonetario} HEDD_B
+ * @property {ConceptoMonetario} HEND_A
+ * @property {ConceptoMonetario} HEND_B
+ */
+
+/**
+ * @typedef {Object} ResumenEmpleado
+ * @property {ClasificacionTurno} clasificacion - Clasificación agregada de todos los turnos
+ * @property {DesgloseMonetario} desglose - Desglose monetario por concepto
+ * @property {number} total_bruto - Total bruto a pagar
+ * @property {number} total_horas_ordinarias - Total de horas ordinarias acumuladas
+ * @property {number} total_horas_extras - Total de horas extras acumuladas
+ */
+
 import {
   MAX_HORAS_SEMANALES,
   MAX_EXTRAS_DIARIAS,
@@ -35,19 +85,13 @@ export function esNocturna(hora) {
  * Divide un turno (start_time, end_time ISO 8601) en fracciones de 1 minuto
  * y clasifica cada fracción según la normativa CST 2026.
  *
- * Retorna un objeto con las horas acumuladas por concepto legal:
- * {
- *   horas_ordinarias: 0,
- *   HON: 0, HOD: 0, HCDN: 0,
- *   HED: 0, HEN: 0, HEDD: 0, HEND: 0,
- *   total_minutos: 0
- * }
- *
  * @param {string} startISO - Timestamp de inicio ISO 8601
  * @param {string} endISO - Timestamp de fin ISO 8601
- * @param {number} horasOrdinariasAcumuladas - Horas ordinarias ya acumuladas en la semana
- * @param {number} horasExtrasAcumuladas - Horas extras ya acumuladas en la semana
- * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
+ * @param {number} [horasOrdinariasAcumuladas=0] - Horas ordinarias ya acumuladas en la semana
+ * @param {number} [horasExtrasAcumuladas=0] - Horas extras ya acumuladas en la semana
+ * @param {number} [breakMinutes=0] - Minutos de descanso a descontar del turno
+ * @param {Array<string>} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
+ * @returns {ClasificacionTurno} Objeto con horas clasificadas por concepto legal
  */
 export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0, horasExtrasAcumuladas = 0, breakMinutes = 0, festivos = []) {
   const inicio = new Date(startISO);
@@ -216,10 +260,12 @@ export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0,
 }
 
 /**
- * Calcula el valor monetario a pagar por concepto de horas clasificadas
- * @param {object} clasificacion - Resultado de clasificarTurno()
+ * Calcula el valor monetario a pagar por cada concepto de horas clasificadas,
+ * aplicando los factores de recargo correspondientes según la normativa CST 2026.
+ *
+ * @param {ClasificacionTurno} clasificacion - Resultado de clasificarTurno()
  * @param {number} valorHoraBase - Valor hora ordinaria pactada del empleado
- * @returns {object} - Desglose monetario por concepto
+ * @returns {DesgloseMonetario} Desglose monetario por concepto con horas, factor y valor
  */
 export function calcularValorMonetario(clasificacion, valorHoraBase) {
   const base = parseFloat(valorHoraBase);
@@ -289,18 +335,23 @@ export function calcularValorMonetario(clasificacion, valorHoraBase) {
 }
 
 /**
- * Genera el total bruto a pagar sumando todos los conceptos
+ * Suma todos los valores monetarios de cada concepto para obtener el total bruto a pagar.
+ *
+ * @param {DesgloseMonetario} desglose - Desglose monetario generado por calcularValorMonetario()
+ * @returns {number} Total bruto redondeado a 2 decimales
  */
 export function calcularTotalBruto(desglose) {
   return Object.values(desglose).reduce((acc, concepto) => acc + (concepto.valor || 0), 0);
 }
 
 /**
- * Procesa todos los turnos de un empleado en un período dado
- * @param {Array} turnos - Array de { start_time, end_time }
- * @param {number} valorHoraBase
- * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
- * @returns {object} - Resumen completo del empleado
+ * Procesa todos los turnos de un empleado en un período dado, acumulando
+ * clasificaciones y generando el desglose monetario completo.
+ *
+ * @param {Array<{start_time: string, end_time: string, break_minutes?: number}>} turnos - Array de turnos con timestamps ISO 8601
+ * @param {number} valorHoraBase - Valor hora ordinaria pactada del empleado
+ * @param {Array<string>} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
+ * @returns {ResumenEmpleado} Resumen completo con clasificación, desglose y totales
  */
 export function procesarTurnosEmpleado(turnos, valorHoraBase, festivos = []) {
   let horasOrdAcumuladas = 0;

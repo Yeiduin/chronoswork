@@ -15,7 +15,10 @@ export const DEFAULT_HORAS_MENSUALES = 182;
 export const DEFAULT_DIAS_DESCANSO = 1;
 export const DEFAULT_NIVEL_ARL = 1;
 export const MAX_NIVEL_ARL = 5;
-export const SALARIO_MINIMO_DIARIO = 47366; // ~$1,421,000 / 30 (2025)
+// Los valores de SMLV (salario mínimo legal vigente) viven en laborCatalog.js:
+//   SMLV_HISTORICO, getSMLV(year), SMLV_2025, SMLV_HORA_2025, AUX_TRANSPORTE_2025
+// Usar getSMLV() en vez de valores duros para que no queden desactualizados.
+export const SALARIO_MINIMO_DIARIO = 47366; // ~$1,421,000 / 30 (2025) — usar getSMLV(año) / 30 en su lugar
 export const FACTOR_SALARIO_MENSUAL_A_HORA = 240; // divisor estándar: 30 días × 8 horas
 
 // --- BANDAS HORARIAS ---
@@ -47,11 +50,29 @@ export const RECARGOS = {
 
 // --- TIPOS DE NOVEDAD ---
 export const TIPOS_NOVEDAD = [
-  { value: 'vacaciones', label: 'Vacaciones', color: '#10b981' },
-  { value: 'incapacidad', label: 'Incapacidad Médica', color: '#ef4444' },
-  { value: 'licencia', label: 'Licencia Remunerada', color: '#f59e0b' },
-  { value: 'suspension', label: 'Suspensión', color: '#6b7280' },
+  { value: 'vacaciones', label: 'Vacaciones', badge: 'cw-badge--green', color: '#10b981', icon: '🏖️' },
+  { value: 'incapacidad_general', label: 'Incapacidad (Enf. General)', badge: 'cw-badge--red', color: '#ef4444', icon: '🏥' },
+  { value: 'incapacidad_laboral', label: 'Incapacidad (ARL)', badge: 'cw-badge--red', color: '#b91c1c', icon: '🚑' },
+  { value: 'licencia_maternidad', label: 'Licencia de Maternidad', badge: 'cw-badge--pink', color: '#ec4899', icon: '👶' },
+  { value: 'licencia_paternidad', label: 'Licencia de Paternidad', badge: 'cw-badge--pink', color: '#f472b6', icon: '👨‍🍼' },
+  { value: 'licencia_luto', label: 'Licencia por Luto', badge: 'cw-badge--dark', color: '#374151', icon: '🕊️' },
+  { value: 'calamidad_domestica', label: 'Calamidad Doméstica', badge: 'cw-badge--yellow', color: '#f59e0b', icon: '🏠' },
+  { value: 'licencia_sufragio', label: 'Licencia por Sufragio', badge: 'cw-badge--blue', color: '#3b82f6', icon: '🗳️' },
+  { value: 'licencia_sindical', label: 'Licencia Sindical', badge: 'cw-badge--purple', color: '#8b5cf6', icon: '🤝' },
+  { value: 'permiso_remunerado', label: 'Permiso Remunerado', badge: 'cw-badge--teal', color: '#14b8a6', icon: '✅' },
+  { value: 'permiso_no_remunerado', label: 'Permiso No Remunerado', badge: 'cw-badge--orange', color: '#f97316', icon: '⏸️' },
+  { value: 'suspension', label: 'Suspensión Disciplinaria', badge: 'cw-badge--gray', color: '#6b7280', icon: '⛔' },
+  { value: 'otro', label: 'Otro (Especificar)', badge: 'cw-badge--gray', color: '#9ca3af', icon: '📝' },
 ];
+
+export const ABSENCE_CFG = TIPOS_NOVEDAD.reduce((acc, curr) => {
+  acc[curr.value] = curr;
+  return acc;
+}, {
+  // Fallbacks para registros antiguos que ya están en la base de datos
+  'incapacidad': { label: 'Incapacidad Médica', badge: 'cw-badge--red', color: '#ef4444', icon: '🏥' },
+  'licencia': { label: 'Licencia Remunerada', badge: 'cw-badge--yellow', color: '#f59e0b', icon: '📄' }
+});
 
 // --- TIPOS DE TURNO ---
 export const TIPOS_TURNO = [

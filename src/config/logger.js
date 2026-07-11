@@ -1,14 +1,18 @@
 // ============================================================
 // LOGGER CENTRALIZADO — ChronosWork
-// En producción (VITE_ENV=production o build), los logs se silencian.
-// En desarrollo, se mantienen para debugging.
+// - error / warn / debug: solo desarrollo (condicional isProduction)
+// - info: siempre visible (métricas/diagnóstico en producción)
+// En build prod, el plugin @rollup/plugin-strip solo elimina
+// console.log/debug/dir/table/trace. console.error/warn/info se
+// conservan para que el logger funcione según su diseño.
 // ============================================================
 
 const isProduction = import.meta.env.PROD || import.meta.env.VITE_ENV === 'production';
 
 /**
- * Logger centralizado. Reemplaza console.error/warn en todo el proyecto.
- * En producción, los mensajes se suprimen. En desarrollo, se muestran normalmente.
+ * Logger centralizado.
+ * - error / warn / debug: solo desarrollo.
+ * - info: siempre visible (métricas/diagnóstico en producción también).
  */
 export const logger = {
   /**

@@ -3,6 +3,117 @@
 // Rediseñado para soportar call centers 24/7 y cualquier
 // empresa con demanda variable + jornada nocturna dedicada.
 // ============================================================
+
+/**
+ * @typedef {Object} ShiftTemplate
+ * @property {number|string} [id] - ID del template
+ * @property {string} [shift_kind] - Tipo de turno: 'STANDARD' | 'PARTIDO' | 'DISPONIBILIDAD' | 'NOCTURNO'
+ * @property {string} [hora_inicio] - Hora de inicio (HH:mm)
+ * @property {string} [hora_fin] - Hora de fin (HH:mm)
+ * @property {string} [hora_inicio_2] - Hora de inicio del segundo bloque (PARTIDO)
+ * @property {string} [hora_fin_2] - Hora de fin del segundo bloque (PARTIDO)
+ * @property {boolean} [cruza_medianoche] - Si el turno cruza la medianoche
+ * @property {number} [break_minutos] - Minutos de descanso/almuerzo
+ * @property {number} [split_break_minutos] - Minutos de descanso entre bloques PARTIDO
+ * @property {number} [disponibilidad_recargo_porcentaje] - Recargo por disponibilidad (%)
+ * @property {string} [nombre] - Nombre descriptivo del template
+ * @property {boolean} [paga_recargo_nocturno] - Si paga recargo nocturno explícitamente
+ */
+
+/**
+ * @typedef {Object} Employee
+ * @property {number|string} id - ID único del empleado
+ * @property {string} [nombre] - Nombre del empleado
+ * @property {boolean} [solo_nocturno] - Solo puede trabajar turnos nocturnos
+ * @property {boolean} [solo_diurno] - Solo puede trabajar turnos diurnos
+ * @property {'NOCTURNA'|'DIURNA'|'MIXTA'|string} [jornada_preferida] - Jornada preferida
+ * @property {number} [horas_semanales_contrato] - Horas semanales contratadas
+ * @property {number} [horas_max_semana] - Horas máximas semanales (override)
+ * @property {number} [horas_max_diarias] - Horas máximas diarias (override)
+ * @property {number} [horas_nocturnas_max_semana] - Tope de horas nocturnas semanales
+ * @property {number} [dias_descanso_semana] - Días de descanso por semana
+ * @property {number[]} [dias_descanso_fijos] - Días de descanso fijos (1=lunes...7=domingo)
+ */
+
+/**
+ * @typedef {Object} ShiftResult
+ * @property {number|string} employee_id - ID del empleado asignado
+ * @property {number|string|null} template_id - ID del template usado (null si es generado)
+ * @property {string} start_time - Fecha/hora inicio (ISO)
+ * @property {string} end_time - Fecha/hora fin (ISO)
+ * @property {string} shift_type - Tipo de turno: 'night' | 'custom'
+ * @property {string} periodo - Período en formato YYYY-MM
+ * @property {number} break_minutes - Minutos de descanso descontados
+ * @property {number} almuerzo_minutos - Minutos de almuerzo
+ * @property {number} breaks_15_count - Cantidad de breaks cortos
+ * @property {Array<{tipo:string, inicio:string|null, minutos:number}>} descansos - Lista de descansos
+ * @property {string} shift_kind - Tipo: 'STANDARD' | 'NOCTURNO' | 'PARTIDO' | 'DISPONIBILIDAD'
+ * @property {number} bloque - Número de bloque (1 o 2 para PARTIDO)
+ * @property {boolean} disponibilidad - Si es turno de disponibilidad
+ * @property {number} recargo_porcentaje - Porcentaje de recargo
+ * @property {string} observaciones - Notas del turno
+ */
+
+/**
+ * @typedef {Object} DescansoProgramado
+ * @property {'BREAK'|'ALMUERZO'} tipo - Tipo de descanso
+ * @property {string} inicio - Hora de inicio (HH:mm)
+ * @property {number} minutos - Duración en minutos
+ */
+
+/**
+ * @typedef {Object} BuildDescansosResult
+ * @property {DescansoProgramado[]} descansos - Lista ordenada de descansos
+ * @property {number} almuerzoMin - Minutos totales de almuerzo
+ * @property {number} breaksCount - Cantidad de breaks cortos
+ * @property {number} breakMinutes - Minutos totales descontados (solo almuerzo)
+ */
+
+/**
+ * @typedef {Object} RotativeScheduleEntry
+ * @property {string} date - Fecha en formato YYYY-MM-DD
+ * @property {boolean} works - Si el empleado trabaja ese día
+ */
+
+/**
+ * @typedef {Object} GenerateParams
+ * @property {Employee[]} employees - Lista de empleados del área
+ * @property {ShiftTemplate[]} [templates] - Plantillas de turno
+ * @property {Array<{employee_id:number|string, fecha_inicio:string, fecha_fin:string}>} [absences] - Ausencias
+ * @property {ShiftResult[]} [existingShifts] - Turnos ya existentes
+ * @property {number} year - Año del período
+ * @property {number} month - Mes del período (1-12)
+ * @property {number[]} [diasTrabajoArea] - Días laborables (1=lunes...7=domingo)
+ * @property {Date[]} [diasToProcess] - Días específicos a procesar
+ * @property {Array<{day_of_week:number, start_hour:number, end_hour:number, required_staff:number}>} [demandSlots] - Demanda por slots
+ * @property {'OFICINA'|'24_7'|'24_7_NIGHT_SPLIT'} [modoOperacion] - Modo de operación
+ * @property {Object} [laborLimits] - Límites laborales (override de LEGAL_DEFAULTS_CO)
+ * @property {{start:string, end:string, employeeIds:number[]}} [nightShiftConfig] - Config nocturna
+ * @property {string} [patronRotativo] - Patrón rotativo (valor de PATRONES_ROTATIVOS)
+ * @property {'COVERAGE_FIRST'|'EMPLOYEE_PREF'} [estrategia] - Estrategia de asignación
+ * @property {number} [minEmpleadosNoche] - Mínimo de empleados en franja nocturna
+ * @property {boolean} [nocheSoloDedicados] - Solo empleados dedicados en noche
+ * @property {boolean} [permiteDiaCubrirNoche] - Permitir que diurnos cubran noche
+ * @property {boolean} [balancearCarga] - Rebalancear carga semanal
+ * @property {boolean} [rotarSlots] - Rotar asignación de slots entre empleados
+ * @property {number} [slotsPorHora] - Slots por hora (default 4)
+ * @property {number} [snapMinutos] - Resolución en minutos (default 15)
+ * @property {number|null} [minHorasTurnoOverride] - Mínimo de horas por turno
+ * @property {number|null} [maxHorasTurnoOverride] - Máximo de horas por turno
+ * @property {boolean} [permiteExtras] - Permitir horas extra
+ * @property {boolean} [permitePartidos] - Permitir turnos partidos
+ * @property {number|null} [minEmpleadosDia] - Piso de personas/día
+ * @property {number|null} [maxEmpleadosDia] - Techo de personas/día
+ * @property {string} [horaInicioDia] - Hora de inicio del día (HH:mm)
+ * @property {string|null} [horaFinDia] - Hora de cierre del día (HH:mm)
+ * @property {Object|null} [breakPolicy] - Política de descansos del área
+ */
+
+/**
+ * @typedef {Object} GenerateResult
+ * @property {ShiftResult[]} shifts - Turnos generados
+ * @property {string[]} warnings - Advertencias del proceso
+ */
 // Cambios vs v4.0:
 //  ✅ FASE 1 (noche) reescrita: pool nocturno con FALLBACK garantizado,
 //     usa nightConfig.start/end (no hardcode), mide el déficit del día
@@ -92,6 +203,12 @@ const CANONICAL_DAY_STARTS = [
 ];
 
 // ── Utilidades de cuadrícula ─────────────────────────────────────────────
+/**
+ * Convierte una hora en formato HH:mm al índice de slot correspondiente.
+ * @param {string} hhmm - Hora en formato 'HH:mm'
+ * @param {number} [slotsPerHour=4] - Cantidad de slots por hora
+ * @returns {number} Índice de slot (0 = 00:00)
+ */
 export function timeToSlot(hhmm, slotsPerHour = 4) {
   if (!hhmm) return 0;
   const parts = String(hhmm).split(':');
@@ -100,6 +217,12 @@ export function timeToSlot(hhmm, slotsPerHour = 4) {
   return h * slotsPerHour + Math.floor(m / (60 / slotsPerHour));
 }
 
+/**
+ * Convierte un índice de slot a hora en formato HH:mm.
+ * @param {number} slot - Índice de slot (puede exceder slotsPerDay, se envuelve)
+ * @param {number} [slotsPerHour=4] - Cantidad de slots por hora
+ * @returns {string} Hora en formato 'HH:mm'
+ */
 export function slotToTime(slot, slotsPerHour = 4) {
   const slotsPerDay = 24 * slotsPerHour;
   const s = ((slot % slotsPerDay) + slotsPerDay) % slotsPerDay;
@@ -108,15 +231,30 @@ export function slotToTime(slot, slotsPerHour = 4) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+/**
+ * Retorna la cantidad total de slots en un día.
+ * @param {number} [slotsPerHour=4] - Cantidad de slots por hora
+ * @returns {number} Total de slots por día (24 * slotsPerHour)
+ */
 export function getSlotsPerDay(slotsPerHour = 4) {
   return 24 * slotsPerHour;
 }
 
+/**
+ * Determina si una hora (0-23) cae dentro de la jornada nocturna legal (19:00-06:00).
+ * @param {number} h - Hora del día (0-23)
+ * @returns {boolean} true si es hora nocturna
+ */
 export function isNightHour(h) {
   return h >= NOCTURNA_INICIO_H || h < NOCTURNA_FIN_H;
 }
 
 // ── Parser de fecha LOCAL (evita el desfase UTC de new Date('yyyy-mm-dd')) ─
+/**
+ * Parsea una fecha en formato YYYY-MM-DD como Date LOCAL (sin desfase UTC).
+ * @param {string} dateStr - Fecha en formato 'YYYY-MM-DD'
+ * @returns {Date} Objeto Date en hora local
+ */
 function parseLocalDate(dateStr) {
   const [y, m, d] = String(dateStr).split('-').map(Number);
   return new Date(y, (m || 1) - 1, d || 1);
@@ -124,8 +262,10 @@ function parseLocalDate(dateStr) {
 
 // ── Clasificación efectiva del empleado ──────────────────────────────────
 /**
- * Devuelve una de: 'NIGHT_ONLY' | 'DAY_ONLY' | 'MIXED' | 'ANY'
- * En orden de prioridad: solo_* > jornada_preferida explícita.
+ * Clasifica a un empleado según su disponibilidad de jornada.
+ * Prioridad: solo_nocturno/solo_diurno > jornada_preferida explícita.
+ * @param {Employee|null|undefined} emp - Empleado a clasificar
+ * @returns {'NIGHT_ONLY'|'DAY_ONLY'|'MIXED'|'ANY'} Tipo de jornada efectiva
  */
 export function classifyEmployee(emp) {
   if (!emp) return 'ANY';
@@ -144,6 +284,12 @@ export function classifyEmployee(emp) {
  * Construye el vector de demanda requerida por cada slot para un día.
  * Prioriza `demandSlots` (config del área). Si no hay, usa curva default
  * (diurna/nocturna/fin de semana según la hora y el día).
+ * @param {number} dayOfWeek - Día de la semana (1=lunes...7=domingo)
+ * @param {Array<{day_of_week:number, start_hour:number, end_hour:number, required_staff:number}>} demandSlots - Config de demanda
+ * @param {number} numEmployees - Cantidad de empleados (para escalar curva default)
+ * @param {boolean} isWeekend - Si es fin de semana
+ * @param {number} [slotsPerHour=4] - Slots por hora
+ * @returns {number[]} Vector de demanda (índice = slot, valor = personal requerido)
  */
 function buildDemandVector(dayOfWeek, demandSlots, numEmployees, isWeekend, slotsPerHour = 4) {
   const slotsPerDay = getSlotsPerDay(slotsPerHour);
@@ -175,6 +321,14 @@ function buildDemandVector(dayOfWeek, demandSlots, numEmployees, isWeekend, slot
 }
 
 // ── Construye turnos a partir de templates, respetando el shift_kind ──────
+/**
+ * Expande una plantilla de turno en uno o más bloques de turno concretos,
+ * manejando turnos PARTIDO (2 bloques), DISPONIBILIDAD y STANDARD.
+ * @param {ShiftTemplate|null|undefined} tpl - Plantilla de turno
+ * @param {string} dateStr - Fecha del turno (YYYY-MM-DD)
+ * @param {string} nextDayStr - Fecha del día siguiente (YYYY-MM-DD, para cruces de medianoche)
+ * @returns {Array<{template_id:number|string|null, start_time:string, end_time:string, break_minutes:number, shift_kind:string, bloque:number, disponibilidad:boolean, recargo_porcentaje:number}>}
+ */
 export function expandTemplateToShifts(tpl, dateStr, nextDayStr) {
   if (!tpl) return [];
   const kind = tpl.shift_kind || 'STANDARD';
@@ -225,6 +379,11 @@ export function expandTemplateToShifts(tpl, dateStr, nextDayStr) {
   }];
 }
 
+/**
+ * Calcula las horas netas de un bloque de turno (descontando descansos).
+ * @param {{start_time:string, end_time:string, break_minutes?:number}} block - Bloque de turno
+ * @returns {number} Horas netas trabajadas
+ */
 export function blockHours(block) {
   if (!block) return 0;
   const start = new Date(block.start_time);
@@ -253,6 +412,13 @@ export const BREAK_POLICY_DEFAULTS_CO = {
 };
 
 // Mezcla la política del área con los defaults (defensivo ante campos faltantes).
+
+/**
+ * Mezcla la política de descansos del área con los defaults legales de Colombia,
+ * rellenando campos faltantes de forma defensiva.
+ * @param {Object|null|undefined} policy - Política del área (parcial o completa)
+ * @returns {{breakMinutos:number, almuerzoMinutos:number, gapMinHoras:number, gapMaxHoras:number, reglas:Array<{desdeHoras:number, breaks:number, almuerzo:boolean}>}}
+ */
 export function resolveBreakPolicy(policy) {
   const p = policy && typeof policy === 'object' ? policy : {};
   return {
@@ -265,6 +431,14 @@ export function resolveBreakPolicy(policy) {
 }
 
 // Elige la regla aplicable (mayor desdeHoras ≤ horas del turno).
+
+/**
+ * Selecciona la regla de descansos aplicable para una duración de turno.
+ * Elige la regla con el mayor `desdeHoras` que no supere las horas del turno.
+ * @param {Array<{desdeHoras:number, breaks:number, almuerzo:boolean}>} reglas - Lista de reglas ordenables
+ * @param {number} horas - Duración del turno en horas
+ * @returns {{desdeHoras:number, breaks:number, almuerzo:boolean}|null} Regla aplicable o null
+ */
 function pickBreakRule(reglas, horas) {
   let elegida = null;
   [...reglas]
@@ -273,7 +447,18 @@ function pickBreakRule(reglas, horas) {
   return elegida;
 }
 
+/**
+ * Rellena un número a 2 dígitos con cero a la izquierda.
+ * @param {number} n - Número
+ * @returns {string} String de 2 caracteres
+ */
 const pad2 = (n) => String(n).padStart(2, '0');
+
+/**
+ * Convierte minutos desde medianoche a formato HH:mm.
+ * @param {number} mins - Minutos (puede exceder 1440, se envuelve)
+ * @returns {string} Hora en formato 'HH:mm'
+ */
 const minutesToHHMM = (mins) => {
   const m = ((Math.round(mins) % 1440) + 1440) % 1440;
   return `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
@@ -287,6 +472,18 @@ const minutesToHHMM = (mins) => {
 // breakMinutes = almuerzoMin (lo único que se descuenta de horas netas; los
 // breaks cortos son pagados). `soloBreaks` omite el almuerzo (turnos PARTIDO,
 // donde el intervalo ya ES el almuerzo).
+
+/**
+ * Programa los descansos de un turno con hora exacta, según la política del área.
+ * Los descansos se espacian uniformemente dentro de la jornada, respetando
+ * los intervalos [gapMin, gapMax] configurados.
+ * @param {string} startHHMM - Hora de inicio del turno (HH:mm)
+ * @param {number} grossMinutes - Duración bruta del turno en minutos
+ * @param {Object} [policy] - Política de descansos (se mezcla con BREAK_POLICY_DEFAULTS_CO)
+ * @param {{soloBreaks?:boolean}} [options] - Opciones adicionales
+ * @param {boolean} [options.soloBreaks=false] - Si es true, omite el almuerzo (para turnos PARTIDO)
+ * @returns {BuildDescansosResult} Descansos programados y totales
+ */
 export function buildDescansos(startHHMM, grossMinutes, policy, { soloBreaks = false } = {}) {
   const pol = resolveBreakPolicy(policy);
   const grossH = grossMinutes / 60;
@@ -337,11 +534,24 @@ export function buildDescansos(startHHMM, grossMinutes, policy, { soloBreaks = f
 
 // Compat: desglose simple por duración (sin horarios). Usado donde solo se
 // necesitan los totales. Deriva de la política indicada (o la por defecto).
+
+/**
+ * Calcula los totales de descanso para una duración de turno, sin horarios exactos.
+ * Versión simplificada de {@link buildDescansos}.
+ * @param {number} shiftHrs - Duración del turno en horas
+ * @param {Object|null} [policy] - Política de descansos (null = defaults Colombia)
+ * @returns {{almuerzo:number, breaks15:number, breakMinutes:number}} Totales de descanso
+ */
 export function computeBreaks(shiftHrs, policy = null) {
   const r = buildDescansos('08:00', shiftHrs * 60, policy);
   return { almuerzo: r.almuerzoMin, breaks15: r.breaksCount, breakMinutes: r.breakMinutes };
 }
 
+/**
+ * Determina si un template de turno califica para pago de recargo nocturno.
+ * @param {ShiftTemplate|null|undefined} tpl - Plantilla de turno
+ * @returns {boolean} true si el turno paga recargo nocturno
+ */
 export function shiftPagaNocturno(tpl) {
   if (!tpl) return false;
   if (tpl.shift_kind === 'NOCTURNO') return true;
@@ -350,6 +560,15 @@ export function shiftPagaNocturno(tpl) {
   return h >= NOCTURNA_INICIO_H;
 }
 
+/**
+ * Construye un calendario rotativo (trabajo/descanso) para un empleado
+ * según el patrón configurado en PATRONES_ROTATIVOS.
+ * @param {{days:Date[], patron:string, positionOffset?:number}} params
+ * @param {Date[]} params.days - Días del período
+ * @param {string} params.patron - Identificador del patrón (value en PATRONES_ROTATIVOS)
+ * @param {number} [params.positionOffset=0] - Offset de posición en el ciclo
+ * @returns {RotativeScheduleEntry[]} Lista de días con indicador de trabajo
+ */
 export function buildRotativeSchedule({ days, patron, positionOffset = 0 }) {
   const def = PATRONES_ROTATIVOS.find(p => p.value === patron) || PATRONES_ROTATIVOS[3];
   const cycleLen = def.diasTrabajo + def.diasDescanso;
@@ -364,19 +583,65 @@ export function buildRotativeSchedule({ days, patron, positionOffset = 0 }) {
 }
 
 // ── Helpers de fecha/hora ────────────────────────────────────────────────
+
+/**
+ * Convierte un Date a string YYYY-MM-DD.
+ * @param {Date} d - Fecha
+ * @returns {string} Fecha en formato YYYY-MM-DD
+ */
 function dateToStr(d) {
   return format(d, 'yyyy-MM-dd');
 }
 
 const DIAS_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+
+/**
+ * Retorna el nombre del día de la semana en español.
+ * @param {Date} dateObj - Fecha
+ * @returns {string} Nombre del día (ej. 'lunes')
+ */
 function nombreDia(dateObj) {
   return DIAS_ES[dateObj.getDay()] || '';
 }
 
 // ── FUNCIÓN PRINCIPAL DE GENERACIÓN ──────────────────────────────────────
 /**
- * @param {Object} params  (ver README V4_ALGORITHM_UPGRADE.md)
- * @returns {{ shifts: Array, warnings: Array }}
+ * Genera turnos automáticos para un área y período, aplicando el algoritmo
+ * completo de 4 fases: (0) descansos, (1) cobertura nocturna, (2) cobertura
+ * diurna, (3) templates, (3.5) piso de personas/día, (4) balanceo de carga.
+ *
+ * @param {GenerateParams} params - Parámetros de generación
+ * @param {Employee[]} params.employees - Lista de empleados del área
+ * @param {ShiftTemplate[]} [params.templates=[]] - Plantillas de turno
+ * @param {Array<{employee_id:number|string, fecha_inicio:string, fecha_fin:string}>} [params.absences=[]] - Ausencias
+ * @param {ShiftResult[]} [params.existingShifts=[]] - Turnos ya existentes
+ * @param {number} params.year - Año del período
+ * @param {number} params.month - Mes del período (1-12)
+ * @param {number[]} [params.diasTrabajoArea=[1,2,3,4,5]] - Días laborables (1=lunes...7=domingo)
+ * @param {Date[]} [params.diasToProcess=[]] - Días específicos a procesar
+ * @param {Array<{day_of_week:number, start_hour:number, end_hour:number, required_staff:number}>} [params.demandSlots=[]] - Demanda por slots
+ * @param {'OFICINA'|'24_7'|'24_7_NIGHT_SPLIT'} [params.modoOperacion='OFICINA'] - Modo de operación
+ * @param {Object} [params.laborLimits={}] - Límites laborales (override LEGAL_DEFAULTS_CO)
+ * @param {{start:string, end:string, employeeIds:number[]}|null} [params.nightShiftConfig=null] - Config nocturna
+ * @param {string|null} [params.patronRotativo=null] - Patrón rotativo
+ * @param {'COVERAGE_FIRST'|'EMPLOYEE_PREF'} [params.estrategia='COVERAGE_FIRST'] - Estrategia
+ * @param {number} [params.minEmpleadosNoche=1] - Mínimo empleados en franja nocturna
+ * @param {boolean} [params.nocheSoloDedicados=true] - Solo dedicados en noche
+ * @param {boolean} [params.permiteDiaCubrirNoche=false] - Diurnos pueden cubrir noche
+ * @param {boolean} [params.balancearCarga=true] - Rebalancear carga semanal
+ * @param {boolean} [params.rotarSlots=false] - Rotar slots entre empleados
+ * @param {number} [params.slotsPorHora=4] - Slots por hora
+ * @param {number} [params.snapMinutos=15] - Resolución en minutos
+ * @param {number|null} [params.minHorasTurnoOverride=null] - Mínimo horas/turno
+ * @param {number|null} [params.maxHorasTurnoOverride=null] - Máximo horas/turno
+ * @param {boolean} [params.permiteExtras=false] - Permitir horas extra
+ * @param {boolean} [params.permitePartidos=false] - Permitir turnos partidos
+ * @param {number|null} [params.minEmpleadosDia=null] - Piso personas/día
+ * @param {number|null} [params.maxEmpleadosDia=null] - Techo personas/día
+ * @param {string} [params.horaInicioDia='04:00'] - Hora inicio del día
+ * @param {string|null} [params.horaFinDia=null] - Hora cierre del día
+ * @param {Object|null} [params.breakPolicy=null] - Política de descansos
+ * @returns {GenerateResult} Turnos generados y advertencias
  */
 export function generateAutomaticShifts({
   employees,
@@ -455,6 +720,11 @@ export function generateAutomaticShifts({
   // minDia = piso (si no se alcanza, el día se deja vacío y se avisa).
   // maxDia = techo y objetivo (cuántas personas distintas queremos por día).
   // objetivoNoche = personas distintas reservadas a la franja nocturna.
+  /**
+   * Parsea un valor de headcount (mín/máx personas por día).
+   * @param {*} v - Valor a parsear
+   * @returns {number|null} Número positivo o null si no es válido
+   */
   const parseHeadcount = (v) => {
     const n = parseInt(v, 10);
     return (!isNaN(n) && n > 0) ? n : null;
@@ -530,6 +800,12 @@ export function generateAutomaticShifts({
   const safeExisting = Array.isArray(existingShifts) ? existingShifts : [];
 
   // ── Helpers de validación ────────────────────────────────────────────
+  /**
+   * Verifica si un empleado tiene una ausencia (bloqueo) en una fecha.
+   * @param {number|string} empId - ID del empleado
+   * @param {string} dateStr - Fecha en formato YYYY-MM-DD
+   * @returns {boolean} true si el empleado está bloqueado
+   */
   const isBlocked = (empId, dateStr) =>
     safeAbsences.some(a =>
       a.employee_id === empId &&
@@ -537,6 +813,12 @@ export function generateAutomaticShifts({
       a.fecha_fin >= dateStr
     );
 
+  /**
+   * Verifica si un empleado ya tiene un turno asignado en una fecha.
+   * @param {number|string} empId - ID del empleado
+   * @param {string} dateStr - Fecha en formato YYYY-MM-DD
+   * @returns {boolean} true si ya tiene turno ese día
+   */
   const hasShiftOnDay = (empId, dateStr) =>
     [...safeExisting, ...generatedShifts].some(
       s => s.employee_id === empId && String(s.start_time).startsWith(dateStr)
@@ -545,6 +827,12 @@ export function generateAutomaticShifts({
   // Horas extra legales permitidas (CST: máx. 12h extra/semana) si el área
   // habilita horas extra; si no, tope estricto en la jornada ordinaria.
   const extrasSemana = permiteExtras ? 12 : 0;
+  /**
+   * Obtiene las horas máximas semanales permitidas para un empleado,
+   * considerando contrato, override y horas extra habilitadas.
+   * @param {Employee} emp - Empleado
+   * @returns {number} Horas máximas semanales
+   */
   const getMaxHoursFor = (emp) => {
     let base;
     if (emp.horas_max_semana && emp.horas_max_semana > 0) base = emp.horas_max_semana;
@@ -555,23 +843,43 @@ export function generateAutomaticShifts({
     return base + extrasSemana;
   };
 
+  /**
+   * Obtiene las horas máximas diarias permitidas para un empleado.
+   * @param {Employee} emp - Empleado
+   * @returns {number} Horas máximas diarias
+   */
   const getMaxDailyHours = (emp) => {
     if (emp.horas_max_diarias && emp.horas_max_diarias > 0) return parseFloat(emp.horas_max_diarias);
     return limits.maxHorasDiarias;
   };
 
+  /**
+   * Obtiene el tope de horas nocturnas semanales para un empleado.
+   * @param {Employee} emp - Empleado
+   * @returns {number} Tope de horas nocturnas (Infinity si no hay límite)
+   */
   const getMaxNightHours = (emp) => {
     if (emp.horas_nocturnas_max_semana && emp.horas_nocturnas_max_semana > 0)
       return parseInt(emp.horas_nocturnas_max_semana, 10);
     return Infinity;
   };
 
+  /**
+   * Calcula las horas netas de un turno (descontando descansos).
+   * @param {{start_time:string, end_time:string, break_minutes?:number}} s - Turno
+   * @returns {number} Horas netas
+   */
   const shiftHours = (s) => {
     const hrs = (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
     return Math.max(0, hrs - (s.break_minutes || 0) / 60);
   };
 
-  // Horas nocturnas reales (>=19:00 o <06:00) de un turno
+  /**
+   * Calcula las horas nocturnas reales (>=19:00 o <06:00) de un turno,
+   * recorriendo hora por hora para precisión.
+   * @param {{start_time:string, end_time:string}} s - Turno
+   * @returns {number} Horas nocturnas
+   */
   const shiftNightHours = (s) => {
     const start = new Date(s.start_time);
     const end = new Date(s.end_time);
@@ -587,6 +895,11 @@ export function generateAutomaticShifts({
     return total;
   };
 
+  /**
+   * Calcula los límites (lunes 00:00 - domingo 23:59) de la semana de una fecha.
+   * @param {Date} dateObj - Fecha dentro de la semana
+   * @returns {{monday:Date, sunday:Date}} Lunes y domingo de la semana
+   */
   const weekBounds = (dateObj) => {
     const d = new Date(dateObj);
     const dow = d.getDay() || 7;
@@ -599,6 +912,12 @@ export function generateAutomaticShifts({
     return { monday, sunday };
   };
 
+  /**
+   * Obtiene las horas semanales acumuladas de un empleado hasta una fecha.
+   * @param {number|string} empId - ID del empleado
+   * @param {Date} date - Fecha de referencia (para determinar la semana)
+   * @returns {number} Horas semanales acumuladas
+   */
   const getWeeklyHours = (empId, date) => {
     const { monday, sunday } = weekBounds(date);
     return [...safeExisting, ...generatedShifts]
@@ -609,6 +928,12 @@ export function generateAutomaticShifts({
       }, 0);
   };
 
+  /**
+   * Obtiene las horas nocturnas semanales acumuladas de un empleado.
+   * @param {number|string} empId - ID del empleado
+   * @param {Date} date - Fecha de referencia
+   * @returns {number} Horas nocturnas semanales
+   */
   const getWeeklyNightHours = (empId, date) => {
     const { monday, sunday } = weekBounds(date);
     return [...safeExisting, ...generatedShifts]
@@ -619,11 +944,23 @@ export function generateAutomaticShifts({
       }, 0);
   };
 
+  /**
+   * Obtiene las horas diarias acumuladas de un empleado en una fecha.
+   * @param {number|string} empId - ID del empleado
+   * @param {string} dateStr - Fecha en formato YYYY-MM-DD
+   * @returns {number} Horas diarias acumuladas
+   */
   const getDailyHours = (empId, dateStr) =>
     [...safeExisting, ...generatedShifts]
       .filter(s => s.employee_id === empId && String(s.start_time).startsWith(dateStr))
       .reduce((acc, s) => acc + shiftHours(s), 0);
 
+  /**
+   * Obtiene la hora de fin del último turno de un empleado en el día anterior.
+   * @param {number|string} empId - ID del empleado
+   * @param {string} dateStr - Fecha actual (YYYY-MM-DD)
+   * @returns {string|null} Fecha/hora ISO del fin del último turno, o null
+   */
   const getLastShiftEndTime = (empId, dateStr) => {
     const prevStr = dateToStr(addDays(parseLocalDate(dateStr), -1)); // ← fix zona horaria
     const prevShifts = [...safeExisting, ...generatedShifts]
@@ -635,6 +972,13 @@ export function generateAutomaticShifts({
   };
 
   // ── Cobertura actual por slots de un día ─────────────────────────────
+
+  /**
+   * Construye el vector de cobertura actual (empleados asignados por slot)
+   * para una fecha, considerando turnos existentes y ya generados.
+   * @param {string} dateStr - Fecha en formato YYYY-MM-DD
+   * @returns {number[]} Vector de cobertura (índice = slot, valor = personas cubriendo)
+   */
   const getCoverageVector = (dateStr) => {
     const vec = new Array(slotsPerDay).fill(0);
     [...safeExisting, ...generatedShifts].forEach(s => {
@@ -670,6 +1014,12 @@ export function generateAutomaticShifts({
 
   // ── Cache de demanda CRUDA (curva tal cual, antes de escalar a headcount) ─
   const rawDemandCache = {};
+
+  /**
+   * Obtiene (con cache) el vector de demanda cruda (sin escalar por headcount).
+   * @param {Date} dateObj - Fecha a consultar
+   * @returns {number[]} Vector de demanda cruda
+   */
   const getRawDemandVecFor = (dateObj) => {
     const ds = dateToStr(dateObj);
     if (rawDemandCache[ds]) return rawDemandCache[ds];
@@ -680,7 +1030,11 @@ export function generateAutomaticShifts({
     return raw;
   };
 
-  // Suma de la FORMA diurna cruda de un día (person-slots que pide la curva).
+  /**
+   * Suma de la FORMA diurna cruda de un día (person-slots que pide la curva).
+   * @param {Date} dateObj - Fecha a evaluar
+   * @returns {number} Suma de demanda en la ventana diurna
+   */
   const rawDayShapeSum = (dateObj) => {
     const raw = getRawDemandVecFor(dateObj);
     let s = 0;
@@ -703,6 +1057,14 @@ export function generateAutomaticShifts({
 
   // ── Cache de demanda EFECTIVA por fecha (escalada si hay headcount) ─────
   const demandVecCache = {};
+
+  /**
+   * Obtiene (con cache) el vector de demanda efectiva para una fecha.
+   * Si hay headcount objetivo, escala la curva cruda para que el día de
+   * mayor demanda alcance el objetivo de personas.
+   * @param {Date} dateObj - Fecha a consultar
+   * @returns {number[]} Vector de demanda efectiva
+   */
   const getDemandVecFor = (dateObj) => {
     const ds = dateToStr(dateObj);
     if (demandVecCache[ds]) return demandVecCache[ds];
@@ -731,6 +1093,12 @@ export function generateAutomaticShifts({
   };
 
   // ── v5: Peso de demanda total de un día (para ordenar días por prioridad) ─
+
+  /**
+   * Calcula el peso total de demanda de un día (suma de demanda en todos los slots).
+   * @param {Date} dateObj - Fecha a evaluar
+   * @returns {number} Peso de demanda (mayor = más demanda)
+   */
   const dayDemandWeight = (dateObj) => {
     const vec = getDemandVecFor(dateObj);
     let sum = 0;
@@ -743,6 +1111,12 @@ export function generateAutomaticShifts({
   };
 
   // ── v5: Personas DISTINTAS ya programadas en un día (para el techo maxDia) ─
+
+  /**
+   * Cuenta cuántas personas distintas tienen turnos en una fecha.
+   * @param {string} dateStr - Fecha en formato YYYY-MM-DD
+   * @returns {number} Cantidad de empleados distintos
+   */
   const distinctPeopleOnDay = (dateStr) => {
     const ids = new Set();
     [...safeExisting, ...generatedShifts].forEach(s => {
@@ -752,12 +1126,24 @@ export function generateAutomaticShifts({
   };
 
   // ── Eligibilidad por jornada ─────────────────────────────────────────
+
+  /**
+   * Determina si un empleado puede trabajar en la franja nocturna dedicada.
+   * @param {Employee} emp - Empleado
+   * @returns {boolean} true si puede trabajar de noche
+   */
   const canWorkNight = (emp) => {
     const cls = classifyEmployee(emp);
     if (cls === 'NIGHT_ONLY' || cls === 'MIXED') return true;
     if (cls === 'DAY_ONLY') return false;
     return nightConfig?.permiteDiaCubrir ?? false; // ANY
   };
+
+  /**
+   * Determina si un empleado puede trabajar en la franja diurna.
+   * @param {Employee} emp - Empleado
+   * @returns {boolean} true si puede trabajar de día
+   */
   const canWorkDay = (emp) => classifyEmployee(emp) !== 'NIGHT_ONLY';
 
   // ── FASE 0: Asignar descansos ────────────────────────────────────────
@@ -836,6 +1222,15 @@ export function generateAutomaticShifts({
   // que paga recargo) y solo la noche dedicada queda reservada al personal
   // nocturno. `nightHrs` (horas con recargo nocturno, desde 19:00) se usa aparte
   // para el tope de horas nocturnas y para marcar el turno como NOCTURNO.
+
+  /**
+   * Verifica si un empleado puede tomar un turno específico, evaluando:
+   * compatibilidad de jornada, ausencias, descansos, turnos existentes,
+   * topes semanales/diarios/nocturnos y descanso entre jornadas.
+   * @param {Employee} emp - Empleado a evaluar
+   * @param {{startDateStr:string, startDateObj:Date, startTimeStr:string, shiftHrs:number, nightHrs:number, entersNight:boolean}} ctx - Contexto del turno
+   * @returns {boolean} true si el empleado puede tomar el turno
+   */
   const employeeEligible = (emp, { startDateStr, startDateObj, startTimeStr, shiftHrs, nightHrs, entersNight }) => {
     if (entersNight && !canWorkNight(emp)) return false;
     if (!entersNight && !canWorkDay(emp)) return false;
@@ -863,7 +1258,12 @@ export function generateAutomaticShifts({
     return true;
   };
 
-  // Hash determinista (sin Math.random) para rotar asignaciones de slot.
+  /**
+   * Hash determinista (sin Math.random) para rotar asignaciones de slot.
+   * @param {number|string} id - ID del empleado
+   * @param {string} key - Clave de contexto (ej. startTimeStr)
+   * @returns {number} Valor hash entero sin signo
+   */
   const slotHash = (id, key) => {
     let x = 0;
     const str = `${id}|${key}`;
@@ -871,6 +1271,15 @@ export function generateAutomaticShifts({
     return x;
   };
 
+  /**
+   * Selecciona el mejor candidato de un pool de empleados para un turno,
+   * aplicando la estrategia configurada (COVERAGE_FIRST o EMPLOYEE_PREF)
+   * y rotación de slots si está habilitada.
+   * @param {Employee[]} pool - Pool de empleados elegibles
+   * @param {{startDateStr:string, startDateObj:Date, startTimeStr:string, shiftHrs:number, nightHrs:number, entersNight:boolean}} ctx - Contexto del turno
+   * @param {Date} startDateObj - Fecha de inicio (para cálculo de horas semanales)
+   * @returns {Employee|null} Empleado seleccionado o null si no hay candidatos
+   */
   const pickCandidate = (pool, ctx, startDateObj) => {
     const candidates = pool.filter(emp => employeeEligible(emp, ctx));
     if (candidates.length === 0) return null;
@@ -934,7 +1343,12 @@ export function generateAutomaticShifts({
       );
     }
 
-    // Coloca UN bloque nocturno óptimo para `day`. Devuelve true si lo logró.
+    /**
+     * Coloca UN bloque nocturno óptimo para un día, evaluando todas las
+     * combinaciones de inicio/duración dentro de la ventana nocturna.
+     * @param {{date:Date, dateStr:string}} day - Día a cubrir
+     * @returns {boolean} true si se colocó un bloque exitosamente
+     */
     const placeOneNightBlock = (day) => {
       const dNextObj = addDays(day.date, 1);
       const dNextStr = dateToStr(dNextObj);

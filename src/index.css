@@ -1485,6 +1485,12 @@ select option {
 .animate-slide-up { animation: slideUp 0.35s ease; }
 .pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
 
+/* Skeleton shimmer — usado por el componente Skeleton.jsx */
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 /* ============================================================
    UTILITIES
    ============================================================ */

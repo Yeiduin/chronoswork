@@ -30,6 +30,13 @@ supabase/schema.sql
 npm run dev
 ```
 
+### 5. Ejecutar tests
+```bash
+npm test          # Tests unitarios (Vitest) + tests de integración
+npm run test:unit # Solo tests unitarios (Vitest)
+npm run test:watch # Tests en modo watch
+```
+
 ---
 
 ## 🏗️ Arquitectura
@@ -39,16 +46,19 @@ Frontend (React + Vite)  →  Supabase (PostgreSQL + Auth)
          ↕                          ↕
     Motor CST 2026           Row Level Security (RLS)
     (laborEngine.js)         (Multi-tenant isolation)
+    Algoritmo Turnos
+    (generateAutomaticShifts.js)
 ```
 
 ### Stack
 | Capa | Tecnología |
 |------|-----------|
 | Frontend | React 19 + Vite 8 |
-| Estilos | CSS Custom Design System + Bootstrap 5 |
-| Backend/BaaS | Supabase (PostgreSQL + Auth JWT) |
+| Estilos | CSS Custom Design System (variables + tokens) |
+| Backend/BaaS | Supabase (PostgreSQL + Auth JWT + Edge Functions) |
 | Seguridad | Row Level Security (RLS) |
 | Motor Cálculo | JavaScript nativo (cliente) |
+| Tests | Vitest (unitarios) + Node (integración) |
 | Deploy | Vercel / Netlify |
 
 ---
@@ -65,6 +75,8 @@ Frontend (React + Vite)  →  Supabase (PostgreSQL + Auth)
 | Programación | `/programacion` | Rejilla visual de turnos mensual |
 | Prenómina | `/prenomina` | Liquidación automática CST 2026 |
 | Configuración | `/configuracion` | Info empresa y plan SaaS |
+| Portal Empleado | `/mi-perfil` | Vista de empleado (turnos, nomina) |
+| SaaS Admin | `/saas-dashboard` | Gestión multi-empresa (solo admins) |
 
 ---
 
@@ -98,7 +110,7 @@ Implementado en `src/core/laborEngine.js`:
 
 - Cada empresa tiene un `tenant_id` único (UUID)
 - Todas las tablas tienen **Row Level Security (RLS)** activado
-- El JWT de Supabase Auth porta el `tenant_id` en sus metadatos
+- Roles: `super_admin` (dueño empresa), `coordinator` (programador), `empleado` (colaborador), `saas_admin` (admin plataforma)
 - Ninguna consulta puede acceder a datos de otra empresa
 
 ---
@@ -108,16 +120,47 @@ Implementado en `src/core/laborEngine.js`:
 ```
 chronoswork/
 ├── src/
-│   ├── config/          # Supabase client + constantes
-│   ├── core/            # Motor CST, utils fechas, validators
-│   ├── context/         # AuthContext global
-│   ├── hooks/           # useEmployees, useShifts, useAbsences
-│   ├── components/      # Layout (Sidebar, ProtectedRoute)
-│   └── pages/           # Todas las páginas
+│   ├── config/          # Supabase client, logger, constantes, catálogos
+│   ├── core/            # Motor CST, algoritmo turnos, utils fechas, validators
+│   ├── context/         # AuthContext global (multi-role)
+│   ├── hooks/           # createCrudHook factory + useEmployees, useShifts, etc.
+│   ├── components/      # UI: layout, modals, skeletons, scheduling grid
+│   └── pages/           # Páginas (cada una se carga bajo demanda con lazy)
 ├── supabase/
-│   └── schema.sql       # DDL + RLS + Triggers
-└── .env                 # Variables de entorno
+│   ├── schema.sql       # DDL completo + RLS + Triggers
+│   └── functions/       # Edge Functions (auto-assign, provision-employee)
+├── test/                # Tests de integración (Node) & debug
+├── docs/                # Documentación técnica
+├── vitest.config.js     # Configuración Vitest (tests unitarios)
+└── vite.config.js       # Build con code-splitting por ruta
 ```
+
+### Features técnicas clave
+
+| Feature | Descripción |
+|---------|-------------|
+| **Code Splitting** | `React.lazy()` — cada página carga solo cuando se navega a ella |
+| **CRUD Genérico** | `createCrudHook.js` — fábrica de hooks con caché, soft-delete, guards |
+| **Algoritmo Turnos v4.1** | Cobertura 24/7, headcount, descansos parametrizables |
+| **Prenómina automática** | Clasificación minuto a minuto por concepto legal |
+| **Retry en red** | `withRetry()` — reintentos exponenciales para queries Supabase |
+| **Logger centralizado** | `error/warn/debug` solo en dev, `info` siempre visible |
+| **Design System** | Variables CSS, 3800+ líneas de tokens, responsivo |
+| **Portal Empleado** | Vista independiente con perfil, turnos y nómina |
+
+---
+
+## 🧪 Tests
+
+```bash
+npm test              # Suite completa: Vitest (unit) + Node (integración)
+npm run test:unit     # Solo tests unitarios Vitest (52 tests actualmente)
+npm run test:watch    # Modo watch para desarrollo
+```
+
+Los tests unitarios cubren:
+- **dateUtils.js** (28 tests): toISODay, formatFecha, getLocalISOString, getSemana, getDiasMes, estaEnRango, diferenciaHoras, etc.
+- **validators.js** (24 tests): validarCedula, validarNIT, validarValorHora, validarEmail, validarPassword, formatCOP, etc.
 
 ---
 

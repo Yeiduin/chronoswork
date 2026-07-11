@@ -235,3 +235,30 @@ export function esDominicalOFestivo(fecha, festivos = []) {
   const esFestivo = Array.isArray(festivos) ? festivos.includes(dateStr) : false;
   return esDOM || esFestivo;
 }
+
+/**
+ * Calcula y formatea la duración de una novedad (en días o en horas)
+ */
+export function formatDuracionNovedad(abs) {
+  if (abs.por_horas && abs.hora_inicio && abs.hora_fin) {
+    const minInicio = timeToMinutes(abs.hora_inicio);
+    const minFin = timeToMinutes(abs.hora_fin);
+    let diffMin = minFin - minInicio;
+    if (diffMin < 0) diffMin += 24 * 60; // cruce de medianoche
+    const horas = Math.floor(diffMin / 60);
+    const minutos = diffMin % 60;
+    
+    let txt = '';
+    if (horas > 0) txt += `${horas} hora${horas > 1 ? 's' : ''}`;
+    if (minutos > 0) txt += `${horas > 0 ? ' y ' : ''}${minutos} min`;
+    if (!txt) txt = '0 horas';
+    return txt;
+  } else {
+    // Por días
+    const fInicio = new Date(abs.fecha_inicio + 'T00:00:00');
+    const fFin = new Date(abs.fecha_fin + 'T00:00:00');
+    const diffTime = fFin.getTime() - fInicio.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // Inclusivo
+    return `${diffDays} día${diffDays > 1 ? 's' : ''}`;
+  }
+}

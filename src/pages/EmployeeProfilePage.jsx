@@ -3,10 +3,12 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../config/supabaseClient';
 import { logger } from '../config/logger';
+import { TIPOS_NOVEDAD, ABSENCE_CFG } from '../config/constants';
+import { formatDuracionNovedad } from '../core/dateUtils';
 import {
   MdCalendarMonth, MdEventBusy, MdCalculate,
   MdLogout, MdSchedule, MdAccessTime, MdChevronLeft, MdChevronRight,
-  MdOutlineCalendarToday,
+  MdOutlineCalendarToday, MdAdd, MdClose
 } from 'react-icons/md';
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -133,12 +135,7 @@ const SHIFT_CFG = {
   custom:    { label: 'Turno',   color: '#3b82f6', bg: 'rgba(59,130,246,0.12)',   icon: '⚡' },
 };
 
-const ABSENCE_CFG = {
-  vacaciones:  { label: 'Vacaciones',  color: '#22c55e', icon: '🏖️' },
-  incapacidad: { label: 'Incapacidad', color: '#f59e0b', icon: '🏥' },
-  licencia:    { label: 'Licencia',    color: '#3b82f6', icon: '📋' },
-  suspension:  { label: 'Suspensión',  color: '#ef4444', icon: '⚠️' },
-};
+// Eliminado ABSENCE_CFG local, ahora se importa desde constants.js
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECCIÓN 3 — HELPERS DE SEMANA
@@ -555,6 +552,59 @@ export default function EmployeeProfilePage() {
   const [error, setError]       = useState('');
   const [activeTab, setActiveTab] = useState('semana');
 
+  // Novedades Modal
+  const [showAbsenceModal, setShowAbsenceModal] = useState(false);
+  const [absenceForm, setAbsenceForm] = useState({ 
+    tipo: 'vacaciones', 
+    por_horas: false,
+    fecha_inicio: '', 
+    fecha_fin: '', 
+    hora_inicio: '',
+    hora_fin: '',
+    observaciones: '' 
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleRequestAbsence = async (e) => {
+    e.preventDefault();
+    if (absenceForm.por_horas) {
+      if (!absenceForm.hora_inicio || !absenceForm.hora_fin) {
+        alert('Debe especificar la hora de inicio y fin.');
+        return;
+      }
+      if (absenceForm.hora_inicio >= absenceForm.hora_fin) {
+        alert('La hora de fin debe ser posterior a la de inicio.');
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+    try {
+      const dataToSave = {
+        tenant_id: employee.tenant_id,
+        employee_id: employee.id,
+        tipo: absenceForm.tipo,
+        por_horas: absenceForm.por_horas,
+        fecha_inicio: absenceForm.fecha_inicio,
+        fecha_fin: absenceForm.por_horas ? absenceForm.fecha_inicio : absenceForm.fecha_fin,
+        hora_inicio: absenceForm.por_horas ? absenceForm.hora_inicio : null,
+        hora_fin: absenceForm.por_horas ? absenceForm.hora_fin : null,
+        estado: 'pendiente',
+        aprobada: false, // fallback 
+        observaciones: absenceForm.observaciones
+      };
+      const { error } = await supabase.from('absences').insert(dataToSave);
+      if (error) throw error;
+      setShowAbsenceModal(false);
+      setAbsenceForm({ tipo: 'vacaciones', por_horas: false, fecha_inicio: '', fecha_fin: '', hora_inicio: '', hora_fin: '', observaciones: '' });
+      loadProfile();
+    } catch (err) {
+      alert('Error al solicitar novedad: ' + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   // Semana (navegación)
   const [currentMonday, setCurrentMonday] = useState(() => getMondayOf(colTodayStr()));
 
@@ -878,6 +928,15 @@ export default function EmployeeProfilePage() {
             ────────────────────────────────────────────────────── */}
         {activeTab === 'novedades' && (
           <div className="emp-tab-content animate-fade-in">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0, fontSize: '1.25rem', color: 'var(--text-primary)' }}>Mis Novedades</h3>
+              <button 
+                className="cw-btn cw-btn--primary cw-btn--sm" 
+                onClick={() => setShowAbsenceModal(true)}
+              >
+                <MdAdd style={{ fontSize: '1.25rem', marginRight: '0.25rem' }} /> Solicitar Novedad
+              </button>
+            </div>
             {absences.length === 0 ? (
               <div className="emp-empty-state">
                 <MdEventBusy style={{ fontSize: '3rem', opacity: 0.2 }} />
@@ -907,8 +966,17 @@ export default function EmployeeProfilePage() {
                           {esPasada && <span className="emp-badge emp-badge--past">Finalizada</span>}
                         </div>
                         <div className="emp-absence-card__dates">
-                          {a.fecha_inicio} → {a.fecha_fin}
-                          <span className="emp-absence-card__dias">({dias} {dias === 1 ? 'día' : 'días'})</span>
+                          {a.por_horas ? (
+                            <>
+                              {a.fecha_inicio} | {a.hora_inicio?.slice(0, 5)} a {a.hora_fin?.slice(0, 5)}
+                              <span className="emp-absence-card__dias" style={{ marginLeft: '0.5rem' }}>({formatDuracionNovedad(a)})</span>
+                            </>
+                          ) : (
+                            <>
+                              {a.fecha_inicio} → {a.fecha_fin}
+                              <span className="emp-absence-card__dias" style={{ marginLeft: '0.5rem' }}>({formatDuracionNovedad(a)})</span>
+                            </>
+                          )}
                         </div>
                         {a.observaciones && (
                           <p className="emp-absence-card__obs">{a.observaciones}</p>
@@ -917,11 +985,11 @@ export default function EmployeeProfilePage() {
                       <span
                         className="emp-absence-card__status"
                         style={{
-                          color: a.aprobada ? '#22c55e' : '#f59e0b',
-                          background: a.aprobada ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)',
+                          color: (a.estado === 'aprobada' || a.aprobada) ? '#22c55e' : a.estado === 'rechazada' ? '#ef4444' : '#f59e0b',
+                          background: (a.estado === 'aprobada' || a.aprobada) ? 'rgba(34,197,94,0.1)' : a.estado === 'rechazada' ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.1)',
                         }}
                       >
-                        {a.aprobada ? '✓ Aprobada' : '⏳ Pendiente'}
+                        {(a.estado === 'aprobada' || a.aprobada) ? '✓ Aprobada' : a.estado === 'rechazada' ? '❌ Rechazada' : '⏳ Pendiente'}
                       </span>
                     </div>
                   );
@@ -1000,6 +1068,121 @@ export default function EmployeeProfilePage() {
 
       {/* Bottom padding */}
       <div style={{ paddingBottom: '2rem' }} />
+
+      {/* Modal de Solicitud de Novedad */}
+      {showAbsenceModal && (
+        <div className="cw-modal-overlay">
+          <div className="cw-modal animate-fade-in" style={{ maxWidth: '400px' }}>
+            <div className="cw-modal__header">
+              <h3>Solicitar Novedad</h3>
+              <button className="cw-modal__close" onClick={() => setShowAbsenceModal(false)}>
+                <MdClose />
+              </button>
+            </div>
+            <div className="cw-modal__body">
+              <form id="absence-form" onSubmit={handleRequestAbsence} className="cw-form">
+                <div className="cw-form-group">
+                  <label>Tipo de Novedad</label>
+                  <select
+                    className="cw-input"
+                    value={absenceForm.tipo}
+                    onChange={e => setAbsenceForm({ ...absenceForm, tipo: e.target.value })}
+                    required
+                  >
+                    {TIPOS_NOVEDAD.map(t => (
+                      <option key={t.value} value={t.value}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="cw-form-group">
+                  <label>Modalidad de Novedad</label>
+                  <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                      <input type="radio" name="por_horas" checked={!absenceForm.por_horas} onChange={() => setAbsenceForm({...absenceForm, por_horas: false, hora_inicio: '', hora_fin: ''})} />
+                      Por días completos
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                      <input type="radio" name="por_horas" checked={absenceForm.por_horas} onChange={() => setAbsenceForm({...absenceForm, por_horas: true, fecha_fin: ''})} />
+                      Por horas
+                    </label>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                  <div className="cw-form-group" style={absenceForm.por_horas ? { gridColumn: '1 / -1' } : {}}>
+                    <label>{absenceForm.por_horas ? 'Fecha de la Novedad' : 'Fecha Inicio'}</label>
+                    <input
+                      type="date"
+                      className="cw-input"
+                      value={absenceForm.fecha_inicio}
+                      onChange={e => setAbsenceForm({ ...absenceForm, fecha_inicio: e.target.value })}
+                      required
+                      min={today}
+                    />
+                  </div>
+                  
+                  {!absenceForm.por_horas ? (
+                    <div className="cw-form-group">
+                      <label>Fecha Fin</label>
+                      <input
+                        type="date"
+                        className="cw-input"
+                        value={absenceForm.fecha_fin}
+                        onChange={e => setAbsenceForm({ ...absenceForm, fecha_fin: e.target.value })}
+                        required
+                        min={absenceForm.fecha_inicio || today}
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="cw-form-group">
+                        <label>Hora Inicio</label>
+                        <input
+                          type="time"
+                          className="cw-input"
+                          value={absenceForm.hora_inicio}
+                          onChange={e => setAbsenceForm({ ...absenceForm, hora_inicio: e.target.value })}
+                          required
+                        />
+                      </div>
+                      <div className="cw-form-group">
+                        <label>Hora Fin</label>
+                        <input
+                          type="time"
+                          className="cw-input"
+                          value={absenceForm.hora_fin}
+                          onChange={e => setAbsenceForm({ ...absenceForm, hora_fin: e.target.value })}
+                          required
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="cw-form-group">
+                  <label>Observaciones / Motivo {absenceForm.tipo === 'otro' && <span style={{color: 'var(--cw-danger)'}}>* (Requerido)</span>}</label>
+                  <textarea
+                    className="cw-input"
+                    value={absenceForm.observaciones}
+                    onChange={e => setAbsenceForm({ ...absenceForm, observaciones: e.target.value })}
+                    rows={3}
+                    placeholder={absenceForm.tipo === 'otro' ? 'Especifica el tipo de novedad detalladamente...' : 'Describe brevemente el motivo...'}
+                    required={absenceForm.tipo === 'otro'}
+                  ></textarea>
+                </div>
+              </form>
+            </div>
+            <div className="cw-modal__footer">
+              <button type="button" className="cw-btn cw-btn--secondary" onClick={() => setShowAbsenceModal(false)}>
+                Cancelar
+              </button>
+              <button type="submit" form="absence-form" className="cw-btn cw-btn--primary" disabled={isSubmitting}>
+                {isSubmitting ? 'Enviando...' : 'Enviar Solicitud'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
