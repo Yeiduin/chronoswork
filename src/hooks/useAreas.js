@@ -107,9 +107,12 @@ export function useAreas() {
     return data;
   };
 
-  // ═══ updateArea: lógica específica (propagación valor_hora_default) ════════
+  // ═══ updateArea: lógica específica ════════════════════════════════════════
+  // La propagación de valor_hora_default a empleados se hace solo si el
+  // caller lo solicita explícitamente (propagarSalario: true), para evitar
+  // recálculos retroactivos de nómina sin consentimiento del usuario.
   const updateArea = async (id, updates) => {
-    const { franjas_iniciales, ...raw } = updates;
+    const { franjas_iniciales, propagarSalario, ...raw } = updates;
     const dataToUpdate = sanitizeNumeric(raw);
     const { data, error: updErr } = await supabase
       .from('areas')
@@ -120,8 +123,8 @@ export function useAreas() {
       .single();
     if (updErr) throw updErr;
 
-    // Si se actualizó valor_hora_default, propagar a empleados no especiales
-    if (updates.valor_hora_default !== undefined) {
+    // Propagar valor_hora_default a empleados no especiales SOLO si se solicitó
+    if (propagarSalario && updates.valor_hora_default !== undefined) {
       const { data: areaEmps } = await supabase
         .from('area_employees')
         .select('employee_id')

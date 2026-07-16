@@ -23,6 +23,8 @@ import { DemandCurveEditor } from '../components/DemandCurveEditor';
 import { LaborLimitsConfig } from '../components/LaborLimitsConfig';
 import { BreakPolicyConfig } from '../components/BreakPolicyConfig';
 import { CollapsibleSection } from '../components/CollapsibleSection';
+import { AreaSkillRequirements } from '../components/AreaSkillRequirements';
+import { DemandExceptionsEditor } from '../components/DemandExceptionsEditor';
 import AreaForm from '../components/AreaForm';
 import TemplateModal from '../components/TemplateModal.jsx';
 
@@ -939,13 +941,17 @@ export default function AreasPage() {
                   border: `1px solid ${selectedArea.modo_operacion === '24_7' ? 'rgba(245,158,11,0.3)' : 'rgba(99,102,241,0.25)'}`,
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-                    <span style={{ fontSize: '1.5rem' }}>{selectedArea.modo_operacion === '24_7' ? '🔄' : '🏢'}</span>
+                    <span style={{ fontSize: '1.5rem' }}>{selectedArea.modo_operacion === '24_7' || selectedArea.modo_operacion === '24_7_NIGHT_SPLIT' ? '🔄' : '🏢'}</span>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
-                        {selectedArea.modo_operacion === '24_7' ? 'Operación 24/7' : 'Horario de Oficina'}
+                        {selectedArea.modo_operacion === '24_7'
+                          ? 'Operación continua 24/7'
+                          : selectedArea.modo_operacion === '24_7_NIGHT_SPLIT'
+                            ? '24/7 con nocturno dedicado'
+                            : 'Horario definido'}
                       </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                        {selectedArea.modo_operacion === '24_7'
+                        {selectedArea.modo_operacion === '24_7' || selectedArea.modo_operacion === '24_7_NIGHT_SPLIT'
                           ? 'Cobertura 7 días · Dom/Festivos incluidos · Recargos CST automáticos (HON, HOD, HCDN)'
                           : `${(selectedArea.dias_trabajo || []).length} días laborables · Máx. 42h/semana (Ley 2101/2021)`}
                       </div>
@@ -1029,8 +1035,18 @@ export default function AreasPage() {
                 />
 
                 {/* Curvas de Demanda WFM — colapsable */}
-                <CollapsibleSection title="📈 Curva de demanda (WFM)">
+                <CollapsibleSection title="📈 Curvas de demanda (WFM)">
                   <DemandCurveEditor area={selectedArea} embedded />
+                </CollapsibleSection>
+
+                {/* Skills requeridos por el área — colapsable */}
+                <CollapsibleSection title="✅ Skills requeridos del área">
+                  <AreaSkillRequirements areaId={selectedArea.id} areaName={selectedArea.nombre} />
+                </CollapsibleSection>
+
+                {/* Demanda por fecha específica — colapsable */}
+                <CollapsibleSection title="📅 Demanda por fecha (eventos)">
+                  <DemandExceptionsEditor areaId={selectedArea.id} areaName={selectedArea.nombre} />
                 </CollapsibleSection>
               </div>
             </div>

@@ -370,7 +370,7 @@ export function AutoAssignModal({ scope, areas = [], area, onClose, onConfirm })
         {/* Info modo operación */}
         {is24_7 && (
           <div style={{ marginBottom: '1.25rem', padding: '0.875rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 8 }}>
-            <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#d97706', marginBottom: '0.4rem' }}>🔄 Área en Operación 24/7</div>
+            <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#d97706', marginBottom: '0.4rem' }}>🔄 Operación continua 24/7</div>
             <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
               El algoritmo cubrirá <strong>todos los días del rango</strong> incluyendo domingos y festivos.
               Los recargos por HON, HOD y HCDN se calcularán automáticamente en la prenómina según el CST colombiano.

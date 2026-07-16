@@ -1,14 +1,14 @@
 // ============================================================
 // Edge Function: auto-assign — Algoritmo de asignación de turnos
 // Porte completo de generateAutomaticShifts.js v4.1 para Deno
-// Incluye el bugfix de permiteDiaCubrirNoche
+// Incluye v6: skills, preferencias, domingos, embarazo, equidad
 // ============================================================
 
 import { format, addDays, getDay, getISOWeek } from "npm:date-fns@4";
 import {
   LEGAL_DEFAULTS_CO, DEMAND_CURVE_DIURNA, DEMAND_CURVE_NOCTURNA,
   DEMAND_CURVE_FIN_SEMANA, CANONICAL_DAY_STARTS, isNightHour,
-  resolveBreakPolicy,
+  resolveBreakPolicy, BreakRule,
 } from "./labor-catalog.ts";
 import { getLocalISOString, dateToStr, parseLocalDate } from "./date-utils.ts";
 
@@ -19,7 +19,22 @@ export interface Employee {
   solo_nocturno?: boolean; solo_diurno?: boolean;
   jornada_preferida?: string; horas_semanales_contrato?: number;
   horas_nocturnas_max_semana?: number; horas_max_semana?: number;
+  horas_max_diarias?: number;
   permite_partido?: boolean;
+  dias_descanso_semana?: number;
+  dias_descanso_fijos?: number[];
+  // v6: Nuevos campos
+  skills?: string[];
+  seniority?: number;
+  fecha_ingreso?: string;
+  max_domingos_mes?: number;
+  embarazada?: boolean;
+  preferencias_horario?: Array<{
+    day_of_week: number;
+    start_hour: string;
+    end_hour: string;
+    available: boolean;
+  }>;
 }
 
 export interface ShiftTemplate {
@@ -30,6 +45,7 @@ export interface ShiftTemplate {
   shift_kind?: string; break_minutos?: number;
   split_break_minutos?: number;
   disponibilidad_recargo_porcentaje?: number;
+  paga_recargo_nocturno?: boolean;
 }
 
 export interface Absence {
@@ -40,6 +56,19 @@ export interface Absence {
 export interface DemandSlot {
   day_of_week: number; start_hour: number; end_hour: number;
   required_staff: number;
+}
+
+export interface DemandException {
+  date: string;
+  slots: Array<{ start_hour: number; end_hour: number; required_staff: number }>;
+}
+
+export interface EmployeePreference {
+  employee_id: string;
+  day_of_week: number;
+  start_hour: string;
+  end_hour: string;
+  available: boolean;
 }
 
 export interface AutoAssignParams {
@@ -72,6 +101,14 @@ export interface AutoAssignParams {
   horaInicioDia?: string;
   horaFinDia?: string | null;
   breakPolicy?: Record<string, unknown> | null;
+  // v6: Nuevos parámetros
+  requiredSkills?: string[];
+  demandExceptions?: DemandException[];
+  employeePreferences?: EmployeePreference[];
+  maxDomingosMes?: number;
+  consecutividadHorario?: boolean;
+  equidadFinSemana?: boolean;
+  pesoSeniority?: boolean;
 }
 
 interface NightConfig {
@@ -157,14 +194,34 @@ function shiftNightHours(s: { start_time: string; end_time: string }): number {
   return total;
 }
 
+function timeToMinutes(hhmm: string): number {
+  if (!hhmm) return 0;
+  const [h, m] = String(hhmm).split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
 // ─── Vector de demanda ───────────────────────────────────────────────────────
 function buildDemandVector(
   dayOfWeek: number, demandSlots: DemandSlot[],
-  numEmployees: number, isWeekend: boolean, slotsPerHour = 4
+  numEmployees: number, isWeekend: boolean, slotsPerHour = 4,
+  demandException: DemandException | null = null
 ): number[] {
   const spd = getSlotsPerDay(slotsPerHour);
   const vec = new Array(spd).fill(0);
-  const dayRows = demandSlots.filter(s => s && s.day_of_week === dayOfWeek);
+
+  // v6: Prioridad 1 — excepción de demanda por fecha específica
+  if (demandException && Array.isArray(demandException.slots) && demandException.slots.length > 0) {
+    demandException.slots.forEach(row => {
+      const ss = Math.max(0, Math.min((row.start_hour || 0) * slotsPerHour, spd));
+      const es = Math.max(ss, Math.min((row.end_hour || 24) * slotsPerHour, spd));
+      for (let s = ss; s < es; s++) vec[s] = Math.max(vec[s], row.required_staff || 1);
+    });
+    return vec;
+  }
+
+  // Prioridad 2 — config del área por día de la semana
+  const safeDemandSlots = Array.isArray(demandSlots) ? demandSlots : [];
+  const dayRows = safeDemandSlots.filter(s => s && s.day_of_week === dayOfWeek);
 
   if (dayRows.length > 0) {
     dayRows.forEach(row => {
@@ -189,6 +246,26 @@ function expandTemplateToShifts(tpl: ShiftTemplate, dateStr: string, nextDayStr:
   if (!tpl) return [];
   const kind = tpl.shift_kind || "STANDARD";
 
+  // SPLIT_LARGO: como PARTIDO pero con gap largo (retail, restaurante)
+  if (kind === "SPLIT_LARGO" && tpl.hora_inicio_2 && tpl.hora_fin_2) {
+    return [
+      {
+        employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio),
+        end_time: getLocalISOString(dateStr, tpl.hora_fin),
+        periodo: dateStr.slice(0, 7), shift_type: "custom",
+        template_id: tpl.id, break_minutes: 0,
+        shift_kind: kind, bloque: 1, disponibilidad: false, recargo_porcentaje: 0,
+      },
+      {
+        employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio_2),
+        end_time: getLocalISOString(dateStr, tpl.hora_fin_2),
+        periodo: dateStr.slice(0, 7), shift_type: "custom",
+        template_id: tpl.id, break_minutes: 0,
+        shift_kind: kind, bloque: 2, disponibilidad: false, recargo_porcentaje: 0,
+      },
+    ];
+  }
+
   if (kind === "PARTIDO" && tpl.hora_inicio_2 && tpl.hora_fin_2) {
     return [
       {
@@ -208,6 +285,61 @@ function expandTemplateToShifts(tpl: ShiftTemplate, dateStr: string, nextDayStr:
     ];
   }
 
+  // ON_CALL_REMOTO: como DISPONIBILIDAD pero marcado como remoto
+  if (kind === "ON_CALL_REMOTO") {
+    return [{
+      employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio),
+      end_time: tpl.cruza_medianoche ? getLocalISOString(nextDayStr, tpl.hora_fin) : getLocalISOString(dateStr, tpl.hora_fin),
+      periodo: dateStr.slice(0, 7), shift_type: "custom",
+      template_id: tpl.id, break_minutes: 0,
+      shift_kind: kind, bloque: 1, disponibilidad: true,
+      recargo_porcentaje: tpl.disponibilidad_recargo_porcentaje || 0,
+    }];
+  }
+
+  // DOBLE: turno de 16h+ con descanso largo interno
+  if (kind === "DOBLE") {
+    const blocks: GeneratedShift[] = [{
+      employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio),
+      end_time: tpl.cruza_medianoche ? getLocalISOString(nextDayStr, tpl.hora_fin) : getLocalISOString(dateStr, tpl.hora_fin),
+      periodo: dateStr.slice(0, 7), shift_type: "custom",
+      template_id: tpl.id, break_minutes: tpl.break_minutos || 240,
+      shift_kind: kind, bloque: 1, disponibilidad: false, recargo_porcentaje: 0,
+    }];
+    if (tpl.hora_inicio_2 && tpl.hora_fin_2) {
+      blocks.push({
+        employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio_2),
+        end_time: tpl.cruza_medianoche ? getLocalISOString(nextDayStr, tpl.hora_fin_2) : getLocalISOString(dateStr, tpl.hora_fin_2),
+        periodo: dateStr.slice(0, 7), shift_type: "custom",
+        template_id: tpl.id, break_minutes: 0,
+        shift_kind: kind, bloque: 2, disponibilidad: false, recargo_porcentaje: 0,
+      });
+    }
+    return blocks;
+  }
+
+  // REFUERZO: standby presencial, sin franja fija
+  if (kind === "REFUERZO") {
+    return [{
+      employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio),
+      end_time: tpl.cruza_medianoche ? getLocalISOString(nextDayStr, tpl.hora_fin) : getLocalISOString(dateStr, tpl.hora_fin),
+      periodo: dateStr.slice(0, 7), shift_type: "custom",
+      template_id: tpl.id, break_minutes: 0,
+      shift_kind: kind, bloque: 1, disponibilidad: false, recargo_porcentaje: 0,
+    }];
+  }
+
+  // FLEXIBLE: el empleado elige dentro de una ventana
+  if (kind === "FLEXIBLE") {
+    return [{
+      employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio),
+      end_time: tpl.cruza_medianoche ? getLocalISOString(nextDayStr, tpl.hora_fin) : getLocalISOString(dateStr, tpl.hora_fin),
+      periodo: dateStr.slice(0, 7), shift_type: "custom",
+      template_id: tpl.id, break_minutes: tpl.break_minutos || 0,
+      shift_kind: kind, bloque: 1, disponibilidad: false, recargo_porcentaje: 0,
+    }];
+  }
+
   if (kind === "DISPONIBILIDAD") {
     return [{
       employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio),
@@ -219,6 +351,7 @@ function expandTemplateToShifts(tpl: ShiftTemplate, dateStr: string, nextDayStr:
     }];
   }
 
+  // STANDARD, NOCTURNO, ROTATIVO, CUSTOM y cualquier otro tipo
   return [{
     employee_id: "", start_time: getLocalISOString(dateStr, tpl.hora_inicio),
     end_time: tpl.cruza_medianoche ? getLocalISOString(nextDayStr, tpl.hora_fin) : getLocalISOString(dateStr, tpl.hora_fin),
@@ -228,20 +361,30 @@ function expandTemplateToShifts(tpl: ShiftTemplate, dateStr: string, nextDayStr:
   }];
 }
 
+// ─── shiftPagaNocturno ───────────────────────────────────────────────────────
+function shiftPagaNocturno(tpl: ShiftTemplate | null | undefined): boolean {
+  if (!tpl) return false;
+  if (tpl.shift_kind === "NOCTURNO" || tpl.shift_kind === "DOBLE") return true;
+  if (tpl.shift_kind === "ON_CALL_REMOTO" || tpl.shift_kind === "DISPONIBILIDAD") return false;
+  if (tpl.paga_recargo_nocturno) return true;
+  const [h] = (tpl.hora_inicio || "00:00").split(":").map(Number);
+  return h >= 19; // NOCTURNA_INICIO_H
+}
+
 // ─── Generar descansos ───────────────────────────────────────────────────────
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 function buildDescansos(
   startHHMM: string, grossMin: number,
-  breakPolicy: Record<string, unknown> | null,
+  breakPolicy: Record<string, unknown> | null | undefined,
   opts?: { soloBreaks?: boolean }
 ): { descansos: { tipo: string; inicio: string | null; minutos: number }[]; almuerzoMin: number; breaksCount: number; breakMinutes: number } {
-  const bp = resolveBreakPolicy(breakPolicy);
+  const bp = resolveBreakPolicy(breakPolicy ?? null);
   const horas = grossMin / 60;
-  const reglas = [...(bp.reglas || [])].sort((a, b) => (a.desdeHoras || 0) - (b.desdeHoras || 0));
+  const reglas = (bp.reglas as BreakRule[] || []).slice().sort((a, b) => (a.desdeHoras || 0) - (b.desdeHoras || 0));
 
-  let reglaElegida: typeof reglas[0] | null = null;
-  reglas.forEach(r => { if (horas >= (r.desdeHoras || 0)) reglaElegida = r; });
+  let reglaElegida: BreakRule | null = null;
+  for (const r of reglas) { if (horas >= (r.desdeHoras || 0)) reglaElegida = r; }
   if (!reglaElegida) {
     return { descansos: [], almuerzoMin: 0, breaksCount: 0, breakMinutes: 0 };
   }
@@ -302,6 +445,14 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
     permiteExtras = false, permitePartidos = false,
     minEmpleadosDia, maxEmpleadosDia,
     horaInicioDia = "04:00", horaFinDia, breakPolicy: bp,
+    // v6: Nuevos parámetros
+    requiredSkills = [],
+    demandExceptions = [],
+    employeePreferences = [],
+    maxDomingosMes = 2,
+    consecutividadHorario = true,
+    equidadFinSemana = true,
+    pesoSeniority = false,
   } = params;
 
   const warnings: string[] = [];
@@ -315,9 +466,153 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
   const minEntreJornadas = LEGAL_DEFAULTS_CO.minHorasEntreJornadas;
   const snapSlots = Math.max(1, Math.round((snapMinutos / 60) * slotsPorHora));
   const minSlots = Math.round(minHoras * slotsPorHora);
+  const maxSlots = Math.round(maxHoras * slotsPorHora);
+  const periodoStr = `${year}-${String(month).padStart(2, "0")}`;
 
   let minEmpDia: number | null = minEmpleadosDia ?? null;
   let maxEmpDia: number | null = maxEmpleadosDia ?? null;
+
+  // ─── v6: Skills requeridos ─────────────────────────────────────────────────
+  const safeRequiredSkills = Array.isArray(requiredSkills) ? requiredSkills.filter(s => s && String(s).trim()) : [];
+
+  const hasRequiredSkills = (emp: Employee): boolean => {
+    if (safeRequiredSkills.length === 0) return true;
+    const empSkills = Array.isArray(emp.skills) ? emp.skills.map(s => String(s).toLowerCase().trim()) : [];
+    return safeRequiredSkills.every(req => empSkills.includes(String(req).toLowerCase().trim()));
+  };
+
+  // ─── v6: Preferencias granulares ───────────────────────────────────────────
+  const safePreferences = Array.isArray(employeePreferences) ? employeePreferences : [];
+
+  const respectsPreferences = (
+    empId: string, dayOfWeek: number,
+    startTimeStr: string, endTimeStr: string, crossesMidnight: boolean
+  ): boolean => {
+    if (safePreferences.length === 0) return true;
+    const prefs = safePreferences.filter(p => p.employee_id === empId && p.day_of_week === dayOfWeek);
+    if (prefs.length === 0) return true;
+    const startMin = timeToMinutes(startTimeStr);
+    const endMin = crossesMidnight ? timeToMinutes(endTimeStr) + 1440 : timeToMinutes(endTimeStr);
+    for (const pref of prefs) {
+      if (pref.available === false) {
+        const prefStart = timeToMinutes(pref.start_hour);
+        const prefEnd = pref.end_hour === "00:00" || pref.end_hour === "24:00"
+          ? 1440 : timeToMinutes(pref.end_hour);
+        if (startMin < prefEnd && endMin > prefStart) return false;
+      }
+    }
+    return true;
+  };
+
+  // ─── v6: Conteo de domingos ────────────────────────────────────────────────
+  const domingoCount: Record<string, number> = {};
+  [...existing].forEach(s => {
+    if (!s.start_time) return;
+    const d = new Date(s.start_time);
+    if (d.getDay() === 0) {
+      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const key = `${s.employee_id}_${monthKey}`;
+      domingoCount[key] = (domingoCount[key] || 0) + 1;
+    }
+  });
+
+  const getDomingosMes = (empId: string, dateObj: Date): number => {
+    const monthKey = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, "0")}`;
+    let count = domingoCount[`${empId}_${monthKey}`] || 0;
+    generatedShifts.forEach(s => {
+      if (s.employee_id === empId && s.start_time) {
+        const d = new Date(s.start_time);
+        if (d.getDay() === 0) {
+          const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          if (mk === monthKey) count++;
+        }
+      }
+    });
+    return count;
+  };
+
+  const getMaxDomingos = (emp: Employee): number => {
+    if (emp.max_domingos_mes != null && emp.max_domingos_mes >= 0) return emp.max_domingos_mes;
+    return maxDomingosMes ?? LEGAL_DEFAULTS_CO.maxDomingosMes;
+  };
+
+  // ─── v6: Consecutividad de horario ─────────────────────────────────────────
+  const lastStartTime: Record<string, { time: string; date: string }> = {};
+  [...existing].forEach(s => {
+    if (!s.start_time) return;
+    const st = String(s.start_time).slice(11, 16);
+    const d = String(s.start_time).slice(0, 10);
+    if (!lastStartTime[s.employee_id] || d > lastStartTime[s.employee_id].date) {
+      lastStartTime[s.employee_id] = { time: st, date: d };
+    }
+  });
+
+  const getConsecutividadDiff = (empId: string, startTimeStr: string, dateStr: string): number => {
+    let bestDiff = Infinity;
+    const last = lastStartTime[empId];
+    if (last) {
+      const lastDate = parseLocalDate(last.date);
+      const currDate = parseLocalDate(dateStr);
+      const diffDays = Math.round((currDate.getTime() - lastDate.getTime()) / 86400000);
+      if (diffDays === 1) {
+        bestDiff = Math.abs(timeToMinutes(startTimeStr) - timeToMinutes(last.time));
+      }
+    }
+    const prevDateStr = dateToStr(addDays(parseLocalDate(dateStr), -1));
+    generatedShifts.forEach(s => {
+      if (s.employee_id !== empId || !s.start_time) return;
+      if (String(s.start_time).slice(0, 10) === prevDateStr) {
+        const prevStart = String(s.start_time).slice(11, 16);
+        const diff = Math.abs(timeToMinutes(startTimeStr) - timeToMinutes(prevStart));
+        if (diff < bestDiff) bestDiff = diff;
+      }
+    });
+    return bestDiff;
+  };
+
+  // ─── v6: Equidad de fines de semana ────────────────────────────────────────
+  const weekendCount: Record<string, number> = {};
+  [...existing].forEach(s => {
+    if (!s.start_time) return;
+    const d = new Date(s.start_time);
+    if (d.getDay() === 0 || d.getDay() === 6) {
+      const weekKey = dateToStr(weekBounds(d).monday);
+      const key = `${s.employee_id}_${weekKey}`;
+      weekendCount[key] = (weekendCount[key] || 0) + 1;
+    }
+  });
+
+  const getWeekendCount = (empId: string): number => {
+    let count = 0;
+    for (const [key, val] of Object.entries(weekendCount)) {
+      if (key.startsWith(`${empId}_`)) count += val;
+    }
+    generatedShifts.forEach(s => {
+      if (s.employee_id === empId && s.start_time) {
+        const d = new Date(s.start_time);
+        if (d.getDay() === 0 || d.getDay() === 6) count++;
+      }
+    });
+    return count;
+  };
+
+  // ─── v6: Seniority ─────────────────────────────────────────────────────────
+  const getSeniorityScore = (emp: Employee): number => {
+    if (emp.seniority != null && emp.seniority > 0) return Math.min(10, emp.seniority);
+    if (emp.fecha_ingreso) {
+      const ingreso = parseLocalDate(emp.fecha_ingreso);
+      const years = (Date.now() - ingreso.getTime()) / (365.25 * 86400000);
+      return Math.min(10, Math.max(0, years));
+    }
+    return 0;
+  };
+
+  // ─── v6: Demanda por fecha específica ──────────────────────────────────────
+  const safeDemandExceptions = Array.isArray(demandExceptions) ? demandExceptions : [];
+
+  const findDemandException = (dateStr: string): DemandException | null => {
+    return safeDemandExceptions.find(e => e.date === dateStr) || null;
+  };
 
   // ─── Construir días ────────────────────────────────────────────────────────
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -329,7 +624,7 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
 
   const dayList = processDays.map(d => ({
     date: d, dateStr: dateToStr(d),
-    dayOfWeek: getDay(d) === 0 ? 7 : getDay(d), // 1=Lun, 7=Dom
+    dayOfWeek: getDay(d) === 0 ? 7 : getDay(d),
     dateObj: parseLocalDate(dateToStr(d)),
   }));
   const validDays = dayList.filter(d => diasTrabajoArea.includes(d.dayOfWeek));
@@ -341,11 +636,16 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
   activeEmployees.forEach(e => { empByClass[classifyEmployee(e)].push(e); });
 
   // ── v5.1: OFICINA automático ──
-  if (modoOperacion === 'OFICINA' && maxEmpDia == null) {
+  // Solo setear maxEmpDia (techo) = total empleados. NO setear minEmpDia
+  // porque la FASE 3.5 (piso de personas/día) vacía el día completo si
+  // no se alcanza el mínimo — y en OFICINA con descansos rotativos L-V,
+  // cualquier día donde alguien descansa queda por debajo del piso y
+  // se borran todos sus turnos.
+  if (modoOperacion === "OFICINA" && maxEmpDia == null) {
     const officeWorkers = activeEmployees.length;
     if (officeWorkers > 0) {
       maxEmpDia = officeWorkers;
-      minEmpDia = officeWorkers;
+      // minEmpDia se deja como estaba (null si el usuario no lo configuró)
     }
   }
 
@@ -355,6 +655,10 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
     minStaff: minEmpleadosNoche || 1, employeeIds: nightConfigRaw?.employeeIds || [],
     soloDedicados: !!nocheSoloDedicados, permiteDiaCubrir: !!permiteDiaCubrirNoche,
   } : null;
+
+  const nightStartSlot = nightConfig ? timeToSlot(nightConfig.start, slotsPorHora) : null;
+  const nightEndRaw = nightConfig ? timeToSlot(nightConfig.end, slotsPorHora) : null;
+  const nightEndExt = nightConfig ? slotsPerDay + nightEndRaw! : null;
 
   // ─── Absences map ──────────────────────────────────────────────────────────
   const absenceMap = new Map<string, Absence[]>();
@@ -366,50 +670,306 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
     return list.some(a => dateStr >= a.fecha_inicio && dateStr <= a.fecha_fin);
   };
 
+  // ─── Helpers de validación ─────────────────────────────────────────────────
+  const isBlocked = (empId: string, dateStr: string) =>
+    absences.some(a => a.employee_id === empId && a.fecha_inicio <= dateStr && a.fecha_fin >= dateStr);
+
+  const hasShiftOnDay = (empId: string, dateStr: string) =>
+    [...existing, ...generatedShifts].some(s => s.employee_id === empId && String(s.start_time).startsWith(dateStr));
+
+  const extrasSemana = permiteExtras ? 12 : 0;
+
+  const getMaxHoursFor = (emp: Employee): number => {
+    let base: number;
+    if (emp.horas_max_semana && emp.horas_max_semana > 0) base = emp.horas_max_semana;
+    else {
+      const h = parseInt(String(emp?.horas_semanales_contrato), 10);
+      base = (!isNaN(h) && h > 0 && h <= 60) ? h : maxSemanales;
+    }
+    return base + extrasSemana;
+  };
+
+  const getMaxDailyHours = (emp: Employee): number => {
+    if (emp.horas_max_diarias && emp.horas_max_diarias > 0) return parseFloat(String(emp.horas_max_diarias));
+    return maxDiarias;
+  };
+
+  const getMaxNightHours = (emp: Employee): number => {
+    if (emp.horas_nocturnas_max_semana && emp.horas_nocturnas_max_semana > 0)
+      return parseInt(String(emp.horas_nocturnas_max_semana), 10);
+    return Infinity;
+  };
+
+  function weekBounds(dateObj: Date): { monday: Date; sunday: Date } {
+    const d = new Date(dateObj);
+    const dow = d.getDay() || 7;
+    const monday = new Date(d);
+    monday.setDate(monday.getDate() - dow + 1);
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+    return { monday, sunday };
+  }
+
+  const getWeeklyHours = (empId: string, date: Date): number => {
+    const { monday, sunday } = weekBounds(date);
+    return [...existing, ...generatedShifts]
+      .filter(s => s.employee_id === empId)
+      .reduce((acc, s) => {
+        const sDate = new Date(s.start_time);
+        return (sDate >= monday && sDate <= sunday) ? acc + shiftHours(s) : acc;
+      }, 0);
+  };
+
+  const getWeeklyNightHours = (empId: string, date: Date): number => {
+    const { monday, sunday } = weekBounds(date);
+    return [...existing, ...generatedShifts]
+      .filter(s => s.employee_id === empId)
+      .reduce((acc, s) => {
+        const sDate = new Date(s.start_time);
+        return (sDate >= monday && sDate <= sunday) ? acc + shiftNightHours(s) : acc;
+      }, 0);
+  };
+
+  const getDailyHours = (empId: string, dateStr: string) =>
+    [...existing, ...generatedShifts]
+      .filter(s => s.employee_id === empId && String(s.start_time).startsWith(dateStr))
+      .reduce((acc, s) => acc + shiftHours(s), 0);
+
+  const getLastShiftEndTime = (empId: string, dateStr: string): string | null => {
+    const prevStr = dateToStr(addDays(parseLocalDate(dateStr), -1));
+    const prevShifts = [...existing, ...generatedShifts]
+      .filter(s => s.employee_id === empId && String(s.start_time).startsWith(prevStr));
+    if (!prevShifts.length) return null;
+    return prevShifts.reduce((latest, s) =>
+      new Date(s.end_time) > new Date(latest.end_time) ? s : latest
+    ).end_time;
+  };
+
   // ─── Inicializar cobertura y demanda ───────────────────────────────────────
   const covMap = new Map<string, { s: number; e: number }[]>();
   const demMap = new Map<string, number[]>();
-  const getDemandVecFor = (d: Date) => {
-    const k = dateToStr(d);
-    if (!demMap.has(k)) {
-      const dow = getDay(d) === 0 ? 7 : getDay(d);
-      const isWeekend = dow === 6 || dow === 7;
-      demMap.set(k, buildDemandVector(dow, demandSlots, activeEmployees.length, isWeekend, slotsPorHora));
-    }
-    return demMap.get(k)!;
-  };
-  const getCoverageVector = (dateStr: string) => {
+  const rawDemandCache = new Map<string, number[]>();
+  const demandVecCache = new Map<string, number[]>();
+
+  const getCoverageVector = (dateStr: string): number[] => {
     const vec = new Array(slotsPerDay).fill(0);
-    (covMap.get(dateStr) || []).forEach(b => {
-      for (let s = b.s; s < b.e; s++) vec[s] = (vec[s] || 0) + 1;
+    [...existing, ...generatedShifts].forEach(s => {
+      if (!s.start_time || !s.end_time) return;
+      const sDateStr = String(s.start_time).split("T")[0];
+      const eStr = dateToStr(new Date(s.end_time));
+      if (sDateStr === dateStr) {
+        const startSlot = timeToSlot(String(s.start_time).split("T")[1].substring(0, 5), slotsPorHora);
+        const endSlot = eStr !== dateStr
+          ? slotsPerDay
+          : timeToSlot(String(s.end_time).split("T")[1].substring(0, 5), slotsPorHora);
+        for (let sl = startSlot; sl < Math.min(endSlot, slotsPerDay); sl++) vec[sl]++;
+      } else if (eStr === dateStr && sDateStr !== dateStr) {
+        const endSlot = timeToSlot(String(s.end_time).split("T")[1].substring(0, 5), slotsPorHora);
+        for (let sl = 0; sl < endSlot; sl++) vec[sl]++;
+      }
     });
     return vec;
   };
+
   const addCoverage = (dateStr: string, startSlot: number, endSlot: number) => {
     if (!covMap.has(dateStr)) covMap.set(dateStr, []);
     covMap.get(dateStr)!.push({ s: startSlot, e: endSlot });
   };
 
-  // ─── Construir turnos existentes ───────────────────────────────────────────
-  const weeklyHours = new Map<string, number>();
-  const getWeeklyHours = (empId: string, refDate: Date): number => {
-    const weekStart = new Date(refDate);
-    const dow = getDay(weekStart); weekStart.setDate(weekStart.getDate() - (dow === 0 ? 6 : dow - 1));
-    weekStart.setHours(0, 0, 0, 0);
-    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate() + 6);
-    const wk = `${dateToStr(weekStart)}`;
-    if (!weeklyHours.has(`${empId}_${wk}`)) {
-      let total = 0;
-      generatedShifts.filter(s => s.employee_id === empId).forEach(s => { total += shiftHours(s); });
-      existing.filter(s => s.employee_id === empId).forEach(s => {
-        const sd = dateToStr(new Date(s.start_time));
-        if (sd >= dateToStr(weekStart) && sd <= dateToStr(weekEnd)) total += shiftHours(s);
-      });
-      weeklyHours.set(`${empId}_${wk}`, total);
-    }
-    return weeklyHours.get(`${empId}_${wk}`)!;
+  const getRawDemandVecFor = (dateObj: Date): number[] => {
+    const ds = dateToStr(dateObj);
+    if (rawDemandCache.has(ds)) return rawDemandCache.get(ds)!;
+    const dow = getDay(dateObj) === 0 ? 7 : getDay(dateObj);
+    const isWk = dateObj.getDay() === 0 || dateObj.getDay() === 6;
+    const exception = findDemandException(ds);
+    const raw = buildDemandVector(dow, demandSlots, employees.length, isWk, slotsPorHora, exception);
+    rawDemandCache.set(ds, raw);
+    return raw;
   };
 
+  // ── v5: Headcount ──────────────────────────────────────────────────────────
+  const typicalShiftSlots = Math.max(minSlots, Math.min(maxSlots, Math.round(8 * slotsPorHora)));
+  const dayStartSlot = Math.max(0, Math.min(timeToSlot(horaInicioDia || "04:00", slotsPorHora), slotsPerDay - minSlots));
+
+  let dayEndSlotCfg = slotsPerDay;
+  if (horaFinDia != null && String(horaFinDia).trim() !== "") {
+    const raw = timeToSlot(horaFinDia, slotsPorHora);
+    dayEndSlotCfg = raw <= 0 ? slotsPerDay : Math.min(raw, slotsPerDay);
+  }
+  dayEndSlotCfg = Math.max(dayEndSlotCfg, dayStartSlot + minSlots);
+
+  const dayWindowStartGlobal = dayStartSlot;
+  const dayWindowEndGlobal = nightConfig ? nightStartSlot! : dayEndSlotCfg;
+
+  const rawDayShapeSum = (dateObj: Date): number => {
+    const raw = getRawDemandVecFor(dateObj);
+    let s = 0;
+    for (let i = dayWindowStartGlobal; i < dayWindowEndGlobal; i++) s += raw[i];
+    return s;
+  };
+
+  const objetivoNoche = nightConfig ? Math.max(0, nightConfig.minStaff || 0) : 0;
+  let objetivoDia = maxEmpDia != null ? Math.max(0, maxEmpDia - objetivoNoche) : null;
+  const usaHeadcount = maxEmpDia != null;
+
+  let headcountScale: number | null = null;
+  if (usaHeadcount && objetivoDia! > 0) {
+    let peakShape = 0;
+    for (const day of validDays) peakShape = Math.max(peakShape, rawDayShapeSum(day.date));
+    if (peakShape > 0) headcountScale = (objetivoDia! * typicalShiftSlots) / peakShape;
+  }
+
+  const getDemandVecFor = (dateObj: Date): number[] => {
+    const ds = dateToStr(dateObj);
+    if (demandVecCache.has(ds)) return demandVecCache.get(ds)!;
+    const raw = getRawDemandVecFor(dateObj);
+    if (!usaHeadcount || headcountScale == null) {
+      if (usaHeadcount && objetivoDia === 0) {
+        const z = raw.slice();
+        for (let s = dayWindowStartGlobal; s < dayWindowEndGlobal; s++) z[s] = 0;
+        demandVecCache.set(ds, z);
+        return z;
+      }
+      demandVecCache.set(ds, raw);
+      return raw;
+    }
+    const v = raw.slice();
+    for (let s = dayWindowStartGlobal; s < dayWindowEndGlobal; s++) {
+      v[s] = Math.max(0, Math.round(raw[s] * headcountScale));
+    }
+    demandVecCache.set(ds, v);
+    return v;
+  };
+
+  const dayDemandWeight = (dateObj: Date): number => {
+    const vec = getDemandVecFor(dateObj);
+    let sum = 0;
+    for (let s = 0; s < slotsPerDay; s++) {
+      const h = Math.floor(s / slotsPorHora);
+      const floor = (nightConfig && isNightHour(h)) ? objetivoNoche : 0;
+      sum += Math.max(vec[s] || 0, floor);
+    }
+    return sum;
+  };
+
+  const distinctPeopleOnDay = (dateStr: string): number => {
+    const ids = new Set<string>();
+    [...existing, ...generatedShifts].forEach(s => {
+      if (String(s.start_time).startsWith(dateStr)) ids.add(s.employee_id);
+    });
+    return ids.size;
+  };
+
+  const canWorkNight = (emp: Employee): boolean => {
+    const cls = classifyEmployee(emp);
+    if (cls === "NIGHT_ONLY" || cls === "MIXED") return true;
+    if (cls === "DAY_ONLY") return false;
+    return nightConfig?.permiteDiaCubrir ?? false;
+  };
+
+  const canWorkDay = (emp: Employee): boolean => classifyEmployee(emp) !== "NIGHT_ONLY";
+
+  // ─── employeeEligible ──────────────────────────────────────────────────────
+  const employeeEligible = (
+    emp: Employee,
+    ctx: {
+      startDateStr: string; startDateObj: Date; startTimeStr: string;
+      endTimeStr?: string; shiftHrs: number; nightHrs: number; entersNight: boolean;
+    }
+  ): boolean => {
+    // v6: Skills requeridos
+    if (!hasRequiredSkills(emp)) return false;
+    if (ctx.entersNight && !canWorkNight(emp)) return false;
+    if (!ctx.entersNight && !canWorkDay(emp)) return false;
+    // v6: Embarazo — no nocturno, no >8h/día
+    if (emp.embarazada) {
+      if (ctx.nightHrs > 0) return false;
+      if (ctx.shiftHrs > 8) return false;
+    }
+    // BUGFIX: nocturno dedicado solo turnos que empiecen en ventana nocturna
+    if (canWorkDay(emp) === false && nightConfig) {
+      const startH = parseInt(ctx.startTimeStr.split(":")[0], 10);
+      const nightStartH = parseInt(nightConfig.start.split(":")[0], 10);
+      const nightEndH = parseInt(nightConfig.end.split(":")[0], 10);
+      const inNightWindow = startH >= nightStartH || startH < nightEndH;
+      if (!inNightWindow) return false;
+    }
+    if (isBlocked(emp.id, ctx.startDateStr)) return false;
+    if (hasShiftOnDay(emp.id, ctx.startDateStr)) return false;
+    // v6: Preferencias granulares de horario
+    const crossesMidnight = !!(ctx.endTimeStr && ctx.startTimeStr && timeToMinutes(ctx.endTimeStr) <= timeToMinutes(ctx.startTimeStr));
+    if (!respectsPreferences(emp.id, ctx.startDateObj.getDay() === 0 ? 7 : ctx.startDateObj.getDay(), ctx.startTimeStr, ctx.endTimeStr || "23:59", crossesMidnight)) return false;
+    // v6: Máximo de domingos por mes
+    if (ctx.startDateObj.getDay() === 0) {
+      if (getDomingosMes(emp.id, ctx.startDateObj) >= getMaxDomingos(emp)) return false;
+    }
+    if (getWeeklyHours(emp.id, ctx.startDateObj) + ctx.shiftHrs > getMaxHoursFor(emp)) return false;
+    if (getDailyHours(emp.id, ctx.startDateStr) + ctx.shiftHrs > getMaxDailyHours(emp)) return false;
+    if (ctx.nightHrs > 0 && getWeeklyNightHours(emp.id, ctx.startDateObj) + ctx.nightHrs > getMaxNightHours(emp)) return false;
+    const lastEnd = getLastShiftEndTime(emp.id, ctx.startDateStr);
+    if (lastEnd) {
+      const gapHrs = (new Date(`${ctx.startDateStr}T${ctx.startTimeStr}`).getTime() - new Date(lastEnd).getTime()) / 3600000;
+      if (gapHrs < minEntreJornadas) return false;
+    }
+    return true;
+  };
+
+  // ─── pickCandidate ─────────────────────────────────────────────────────────
+  const slotHash = (id: string, key: string): number => {
+    let x = 0;
+    const str = `${id}|${key}`;
+    for (let i = 0; i < str.length; i++) x = (x * 31 + str.charCodeAt(i)) >>> 0;
+    return x;
+  };
+
+  const pickCandidate = (
+    pool: Employee[],
+    ctx: {
+      startDateStr: string; startDateObj: Date; startTimeStr: string;
+      endTimeStr?: string; shiftHrs: number; nightHrs: number; entersNight: boolean;
+    },
+    startDateObj: Date
+  ): Employee | null => {
+    const candidates = pool.filter(emp => employeeEligible(emp, ctx));
+    if (candidates.length === 0) return null;
+    const isWeekendDay = startDateObj.getDay() === 0 || startDateObj.getDay() === 6;
+    candidates.sort((a, b) => {
+      if (estrategia === "EMPLOYEE_PREF") {
+        if (a.solo_nocturno !== b.solo_nocturno) return a.solo_nocturno ? -1 : 1;
+        if (a.solo_diurno !== b.solo_diurno) return a.solo_diurno ? -1 : 1;
+      }
+      // v6: Equidad de fines de semana
+      if (equidadFinSemana && isWeekendDay) {
+        const weA = getWeekendCount(a.id);
+        const weB = getWeekendCount(b.id);
+        if (weA !== weB) return weA - weB;
+      }
+      const wa = getWeeklyHours(a.id, startDateObj);
+      const wb = getWeeklyHours(b.id, startDateObj);
+      if (Math.abs(wa - wb) > 0.01) return wa - wb;
+      // v6: Consecutividad de horario
+      if (consecutividadHorario && ctx?.startTimeStr && ctx?.startDateStr) {
+        const diffA = getConsecutividadDiff(a.id, ctx.startTimeStr, ctx.startDateStr);
+        const diffB = getConsecutividadDiff(b.id, ctx.startTimeStr, ctx.startDateStr);
+        if (diffA !== diffB) return diffA - diffB;
+      }
+      // v6: Seniority
+      if (pesoSeniority) {
+        const senA = getSeniorityScore(a);
+        const senB = getSeniorityScore(b);
+        if (Math.abs(senA - senB) > 0.1) return senB - senA;
+      }
+      if (rotarSlots && ctx?.startTimeStr) {
+        return slotHash(a.id, ctx.startTimeStr) - slotHash(b.id, ctx.startTimeStr);
+      }
+      return 0;
+    });
+    return candidates[0];
+  };
+
+  // ─── Construir turnos existentes ───────────────────────────────────────────
   existing.forEach(s => {
     const dateStr = dateToStr(new Date(s.start_time));
     const startSlot = timeToSlot(new Date(s.start_time).toISOString().slice(11, 16), slotsPorHora);
@@ -418,51 +978,7 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
     addCoverage(dateStr, startSlot, endSlot);
   });
 
-  const dayHours = new Map<string, number>();
-  const getDayHours = (empId: string, dateStr: string) => dayHours.get(`${empId}_${dateStr}`) || 0;
-
-  const employeeEligible = (emp: Employee, opts: {
-    startDateStr: string; startTimeStr: string; shiftHrs: number;
-    nightHrs: number; entersNight: boolean;
-  }): boolean => {
-    if (hasAbsence(emp.id, opts.startDateStr)) return false;
-    if (emp.solo_diurno && opts.entersNight) return false;
-    if (emp.solo_nocturno && !opts.entersNight) return false;
-    // 🔧 BUGFIX: Empleado nocturno dedicado solo puede tomar turnos
-    //    que EMPIECEN dentro de la ventana nocturna [nightStart, nightEnd).
-    //    Ej: start 22:00-05:59 → OK.  start 15:00-21:59 → RECHAZADO.
-    if (emp.solo_nocturno && nightConfig) {
-      const startH = parseInt(opts.startTimeStr.split(":")[0], 10);
-      const nightStartH = parseInt(nightConfig.start.split(":")[0], 10);
-      const nightEndH = parseInt(nightConfig.end.split(":")[0], 10);
-      const inNightWindow = startH >= nightStartH || startH < nightEndH;
-      if (!inNightWindow) return false;
-    }
-    if (opts.shiftHrs < minHoras || opts.shiftHrs > maxHoras) return false;
-    if ((getDayHours(emp.id, opts.startDateStr) + opts.shiftHrs) > maxDiarias) return false;
-
-    const refDate = new Date(opts.startDateStr);
-    if ((getWeeklyHours(emp.id, refDate) + opts.shiftHrs) > (emp.horas_max_semana || maxSemanales)) return false;
-    if (emp.horas_nocturnas_max_semana && opts.nightHrs > 0) {
-      let nightSoFar = 0;
-      generatedShifts.filter(s => s.employee_id === emp.id).forEach(s => { nightSoFar += shiftNightHours(s); });
-      if (nightSoFar + opts.nightHrs > emp.horas_nocturnas_max_semana) return false;
-    }
-
-    // Descanso entre jornadas
-    const empShifts = [...generatedShifts.filter(s => s.employee_id === emp.id), ...existing.filter(s => s.employee_id === emp.id)]
-      .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-    const newStart = new Date(`${opts.startDateStr}T${opts.startTimeStr}:00`);
-    for (const s of empShifts) {
-      const sEnd = new Date(s.end_time);
-      const gap = (newStart.getTime() - sEnd.getTime()) / 3600000;
-      if (gap > 0 && gap < minEntreJornadas) return false;
-    }
-    return true;
-  };
-
   // ─── Construir pool de templates ───────────────────────────────────────────
-  const allTplShifts: GeneratedShift[] = [];
   const tplByDay = new Map<string, GeneratedShift[]>();
   dayList.forEach(day => {
     const nextDay = addDays(day.date, 1);
@@ -472,24 +988,82 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
       expandTemplateToShifts(t, day.dateStr, nextStr).forEach(ts => dayTpls.push(ts));
     });
     tplByDay.set(day.dateStr, dayTpls);
-    allTplShifts.push(...dayTpls);
   });
 
   // ─── FASE 0: Asignar descansos ─────────────────────────────────────────────
-  const daysWithSlots = new Map<string, boolean>();
-  dayList.forEach(d => daysWithSlots.set(d.dateStr, false));
+  const restDays = new Set<string>();
+  const restsPerDay: Record<string, number> = {};
+  const restsNightPerDay: Record<string, number> = {};
+  const dedicadosNoche = new Set([...empByClass.NIGHT_ONLY, ...empByClass.MIXED].map(e => e.id));
+  const dedicadosCount = dedicadosNoche.size;
+  const minNoche = nightConfig ? nightConfig.minStaff : 0;
+
+  activeEmployees.forEach((emp, empIdx) => {
+    const esDedicadoNoche = dedicadosNoche.has(emp.id);
+    const requiredRests = emp.dias_descanso_fijos?.length
+      ? emp.dias_descanso_fijos.length
+      : (emp.dias_descanso_semana || LEGAL_DEFAULTS_CO.diasDescansoSemana);
+
+    const weeks: Record<string, typeof dayList> = {};
+    validDays.forEach(day => {
+      const { monday } = weekBounds(day.date);
+      const weekKey = dateToStr(monday);
+      (weeks[weekKey] ||= []).push(day);
+    });
+
+    Object.values(weeks).forEach((weekDays) => {
+      if (weekDays.length <= requiredRests) return;
+      const restCap = Math.max(1, Math.floor(activeEmployees.length / 3));
+      const restCapNoche = Math.max(0, dedicadosCount - Math.max(1, minNoche));
+
+      const sortedByDemand = [...weekDays].sort((a, b) => {
+        // v6: Priorizar domingos como descanso para empleados cerca del límite
+        const domA = a.date.getDay() === 0 ? getDomingosMes(emp.id, a.date) : -1;
+        const domB = b.date.getDay() === 0 ? getDomingosMes(emp.id, b.date) : -1;
+        const maxDom = getMaxDomingos(emp);
+        if (domA >= 0 && domB >= 0) {
+          if (domA !== domB) return domB - domA;
+        } else if (domA >= 0 && domA >= maxDom - 1) {
+          return -1;
+        } else if (domB >= 0 && domB >= maxDom - 1) {
+          return 1;
+        }
+        const sumA = getDemandVecFor(a.date).reduce((s, v) => s + v, 0);
+        const sumB = getDemandVecFor(b.date).reduce((s, v) => s + v, 0);
+        if (sumA !== sumB) return sumA - sumB;
+        return (restsPerDay[a.dateStr] || 0) - (restsPerDay[b.dateStr] || 0);
+      });
+
+      const offset = empIdx % 7;
+      const sorted = sortedByDemand.map((_, i) => sortedByDemand[(i + offset) % sortedByDemand.length]);
+
+      let assigned = 0;
+      for (const day of sorted) {
+        if (assigned >= requiredRests) break;
+        if (isBlocked(emp.id, day.dateStr)) continue;
+        if ((restsPerDay[day.dateStr] || 0) >= restCap) continue;
+        if (esDedicadoNoche && (restsNightPerDay[day.dateStr] || 0) >= restCapNoche) continue;
+        if (emp.dias_descanso_fijos?.length && !emp.dias_descanso_fijos.includes(day.dayOfWeek)) continue;
+        restDays.add(`${emp.id}_${day.dateStr}`);
+        restsPerDay[day.dateStr] = (restsPerDay[day.dateStr] || 0) + 1;
+        if (esDedicadoNoche) restsNightPerDay[day.dateStr] = (restsNightPerDay[day.dateStr] || 0) + 1;
+        assigned++;
+      }
+    });
+  });
 
   // ─── FASE 1: Cobertura NOCTURNA ────────────────────────────────────────────
   if (nightConfig) {
     const nightPool: Employee[] = [];
     if (nightConfig.employeeIds?.length) {
-      employees.forEach(e => { if (nightConfig.employeeIds.includes(e.id) && !nightPool.includes(e)) nightPool.push(e); });
+      employees.forEach(e => {
+        if (nightConfig.employeeIds.includes(e.id) && !nightPool.includes(e)) nightPool.push(e);
+      });
     }
     const dedicados = [...empByClass.NIGHT_ONLY, ...empByClass.MIXED];
     dedicados.forEach(e => { if (!nightPool.includes(e)) nightPool.push(e); });
     const baseInsuficiente = nightPool.length < nightConfig.minStaff || nightPool.length === 0;
 
-    // BUGFIX: No colar ANY si soloDedicados=true Y permiteDiaCubrir=false
     if (nightConfig.permiteDiaCubrir || !nightConfig.soloDedicados) {
       empByClass.ANY.forEach(e => { if (!nightPool.includes(e)) nightPool.push(e); });
     } else if (baseInsuficiente) {
@@ -499,295 +1073,479 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
       warnings.push("No hay empleados habilitados para la noche en esta área 24/7.");
     }
 
-    const nightStartSlot = timeToSlot(nightConfig.start, slotsPorHora);
-    const nightEndSlot = timeToSlot(nightConfig.end, slotsPorHora);
-    const nightEndRaw = nightEndSlot + (nightEndSlot <= nightStartSlot ? slotsPerDay : 0);
-    const nightEndExt = nightEndSlot + slotsPerDay;
-
-    const placeOneNightBlock = (day: typeof dayList[0]) => {
-      const dNext = addDays(day.date, 1);
-      const dNextStr = dateToStr(dNext);
+    const placeOneNightBlock = (day: typeof validDays[0]): boolean => {
+      const dNextObj = addDays(day.date, 1);
+      const dNextStr = dateToStr(dNextObj);
       const demD = getDemandVecFor(day.date);
-      const demN = getDemandVecFor(dNext);
+      const demN = getDemandVecFor(dNextObj);
       const covD = getCoverageVector(day.dateStr);
       const covN = getCoverageVector(dNextStr);
 
-      let best: { start: number; end: number; score: number } | null = null;
-      for (let start = nightStartSlot; start + minSlots <= nightEndExt; start += snapSlots) {
-        for (let end = start + minSlots; end <= Math.min(start + Math.round(maxHoras * slotsPorHora), nightEndExt); end += snapSlots) {
-          const leftInDay = Math.min(end, slotsPerDay) - start;
-          const rightInDay2 = Math.max(0, end - slotsPerDay);
-          let totalDef = 0;
-          for (let s = start; s < end; s++) {
-            const onNext = s >= slotsPerDay;
-            const ls = onNext ? s - slotsPerDay : s;
-            const dem = Math.max((onNext ? demN : demD)[ls] || 0, nightConfig.minStaff);
-            const cov = (onNext ? covN : covD)[ls] || 0;
-            totalDef += Math.max(0, dem - cov - (s >= start ? 1 : 0));
-          }
-          const score = totalDef + Math.abs(leftInDay - rightInDay2) * 0.1;
-          if (!best || score < best.score) best = { start, end, score };
+      const nightVal = (i: number) => {
+        const onNext = i >= slotsPerDay;
+        const localSlot = i - (onNext ? slotsPerDay : 0);
+        const dem = Math.max((onNext ? demN : demD)[localSlot] || 0, nightConfig.minStaff);
+        const cov = (onNext ? covN : covD)[localSlot] || 0;
+        return { dem, cov, def: Math.max(0, dem - cov) };
+      };
+
+      let best: { start: number; dur: number; score: number } | null = null;
+      for (let start = nightStartSlot!; start + minSlots <= nightEndExt!; start += snapSlots) {
+        const tope = Math.min(start + maxSlots, nightEndExt!);
+        let dur = minSlots;
+        for (let s = start + minSlots; s < tope; s += snapSlots) {
+          let d = 0;
+          for (let k = 0; k < snapSlots && (s + k) < tope; k++) d += nightVal(s + k).def;
+          if (d > 0) dur = (s - start) + snapSlots;
         }
+        dur = Math.max(minSlots, Math.min(dur, nightEndExt! - start, maxSlots));
+
+        let score = 0;
+        for (let s = start; s < start + dur; s++) {
+          const v = nightVal(s);
+          score += v.def;
+          if (v.cov >= v.dem) score -= 0.3;
+        }
+        if (!best || score > best.score) best = { start, dur, score };
       }
-      if (!best) return false;
-      const candidate = [...nightPool].sort(() => Math.random() - 0.5)[0];
-      if (!candidate) return false;
+      if (!best || best.score <= 0) return false;
 
       const startOnNext = best.start >= slotsPerDay;
-      const hhmm = slotToTime(best.start % slotsPerDay, slotsPorHora);
-      const startIso = getLocalISOString(startOnNext ? dNextStr : day.dateStr, hhmm);
-      const endSlot = best.end;
-      const onNext = endSlot > slotsPerDay;
-      const endIso = getLocalISOString(onNext ? dNextStr : day.dateStr, slotToTime(endSlot % slotsPerDay, slotsPorHora));
+      const startDateObj = startOnNext ? dNextObj : day.date;
+      const startDateStr = startOnNext ? dNextStr : day.dateStr;
+      const startTimeStr = slotToTime(best.start % slotsPerDay, slotsPorHora);
+      const endExt = best.start + best.dur;
+      const endDateStr = endExt >= slotsPerDay ? dNextStr : day.dateStr;
+      const endTimeStr = slotToTime(endExt % slotsPerDay, slotsPorHora);
+      const shiftHrs = best.dur / slotsPorHora;
 
-      const tpl = templates.find(t => t.shift_kind === "NOCTURNO");
-      const res = buildDescansos(hhmm, (best.end - best.start) * (60 / slotsPorHora), bp);
+      if (maxEmpDia != null && distinctPeopleOnDay(startDateStr) >= maxEmpDia) return false;
+
+      const proposed = { start_time: getLocalISOString(startDateStr, startTimeStr), end_time: getLocalISOString(endDateStr, endTimeStr) };
+      const nightHrs = shiftNightHours(proposed);
+
+      const candidate = pickCandidate(nightPool, {
+        startDateStr, startDateObj, startTimeStr, endTimeStr, shiftHrs, nightHrs, entersNight: true,
+      }, startDateObj);
+      if (!candidate) return false;
+
+      const nb = buildDescansos(startTimeStr, shiftHrs * 60, bp);
       generatedShifts.push({
-        employee_id: candidate.id, start_time: startIso, end_time: endIso,
-        periodo: day.dateStr.slice(0, 7), shift_type: "custom",
-        template_id: tpl?.id, break_minutes: res.almuerzoMin,
-        shift_kind: "NOCTURNO", bloque: 1, disponibilidad: false, recargo_porcentaje: 0,
-        almuerzo_minutos: res.almuerzoMin, breaks_15_count: res.breaksCount,
-        descansos: res.descansos,
+        employee_id: candidate.id,
+        template_id: undefined,
+        start_time: proposed.start_time,
+        end_time: proposed.end_time,
+        shift_type: "night",
+        periodo: periodoStr,
+        break_minutes: nb.breakMinutes,
+        almuerzo_minutos: nb.almuerzoMin,
+        breaks_15_count: nb.breaksCount,
+        descansos: nb.descansos,
+        shift_kind: "NOCTURNO",
+        bloque: 1,
+        disponibilidad: false,
+        recargo_porcentaje: 0,
+        observaciones: `Auto-asignado v4.1 · Turno nocturno ${startTimeStr}-${endTimeStr} (cobertura 24/7)`,
       });
-      addCoverage(day.dateStr, best.start, Math.min(best.end, slotsPerDay));
-      if (best.end > slotsPerDay) addCoverage(dNextStr, 0, best.end - slotsPerDay);
-      dayHours.set(`${candidate.id}_${day.dateStr}`, (getDayHours(candidate.id, day.dateStr) || 0) + shiftHours(generatedShifts[generatedShifts.length - 1]));
       return true;
     };
 
-    validDays.forEach(day => { if (nightPool.length > 0) placeOneNightBlock(day); });
-  }
-
-  // ─── FASE 2: Cobertura DIURNA (slots canónicos) ───────────────────────────
-  const dayPool = [...empByClass.DAY_ONLY, ...empByClass.MIXED, ...empByClass.ANY];
-  const dayStartSlot = Math.max(
-    0,
-    Math.min(timeToSlot(horaInicioDia || '04:00', slotsPorHora), slotsPerDay - minSlots)
-  );
-
-  let dayEndSlotCfg = slotsPerDay;
-  if (horaFinDia != null && String(horaFinDia).trim() !== '') {
-    const raw = timeToSlot(horaFinDia, slotsPorHora);
-    dayEndSlotCfg = raw <= 0 ? slotsPerDay : Math.min(raw, slotsPerDay);
-  }
-  dayEndSlotCfg = Math.max(dayEndSlotCfg, dayStartSlot + minSlots);
-
-  const dayWindowStart = dayStartSlot;
-  const dayWindowEnd = nightConfig
-    ? timeToSlot(nightConfig.start, slotsPorHora)
-    : dayEndSlotCfg;
-
-  validDays.forEach(day => {
-    // Verificar piso mínimo de empleados por día
-    if (minEmpDia != null && dayPool.length < minEmpDia) {
-      diasSinCobertura.push(day.dateStr + " (piso mínimo)");
-      return;
+    const nightDaysSorted = [...validDays].sort((a, b) => dayDemandWeight(b.date) - dayDemandWeight(a.date));
+    let progress = true;
+    let rounds = 0;
+    const MAX_ROUNDS = 60;
+    while (progress && rounds < MAX_ROUNDS) {
+      progress = false;
+      rounds++;
+      for (const day of nightDaysSorted) {
+        if (placeOneNightBlock(day)) progress = true;
+      }
     }
 
-    const demVec = getDemandVecFor(day.date);
-    const covVec = getCoverageVector(day.dateStr);
+    for (const day of validDays) {
+      const dNextStr = dateToStr(addDays(day.date, 1));
+      const demD = getDemandVecFor(day.date);
+      const demN = getDemandVecFor(addDays(day.date, 1));
+      const covDfin = getCoverageVector(day.dateStr);
+      const covNfin = getCoverageVector(dNextStr);
+      let nightDeficit = 0;
+      for (let i = nightStartSlot!; i < nightEndExt!; i++) {
+        const onNext = i >= slotsPerDay;
+        const localSlot = i - (onNext ? slotsPerDay : 0);
+        const dem = Math.max((onNext ? demN : demD)[localSlot] || 0, nightConfig.minStaff);
+        const cov = (onNext ? covNfin : covDfin)[localSlot] || 0;
+        nightDeficit += Math.max(0, dem - cov);
+      }
+      if (nightDeficit > 0) {
+        warnings.push(`${day.dateStr}: cobertura nocturna incompleta (faltan ~${Math.round(nightDeficit / slotsPorHora)} horas-persona). Pool nocturno insuficiente.`);
+      }
+    }
+  }
 
-    // Calcular headcount objetivo
-    const peakDemand = Math.max(...demVec);
-    const hcObj = maxEmpDia ? Math.min(peakDemand, maxEmpDia) : peakDemand;
+  // ─── FASE 2: Cobertura DIURNA ──────────────────────────────────────────────
+  if (modoOperacion === "OFICINA" || is247) {
+    const dayPool = [...empByClass.DAY_ONLY, ...empByClass.MIXED, ...empByClass.ANY];
+    const dayMinFloor = is247 ? 1 : 0;
+    const dayWindowStart = dayStartSlot;
+    const dayWindowEnd = nightConfig ? nightStartSlot! : dayEndSlotCfg;
 
-    for (let attempt = 0; attempt < hcObj * 3; attempt++) {
-      if (dayPool.length === 0) break;
-      const currentCov = getCoverageVector(day.dateStr);
-      const hasDeficit = demVec.some((d, i) => d > (currentCov[i] || 0));
-      if (!hasDeficit && (maxEmpDia == null || getCoverageVector(day.dateStr).reduce((a, v) => a + (v > 0 ? 1 : 0), 0) >= maxEmpDia)) break;
+    const daysSorted = [...validDays].sort((a, b) => dayDemandWeight(b.date) - dayDemandWeight(a.date));
 
-      // Elegir hora de inicio canónica con más déficit
-      let bestStart: number | null = null;
-      let bestDef = 0;
-      const canonicalSlots = CANONICAL_DAY_STARTS
-        .map(([h, m]) => h * slotsPorHora + Math.floor(m / (60 / slotsPorHora)))
-        .filter(s => s >= dayWindowStart && s <= dayWindowEnd - minSlots);
+    let changed = true;
+    let iterations = 0;
+    const MAX_ITER = validDays.length * 45 + 10;
 
-      for (const slot of canonicalSlots) {
-        for (let dur = minSlots; dur <= Math.round(maxHoras * slotsPorHora); dur += snapSlots) {
-          const end = slot + dur;
-          if (end > dayWindowEnd) continue;
-          let def = 0;
-          for (let s = slot; s < Math.min(end, slotsPerDay); s++) {
-            def += Math.max(0, (demVec[s] || 0) - (currentCov[s] || 0));
+    while (changed && iterations < MAX_ITER) {
+      changed = false;
+      iterations++;
+
+      for (const day of daysSorted) {
+        if (maxEmpDia != null && distinctPeopleOnDay(day.dateStr) >= maxEmpDia) continue;
+        const demVec = getDemandVecFor(day.date);
+        const covVec = getCoverageVector(day.dateStr);
+        const effDem = (s: number) => Math.max(demVec[s] || 0, (s >= dayWindowStart && s < dayWindowEnd) ? dayMinFloor : 0);
+        const defVec = new Array(slotsPerDay).fill(0);
+        for (let s = dayWindowStart; s < dayWindowEnd; s++) defVec[s] = Math.max(0, effDem(s) - covVec[s]);
+        const totalDeficit = defVec.reduce((s, v) => s + v, 0);
+        if (totalDeficit === 0) continue;
+
+        const earlyDeficit = defVec.slice(dayWindowStart, 9 * slotsPorHora).reduce((a, b) => a + b, 0);
+        const lateDeficit = defVec.slice(Math.max(dayWindowStart, 13 * slotsPorHora), dayWindowEnd).reduce((a, b) => a + b, 0);
+
+        const canonicalSlots = CANONICAL_DAY_STARTS
+          .map(([h, m]) => h * slotsPorHora + Math.floor(m / (60 / slotsPorHora)))
+          .filter(s => s >= dayWindowStart && s <= dayWindowEnd - minSlots);
+
+        const allCandidateStarts = new Set(canonicalSlots);
+        for (let s = dayWindowStart; s <= dayWindowEnd - minSlots; s += snapSlots) {
+          allCandidateStarts.add(s);
+        }
+
+        const scored: { start: number; score: number }[] = [];
+        for (const start of allCandidateStarts) {
+          const tope = Math.min(start + maxSlots, dayWindowEnd);
+          let score = 0;
+          for (let s = start; s < tope; s++) {
+            score += defVec[s];
+            if (covVec[s] >= effDem(s)) score -= 0.3;
           }
-          if (def > bestDef) { bestDef = def; bestStart = slot; }
+          if (canonicalSlots.includes(start)) score += 0.5;
+          if (start < 9 * slotsPorHora && earlyDeficit > 0) score += earlyDeficit * 0.5;
+          if (start >= 16 * slotsPorHora && lateDeficit > 0) score += lateDeficit * 0.5;
+          if (score > 0) scored.push({ start, score });
+        }
+        scored.sort((a, b) => b.score - a.score);
+
+        const nightStartLegal = dayWindowEnd;
+        let placed = false;
+        for (const { start } of scored) {
+          const tope = Math.min(start + maxSlots, dayWindowEnd);
+          let duration = minSlots;
+          for (let s = start + minSlots; s < tope; s += snapSlots) {
+            let def = 0;
+            for (let k = 0; k < snapSlots && (s + k) < tope; k++) def += defVec[s + k];
+            if (def > 0) duration = s - start + snapSlots;
+          }
+          duration = Math.max(minSlots, Math.min(duration, tope - start));
+
+          const variants = [duration];
+          if (start + duration > nightStartLegal && start < nightStartLegal && (nightStartLegal - start) >= minSlots) {
+            variants.push(nightStartLegal - start);
+          }
+
+          for (const dur of variants) {
+            if (dur < minSlots) continue;
+            const startSlotAbs = start;
+            const endSlotAbs = start + dur;
+            const startTimeStr = slotToTime(startSlotAbs, slotsPorHora);
+            const endTimeStr = slotToTime(endSlotAbs, slotsPorHora);
+            const shiftHrs = dur / slotsPorHora;
+            const endOnNextDay = endSlotAbs >= slotsPerDay;
+            const endDateStr = endOnNextDay ? dateToStr(addDays(day.date, 1)) : day.dateStr;
+            const proposed = {
+              start_time: getLocalISOString(day.dateStr, startTimeStr),
+              end_time: getLocalISOString(endDateStr, endTimeStr),
+            };
+            const nightHrs = shiftNightHours(proposed);
+            const entersNight = nightConfig
+              ? (start < nightEndRaw! || (start + dur) > nightStartSlot!)
+              : false;
+            const candidate = pickCandidate(dayPool, {
+              startDateStr: day.dateStr, startDateObj: day.date, startTimeStr,
+              endTimeStr, shiftHrs, nightHrs, entersNight,
+            }, day.date);
+            if (!candidate) continue;
+
+            const db = buildDescansos(startTimeStr, shiftHrs * 60, bp);
+            generatedShifts.push({
+              employee_id: candidate.id,
+              template_id: undefined,
+              start_time: proposed.start_time,
+              end_time: proposed.end_time,
+              shift_type: "custom",
+              periodo: periodoStr,
+              break_minutes: db.breakMinutes,
+              almuerzo_minutos: db.almuerzoMin,
+              breaks_15_count: db.breaksCount,
+              descansos: db.descansos,
+              shift_kind: nightHrs > 0 ? "NOCTURNO" : "STANDARD",
+              bloque: 1,
+              disponibilidad: false,
+              recargo_porcentaje: 0,
+              observaciones: `Auto-asignado v5 · Slot ${startTimeStr}-${endTimeStr}${nightHrs > 0 ? " (con recargo nocturno)" : ""} · ${estrategia}`,
+            });
+            changed = true;
+            placed = true;
+            break;
+          }
+          if (placed) break;
         }
       }
-      if (!bestStart || bestDef <= 0) break;
-
-      const slot = bestStart;
-      let bestDur = 0;
-      let bestScore = -1;
-      for (let dur = minSlots; dur <= Math.round(maxHoras * slotsPorHora); dur += snapSlots) {
-        if (slot + dur > dayWindowEnd) continue;
-        let covered = 0;
-        for (let s = slot; s < slot + dur; s++) covered += Math.max(0, demVec[s] - (currentCov[s] || 0));
-        const score = covered - dur * 0.1;
-        if (score > bestScore) { bestScore = score; bestDur = dur; }
-      }
-      if (bestDur === 0) break;
-
-      const hhmm = slotToTime(slot, slotsPorHora);
-      const startIso = getLocalISOString(day.dateStr, hhmm);
-      const endIso = getLocalISOString(day.dateStr, slotToTime(slot + bestDur, slotsPorHora));
-      const shiftHrs = (bestDur / slotsPorHora);
-      
-      const nightStartLegal = nightConfig ? timeToSlot(nightConfig.start, slotsPorHora) : 0;
-      const nightEndRaw = nightConfig ? timeToSlot(nightConfig.end, slotsPorHora) : 0;
-      const entersNight = nightConfig
-        ? (slot < nightEndRaw || (slot + bestDur) > nightStartLegal)
-        : (isNightHour(Math.floor(slot / slotsPorHora)) || isNightHour(Math.floor((slot + bestDur - 1) / slotsPorHora)));
-
-      const nightHrs = entersNight ? shiftNightHours({ start_time: startIso, end_time: endIso }) : 0;
-
-      const candidate = [...dayPool].sort(() => Math.random() - 0.5).find(e =>
-        employeeEligible(e, { startDateStr: day.dateStr, startTimeStr: hhmm, startDateObj: day.dateObj, shiftHrs, nightHrs, entersNight })
-      );
-      if (!candidate) continue;
-
-      const res = buildDescansos(hhmm, bestDur * (60 / slotsPorHora), bp);
-      generatedShifts.push({
-        employee_id: candidate.id, start_time: startIso, end_time: endIso,
-        periodo: day.dateStr.slice(0, 7), shift_type: "custom",
-        break_minutes: res.almuerzoMin, almuerzo_minutos: res.almuerzoMin,
-        breaks_15_count: res.breaksCount, descansos: res.descansos,
-      });
-      addCoverage(day.dateStr, slot, slot + bestDur);
-      dayHours.set(`${candidate.id}_${day.dateStr}`, (getDayHours(candidate.id, day.dateStr) || 0) + shiftHrs);
     }
-  });
-
-  // ─── FASE 3: Templates ─────────────────────────────────────────────────────
-  if (templates.length > 0) {
-    validDays.forEach(day => {
-      const dayTpls = tplByDay.get(day.dateStr) || [];
-      dayTpls.forEach(tplShift => {
-        const covVec = getCoverageVector(day.dateStr);
-        const demVec = getDemandVecFor(day.date);
-        const tplStartSlot = timeToSlot(tplShift.start_time.slice(11, 16), slotsPorHora);
-        const tplEndSlot = (tplShift.end_time.includes("T") ? timeToSlot(tplShift.end_time.slice(11, 16), slotsPorHora) : 0);
-        const actualEnd = tplEndSlot <= tplStartSlot ? tplEndSlot + slotsPerDay : tplEndSlot;
-
-        let deficit = 0;
-        for (let s = tplStartSlot; s < Math.min(actualEnd, slotsPerDay); s++) deficit += Math.max(0, (demVec[s] || 0) - (covVec[s] || 0));
-        if (deficit === 0) return;
-
-        const shiftHrs = blockHours(tplShift);
-        const hhmm = tplShift.start_time.slice(11, 16);
-        // 🔧 BUGFIX: entersNight usa la ventana nocturna dedicada (22-06),
-        //    no el horario nocturno legal (19-06). Así un template que cruza
-        //    las 22:00 marca entersNight=true aunque empiece en hora diurna.
-        const tplDuration = actualEnd - tplStartSlot;
-        const entersNight = nightConfig
-          ? (tplStartSlot < timeToSlot(nightConfig.end, slotsPorHora) ||
-             (tplStartSlot + tplDuration) > timeToSlot(nightConfig.start, slotsPorHora))
-          : isNightHour(Math.floor(tplStartSlot / slotsPorHora));
-        const nightHrs = entersNight ? shiftNightHours(tplShift) : 0;
-
-        const candidate = [...dayPool].sort(() => Math.random() - 0.5).find(e =>
-          employeeEligible(e, { startDateStr: day.dateStr, startTimeStr: hhmm, startDateObj: day.dateObj, shiftHrs, nightHrs, entersNight })
-        );
-        if (!candidate) return;
-
-        const tpl = templates.find(t => t.id === tplShift.template_id);
-        const res = buildDescansos(hhmm, shiftHrs * 60, bp);
-        generatedShifts.push({
-          ...tplShift, employee_id: candidate.id,
-          break_minutes: res.almuerzoMin, almuerzo_minutos: res.almuerzoMin,
-          breaks_15_count: res.breaksCount, descansos: res.descansos,
-        });
-        addCoverage(day.dateStr, tplStartSlot, Math.min(actualEnd, slotsPerDay));
-        dayHours.set(`${candidate.id}_${day.dateStr}`, (getDayHours(candidate.id, day.dateStr) || 0) + shiftHrs);
-      });
-    });
   }
 
-  // ─── FASE 4: Balanceo de carga semanal ─────────────────────────────────────
-  if (balancearCarga) {
-    const weeks = new Map<string, string[]>();
-    dayList.forEach(d => {
-      const wk = `${year}-W${String(getISOWeek(d.date)).padStart(2, "0")}`;
-      if (!weeks.has(wk)) weeks.set(wk, []);
-      weeks.get(wk)!.push(d.dateStr);
-    });
+  // ─── FASE 3: Templates ─────────────────────────────────────────────────────
+  if (Array.isArray(templates) && templates.length > 0) {
+    let tplChanged = true;
+    let tplIter = 0;
+    const MAX_TPL_ITER = employees.length * validDays.length + 10;
+    while (tplChanged && tplIter < MAX_TPL_ITER) {
+      tplChanged = false;
+      tplIter++;
+      for (const day of validDays) {
+        for (const tpl of templates) {
+          if (!tpl.hora_inicio || !tpl.hora_fin) continue;
+          // v6: Permitir SPLIT_LARGO y DOBLE solo si permitePartidos; REFUERZO y FLEXIBLE siempre
+          if ((tpl.shift_kind === "PARTIDO" || tpl.shift_kind === "SPLIT_LARGO" || tpl.shift_kind === "DOBLE") && !permitePartidos) continue;
 
-    weeks.forEach((wDays, weekKey) => {
-      const empInWeek = [...new Set(generatedShifts.filter(s => wDays.some(d => s.start_time.startsWith(d))).map(s => s.employee_id))];
-      if (empInWeek.length <= 1) return;
+          const covVec = getCoverageVector(day.dateStr);
+          const demVec = getDemandVecFor(day.date);
+          const tplStart = timeToSlot(tpl.hora_inicio, slotsPorHora);
+          const tplEnd = tpl.cruza_medianoche
+            ? slotsPerDay + timeToSlot(tpl.hora_fin, slotsPorHora)
+            : timeToSlot(tpl.hora_fin, slotsPorHora);
 
-      const refDate = new Date(wDays[0]);
-      const avg = empInWeek.reduce((a, id) => a + getWeeklyHours(id, refDate), 0) / empInWeek.length;
-      const maxDiff = 4;
+          let totalDeficit = 0;
+          for (let s = tplStart; s < tplEnd && s < slotsPerDay; s++) {
+            const slotIdx = s >= slotsPerDay ? s - slotsPerDay : s;
+            totalDeficit += Math.max(0, demVec[slotIdx] - covVec[slotIdx]);
+          }
+          // v6: SPLIT_LARGO y DOBLE también tienen segundo bloque
+          const hasSecondBlock = ["PARTIDO", "SPLIT_LARGO", "DOBLE"].includes(tpl.shift_kind || "");
+          if (hasSecondBlock && tpl.hora_inicio_2 && tpl.hora_fin_2) {
+            const t2s = timeToSlot(tpl.hora_inicio_2, slotsPorHora);
+            const t2e = timeToSlot(tpl.hora_fin_2, slotsPorHora);
+            for (let s = t2s; s < t2e; s++) totalDeficit += Math.max(0, demVec[s] - covVec[s]);
+          }
+          if (totalDeficit <= 0) continue;
 
-      for (let pass = 0; pass < 5; pass++) {
+          let tplHrs: number;
+          if (tpl.cruza_medianoche) {
+            tplHrs = ((slotsPerDay - tplStart) + timeToSlot(tpl.hora_fin, slotsPorHora)) / slotsPorHora;
+          } else {
+            tplHrs = (tplEnd - tplStart) / slotsPorHora;
+          }
+          if (hasSecondBlock && tpl.hora_inicio_2 && tpl.hora_fin_2) {
+            tplHrs += (timeToSlot(tpl.hora_fin_2, slotsPorHora) - timeToSlot(tpl.hora_inicio_2, slotsPorHora)) / slotsPorHora;
+          }
+          if (tplHrs < minHoras) continue;
+
+          const nextDay = dateToStr(addDays(day.date, 1));
+          const blocks = expandTemplateToShifts(tpl, day.dateStr, nextDay);
+          const nightHrs = blocks.reduce((a, b) => a + shiftNightHours(b), 0);
+          const tplEntersNight = nightConfig
+            ? (tplStart < nightEndRaw! || tplEnd > nightStartSlot!)
+            : false;
+
+          const candidate = pickCandidate(employees, {
+            startDateStr: day.dateStr, startDateObj: day.date,
+            startTimeStr: tpl.hora_inicio, endTimeStr: tpl.hora_fin,
+            shiftHrs: tplHrs, nightHrs,
+            entersNight: tplEntersNight,
+          }, day.date);
+          if (!candidate) continue;
+
+          blocks.forEach(b => {
+            const grossMin = (new Date(b.end_time).getTime() - new Date(b.start_time).getTime()) / 60000;
+            const startHHMM = String(b.start_time).slice(11, 16);
+            const esMultiBloque = ["PARTIDO", "SPLIT_LARGO", "DOBLE"].includes(b.shift_kind || "");
+            const tb = buildDescansos(startHHMM, grossMin, bp, { soloBreaks: esMultiBloque });
+            const descansos = [...tb.descansos];
+            if (!esMultiBloque && (b.break_minutes || 0) > 0) {
+              descansos.unshift({ tipo: "ALMUERZO", inicio: null, minutos: b.break_minutes || 0 });
+            }
+            generatedShifts.push({
+              employee_id: candidate.id,
+              template_id: tpl.id,
+              start_time: b.start_time,
+              end_time: b.end_time,
+              shift_type: "custom",
+              periodo: periodoStr,
+              break_minutes: b.break_minutes,
+              almuerzo_minutos: b.break_minutes,
+              breaks_15_count: tb.breaksCount,
+              descansos,
+              shift_kind: b.shift_kind,
+              bloque: b.bloque,
+              disponibilidad: b.disponibilidad,
+              recargo_porcentaje: b.recargo_porcentaje,
+              observaciones: `Auto-asignado v4.1 · ${tpl.nombre || ""} (${tpl.shift_kind})`,
+            });
+          });
+          tplChanged = true;
+        }
+      }
+    }
+  }
+
+  // ─── FASE 3.5: Piso de personas/día ────────────────────────────────────────
+  if (minEmpDia != null) {
+    const daysByDemandAsc = [...validDays].sort((a, b) => dayDemandWeight(a.date) - dayDemandWeight(b.date));
+    let huboVaciado = true;
+    let pases = 0;
+    while (huboVaciado && pases < validDays.length + 1) {
+      huboVaciado = false;
+      pases++;
+      for (const day of daysByDemandAsc) {
+        if (diasSinCobertura.includes(day.dateStr)) continue;
+        const personas = distinctPeopleOnDay(day.dateStr);
+        if (personas > 0 && personas < minEmpDia) {
+          for (let i = generatedShifts.length - 1; i >= 0; i--) {
+            if (String(generatedShifts[i].start_time).startsWith(day.dateStr)) {
+              generatedShifts.splice(i, 1);
+            }
+          }
+          diasSinCobertura.push(day.dateStr);
+          warnings.push(
+            `${day.dateStr}: sin trabajadores disponibles — ` +
+            `no se alcanza el mínimo de ${minEmpDia} personas (solo ${personas}). ` +
+            `Día dejado sin cubrir para priorizar los días de mayor demanda.`
+          );
+          huboVaciado = true;
+        }
+      }
+    }
+  }
+
+  // ─── FASE 4: Balanceo de carga SEMANAL ─────────────────────────────────────
+  if (balancearCarga && generatedShifts.length > 0) {
+    const maxDiff = 4;
+    const MAX_REBALANCE_PASSES = 3;
+
+    const weekKeys = new Set<string>();
+    validDays.forEach(day => weekKeys.add(dateToStr(weekBounds(day.date).monday)));
+
+    weekKeys.forEach(weekKey => {
+      const refDate = parseLocalDate(weekKey);
+      const { monday, sunday } = weekBounds(refDate);
+
+      for (let pass = 0; pass < MAX_REBALANCE_PASSES; pass++) {
+        const horasPorEmp = activeEmployees
+          .map(emp => ({ emp, h: getWeeklyHours(emp.id, refDate) }))
+          .filter(x => x.h > 0)
+          .sort((a, b) => b.h - a.h);
+
+        if (horasPorEmp.length < 2) break;
+        const avg = horasPorEmp.reduce((a, x) => a + x.h, 0) / horasPorEmp.length;
+
+        const sobrecargados = horasPorEmp.filter(x => x.h > avg + maxDiff);
+        if (sobrecargados.length === 0) break;
+
         let huboCambio = false;
-        const sorted = [...empInWeek].sort((a, b) => getWeeklyHours(b, refDate) - getWeeklyHours(a, refDate));
-        const sobre = sorted.find(id => getWeeklyHours(id, refDate) > avg + maxDiff);
 
-        if (sobre) {
-          const empSobre = employees.find(e => e.id === sobre)!;
-          const turnosSobre = generatedShifts.filter(s => s.employee_id === sobre && wDays.some(d => s.start_time.startsWith(d)));
+        for (const { emp: empSobre } of sobrecargados) {
+          const turnosSobre = generatedShifts.filter(s => {
+            if (s.employee_id !== empSobre.id) return false;
+            const sd = new Date(s.start_time);
+            return sd >= monday && sd <= sunday;
+          });
+
           for (const turno of turnosSobre) {
             const turnoHrs = shiftHours(turno);
-            const turnoDateStr = turno.start_time.slice(0, 10);
-            const turnoStartStr = turno.start_time.slice(11, 16);
-            const tEndStr = turno.end_time.slice(11, 16);
-            const tCrosses = turno.end_time.slice(0, 10) !== turnoDateStr;
+            const turnoDateStr = String(turno.start_time).slice(0, 10);
+            const turnoStartStr = String(turno.start_time).slice(11, 16);
+            const tEndStr = String(turno.end_time).slice(11, 16);
+            const tCrosses = String(turno.end_time).slice(0, 10) !== turnoDateStr;
             const tStartSlot = timeToSlot(turnoStartStr, slotsPorHora);
-            const nightEndRaw = nightConfig ? (timeToSlot(nightConfig.end, slotsPorHora) + slotsPerDay) : 0;
-            const nightStartSlot = nightConfig ? timeToSlot(nightConfig.start, slotsPorHora) : 0;
             const tEndSlot = (tCrosses ? slotsPerDay : 0) + timeToSlot(tEndStr, slotsPorHora);
-            const turnoEntersNight = nightConfig ? (tStartSlot < nightEndRaw || tEndSlot > nightStartSlot) : false;
+            const turnoEntersNight = nightConfig
+              ? (tStartSlot < nightEndRaw! || tEndSlot > nightStartSlot!)
+              : false;
 
-            const subcargados = empInWeek
-              .filter(id => id !== sobre && getWeeklyHours(id, refDate) < avg - 1)
-              .sort((a, b) => getWeeklyHours(a, refDate) - getWeeklyHours(b, refDate));
+            const subcargados = activeEmployees
+              .filter(e => e.id !== empSobre.id)
+              .map(e => ({ e, h: getWeeklyHours(e.id, refDate) }))
+              .filter(({ h }) => h < avg - 1)
+              .sort((a, b) => a.h - b.h);
 
             let receptor: Employee | null = null;
-            for (const id of subcargados) {
-              const e = employees.find(emp => emp.id === id);
-              if (!e) continue;
-              if (!employeeEligible(e, { startDateStr: turnoDateStr, startTimeStr: turnoStartStr, startDateObj: new Date(turno.start_time), shiftHrs: turnoHrs, nightHrs: shiftNightHours(turno), entersNight: turnoEntersNight })) continue;
-              receptor = e; break;
+            for (const { e } of subcargados) {
+              if (!employeeEligible(e, {
+                startDateStr: turnoDateStr,
+                startDateObj: new Date(turno.start_time),
+                startTimeStr: turnoStartStr,
+                shiftHrs: turnoHrs,
+                nightHrs: shiftNightHours(turno),
+                entersNight: turnoEntersNight,
+              })) continue;
+              receptor = e;
+              break;
             }
+
             if (receptor) {
               turno.employee_id = receptor.id;
-              turno.observaciones = (turno.observaciones || "") + ` [Rebalanceado desde ${empSobre.nombre || empSobre.id} → ${receptor.nombre || receptor.id}]`;
+              turno.observaciones = (turno.observaciones || "") +
+                ` [Rebalanceado desde ${empSobre.nombre || empSobre.id} → ${receptor.nombre || receptor.id}]`;
               huboCambio = true;
               break;
             }
           }
           if (huboCambio) break;
         }
+
         if (!huboCambio) break;
       }
 
-      const horasFinales = empInWeek.map(id => ({ id, h: getWeeklyHours(id, refDate) })).filter(x => x.h > 0);
+      const horasFinales = activeEmployees
+        .map(emp => ({ emp, h: getWeeklyHours(emp.id, refDate) }))
+        .filter(x => x.h > 0);
       if (horasFinales.length === 0) return;
       const avgFinal = horasFinales.reduce((a, x) => a + x.h, 0) / horasFinales.length;
-      horasFinales.filter(x => x.h > avgFinal + maxDiff).forEach(x => {
-        const emp = employees.find(e => e.id === x.id);
-        warnings.push(`Semana ${weekKey} · ${emp?.nombre || "Empleado"}: ${x.h.toFixed(1)}h (media ${avgFinal.toFixed(1)}h) — desbalance residual.`);
-      });
+      horasFinales
+        .filter(x => x.h > avgFinal + maxDiff)
+        .forEach(x => {
+          warnings.push(
+            `Semana ${weekKey} · ${x.emp.nombre || "Empleado"}: ${x.h.toFixed(1)}h ` +
+            `(media ${avgFinal.toFixed(1)}h) — desbalance residual tras rebalanceo automático.`
+          );
+        });
     });
   }
 
-  // ─── Advertencias de cobertura ─────────────────────────────────────────────
+  // ─── Advertencias finales ──────────────────────────────────────────────────
   validDays.forEach(day => {
     if (diasSinCobertura.includes(day.dateStr)) return;
     const covVec = getCoverageVector(day.dateStr);
     const demVec = getDemandVecFor(day.date);
     let totalDef = 0;
     for (let s = 0; s < slotsPerDay; s++) totalDef += Math.max(0, demVec[s] - covVec[s]);
-    if (totalDef > 0) warnings.push(`${day.dateStr}: déficit de ${Math.round(totalDef / slotsPorHora)} horas-persona sin cubrir.`);
+    if (totalDef > 0) {
+      warnings.push(`${day.dateStr}: déficit de ${Math.round(totalDef / slotsPorHora)} horas-persona sin cubrir.`);
+    }
   });
 
   activeEmployees.forEach(emp => {
     if (!generatedShifts.some(s => s.employee_id === emp.id)) {
       warnings.push(`${emp.nombre || "Empleado"}: sin turnos asignados en el período.`);
+    }
+    // v6: Advertencia si no tiene skills requeridos
+    if (safeRequiredSkills.length > 0 && !hasRequiredSkills(emp)) {
+      warnings.push(`${emp.nombre || "Empleado"}: no tiene los skills requeridos (${safeRequiredSkills.join(", ")}). No se le asignaron turnos.`);
+    }
+    // v6: Advertencia si trabajó más domingos de los permitidos
+    const domingosTrabajados = getDomingosMes(emp.id, parseLocalDate(`${periodoStr}-01`));
+    if (domingosTrabajados > getMaxDomingos(emp)) {
+      warnings.push(`${emp.nombre || "Empleado"}: trabajó ${domingosTrabajados} domingos (máximo ${getMaxDomingos(emp)}). Revisa la programación.`);
     }
   });
 
