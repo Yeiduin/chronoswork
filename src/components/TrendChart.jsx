@@ -36,9 +36,15 @@ export default function TrendChart({
   height = 200,
   loading = false,
   className = '',
+  secondDataKey,
+  secondColor,
 }) {
   const accentColor = color.startsWith('var(') ? '#3b82f6' : color;
+  const accentColor2 = secondColor
+    ? (secondColor.startsWith('var(') ? '#f59e0b' : secondColor)
+    : '#f59e0b';
   const fillId = `fill-${dataKey || 'trend'}`;
+  const fillId2 = `fill-${secondDataKey || 'trend2'}`;
   const hasData = Array.isArray(data) && data.length > 0;
 
   const RenderTooltip = ({ active, payload, label }) => {
@@ -125,6 +131,14 @@ export default function TrendChart({
             <Bar
               dataKey={dataKey}
               fill={accentColor}
+              radius={[4, 4, 0, 0]}
+              maxBarSize={40}
+            />
+          )}
+          {type === 'bar' && secondDataKey && (
+            <Bar
+              dataKey={secondDataKey}
+              fill={accentColor2}
               radius={[4, 4, 0, 0]}
               maxBarSize={40}
             />
