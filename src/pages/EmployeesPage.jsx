@@ -3,16 +3,37 @@
 // ============================================================
 import { useDragScroll } from '../hooks/useDragScroll';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { useAreas } from '../hooks/useAreas';
+import { useShifts } from '../hooks/useShifts';
+import { useAbsences } from '../hooks/useAbsences';
+import { getPeriodoActual } from '../core/dateUtils';
+import { formatCOP } from '../core/validators';
 import EmployeeForm from '../components/EmployeeForm';
 import BulkImportModal from '../components/BulkImportModal';
 import {
   MdAdd, MdUpload, MdEdit, MdDelete, MdSearch,
   MdRefresh, MdPeople, MdPersonAdd, MdCheckCircle, MdContentCopy, MdClose, MdVpnKey,
+  MdArrowUpward, MdArrowDownward, MdDownload, MdWarningAmber,
 } from 'react-icons/md';
+
+const JORNADA_MAP = {
+  DIURNA: { emoji: '☀️', text: 'Diurna' },
+  NOCTURNA: { emoji: '🌙', text: 'Nocturna' },
+  MIXTA: { emoji: '🌓', text: 'Mixta' },
+  CUALQUIERA: { emoji: '🔄', text: 'Cualquiera' },
+};
+
+function getAbsenceBadge(tipo) {
+  if (!tipo) return null;
+  const t = tipo.toLowerCase();
+  if (t.startsWith('incapacidad')) return { label: 'Incapacidad', color: '#ef4444', bg: 'rgba(239,68,68,0.12)' };
+  if (t === 'vacaciones') return { label: 'Vacaciones', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' };
+  if (t.startsWith('permiso')) return { label: 'Permiso', color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' };
+  return { label: 'Novedad', color: '#6366f1', bg: 'rgba(99,102,241,0.12)' };
+}
 
 // ── Modal de provisión de cuenta de empleado ─────────────────────────────────
 function ProvisionAccountModal({ employee, onClose }) {
@@ -166,11 +187,11 @@ function ViewCredentialsModal({ employee, onClose }) {
   return (
     <div className="cw-modal-overlay">
       <div className="cw-modal" style={{ maxWidth: 450 }}>
-        <div className="cw-modal-header">
-          <h2 className="cw-modal-title">Credenciales de Acceso</h2>
-          <button className="cw-icon-btn" onClick={onClose} aria-label="Cerrar modal"><MdClose /></button>
+        <div className="cw-modal__header">
+          <h2 className="cw-modal__title">Credenciales de Acceso</h2>
+          <button className="cw-modal__close" onClick={onClose} aria-label="Cerrar modal"><MdClose /></button>
         </div>
-        <div className="cw-modal-body">
+        <div className="cw-modal__body">
           <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
             <MdVpnKey style={{ fontSize: '3rem', color: 'var(--cw-accent)' }} />
             <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.5rem' }}>
@@ -218,6 +239,8 @@ export default function EmployeesPage() {
   const { tenant } = useAuth();
   const { areas, assignEmployee, removeEmployee } = useAreas();
   const { ref: tableRef, handlers, style: dragStyle } = useDragScroll();
+  const { shifts } = useShifts(getPeriodoActual());
+  const { getNovedad } = useAbsences();
 
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -231,7 +254,17 @@ export default function EmployeesPage() {
   const [showImport, setShowImport] = useState(false);
   const [provisioningEmployee, setProvisioningEmployee] = useState(null);
   const [viewCredentialsEmployee, setViewCredentialsEmployee] = useState(null);
-  const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, nombre }
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [sortCol, setSortCol] = useState('nombre');
+  const [sortDir, setSortDir] = useState('asc');
+  const [inlineAreaEdit, setInlineAreaEdit] = useState(null);
+
+  const todayStr = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, []);
+
+  const shiftEmployeeIds = useMemo(() => new Set(shifts.map(s => s.employee_id)), [shifts]);
 
   // ─── Cargar empleados con su área asignada (vía JOIN) ─────────────────
   const fetchEmployees = async () => {
@@ -318,9 +351,6 @@ export default function EmployeesPage() {
   };
 
   // ─── Helpers para UI ──────────────────────────────────────────────────
-  const formatMoney = (n) =>
-    n ? `$${Number(n).toLocaleString('es-CO')}` : '—';
-
   const formatDate = (d) => {
     if (!d) return '—';
     return new Date(d).toLocaleDateString('es-CO', {
@@ -341,6 +371,36 @@ export default function EmployeesPage() {
     }
     return rels.areas || null;
   };
+
+  // ─── Ordenamiento ────────────────────────────────────────────────────
+  const handleSort = (col) => {
+    if (sortCol === col) {
+      setSortDir(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+  };
+
+  const renderTh = (col, label, style) => (
+    <th
+      style={{ cursor: 'pointer', userSelect: 'none', ...style }}
+      onClick={() => handleSort(col)}
+    >
+      {label}{' '}
+      {sortCol === col && (sortDir === 'asc'
+        ? <MdArrowUpward style={{ fontSize: '0.8rem', verticalAlign: 'middle' }} />
+        : <MdArrowDownward style={{ fontSize: '0.8rem', verticalAlign: 'middle' }} />)}
+    </th>
+  );
+
+  // ─── KPIs ─────────────────────────────────────────────────────────────
+  const kpis = useMemo(() => ({
+    total: employees.length,
+    activos: employees.filter(e => e.activo).length,
+    sinArea: employees.filter(e => !getArea(e)).length,
+    sinTurno: employees.filter(e => e.activo && !shiftEmployeeIds.has(e.id)).length,
+  }), [employees, shiftEmployeeIds]);
 
   // ─── Filtrado ──────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -365,6 +425,80 @@ export default function EmployeesPage() {
       return true;
     });
   }, [employees, searchTerm, filterArea, filterEstado]);
+
+  // ─── Ordenamiento del filtrado ─────────────────────────────────────────
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let valA, valB;
+      switch (sortCol) {
+        case 'nombre':
+          valA = (a.nombre || '').toLowerCase();
+          valB = (b.nombre || '').toLowerCase();
+          break;
+        case 'cargo':
+          valA = (a.cargo || '').toLowerCase();
+          valB = (b.cargo || '').toLowerCase();
+          break;
+        case 'valor_hora':
+          valA = a.valor_hora || 0;
+          valB = b.valor_hora || 0;
+          break;
+        case 'fecha_ingreso':
+          valA = a.fecha_ingreso || '';
+          valB = b.fecha_ingreso || '';
+          break;
+        default:
+          return 0;
+      }
+      let cmp;
+      if (typeof valA === 'number' && typeof valB === 'number') {
+        cmp = valA - valB;
+      } else {
+        cmp = String(valA).localeCompare(String(valB), 'es');
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return arr;
+  }, [filtered, sortCol, sortDir]);
+
+  // ─── Exportar CSV ──────────────────────────────────────────────────────
+  const exportCSV = () => {
+    const headers = ['Cedula', 'Nombre', 'Cargo', 'Area', 'TipoContrato', 'Jornada', 'ValorHora', 'SalarioMensual', 'HorasSemanales', 'FechaIngreso', 'Estado'];
+    const rows = sorted.map(emp => {
+      const area = getArea(emp);
+      return [
+        emp.cedula || '',
+        emp.nombre || '',
+        emp.cargo || '',
+        area?.nombre || '',
+        emp.tipo_contrato || '',
+        emp.jornada_preferida || '',
+        emp.valor_hora || '',
+        emp.salario_mensual || '',
+        emp.horas_semanales_contrato || '',
+        emp.fecha_ingreso || '',
+        emp.activo ? 'Activo' : 'Inactivo',
+      ];
+    });
+    const escapeCSV = (field) => {
+      const str = String(field);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return '"' + str.replace(/"/g, '""') + '"';
+      }
+      return str;
+    };
+    const csv = [headers, ...rows].map(row => row.map(escapeCSV).join(',')).join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `empleados_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="page-wrapper animate-fade-in">
@@ -397,6 +531,14 @@ export default function EmployeesPage() {
             <MdUpload /> Importar Excel
           </button>
           <button
+            className="cw-btn cw-btn--secondary"
+            onClick={exportCSV}
+            disabled={sorted.length === 0}
+            title="Exportar empleados a CSV"
+          >
+            <MdDownload /> Exportar CSV
+          </button>
+          <button
             className="cw-btn cw-btn--primary"
             onClick={() => { setEditingEmployee(null); setShowForm(true); }}
             disabled={areas.length === 0}
@@ -404,6 +546,26 @@ export default function EmployeesPage() {
           >
             <MdAdd /> Nuevo empleado
           </button>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
+        <div className="cw-card" style={{ flex: 1, padding: '0.75rem 1rem', minWidth: 0 }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Total empleados</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--cw-accent)' }}>{kpis.total}</div>
+        </div>
+        <div className="cw-card" style={{ flex: 1, padding: '0.75rem 1rem', minWidth: 0 }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Activos</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#22c55e' }}>{kpis.activos}</div>
+        </div>
+        <div className="cw-card" style={{ flex: 1, padding: '0.75rem 1rem', minWidth: 0 }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Sin área</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#f59e0b' }}>{kpis.sinArea}</div>
+        </div>
+        <div className="cw-card" style={{ flex: 1, padding: '0.75rem 1rem', minWidth: 0 }}>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Sin turno</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#f59e0b' }}>{kpis.sinTurno}</div>
         </div>
       </div>
 
@@ -471,29 +633,79 @@ export default function EmployeesPage() {
               <thead>
                 <tr>
                   <th style={{ minWidth: 90 }}>CÉDULA</th>
-                  <th>NOMBRE COMPLETO</th>
-                  <th>CARGO</th>
+                  {renderTh('nombre', 'NOMBRE COMPLETO')}
+                  {renderTh('cargo', 'CARGO')}
+                  <th>JORNADA</th>
+                  <th style={{ textAlign: 'center' }}>HORAS/SEM</th>
                   <th>ÁREA</th>
                   <th>TIPO CONTRATO</th>
-                  <th style={{ textAlign: 'right' }}>VALOR / HORA</th>
-                  <th>INGRESO</th>
+                  {renderTh('valor_hora', 'SALARIO / MES', { textAlign: 'right' })}
+                  {renderTh('fecha_ingreso', 'INGRESO')}
                   <th>ESTADO</th>
                   <th>CUENTA</th>
                   <th style={{ width: 100 }}>ACCIONES</th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(emp => {
+                {sorted.map(emp => {
                   const area = getArea(emp);
+                  const jornada = JORNADA_MAP[emp.jornada_preferida] || JORNADA_MAP.CUALQUIERA;
+                  const novedad = getNovedad(emp.id, todayStr);
+                  const novedadBadge = novedad ? getAbsenceBadge(novedad.tipo) : null;
+                  const sinTurno = emp.activo && !shiftEmployeeIds.has(emp.id);
                   return (
                     <tr key={emp.id}>
                       <td style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                         {emp.cedula}
                       </td>
-                      <td style={{ fontWeight: 600 }}>{emp.nombre}</td>
+                      <td style={{ fontWeight: 600 }}>
+                        {emp.nombre}
+                        {sinTurno && (
+                          <MdWarningAmber
+                            style={{ color: '#f59e0b', fontSize: '1rem', marginLeft: '0.3rem', verticalAlign: 'middle' }}
+                            title="Sin turnos en el período actual"
+                          />
+                        )}
+                      </td>
                       <td>{emp.cargo || '—'}</td>
                       <td>
-                        {area ? (
+                        <span style={{ fontSize: '0.78rem' }}>
+                          {jornada.emoji} {jornada.text}
+                        </span>
+                      </td>
+                      <td style={{ textAlign: 'center', fontSize: '0.85rem' }}>
+                        {emp.horas_semanales_contrato ? `${emp.horas_semanales_contrato}h` : '—'}
+                      </td>
+                      <td>
+                        {inlineAreaEdit === emp.id ? (
+                          <select
+                            className="cw-input"
+                            autoFocus
+                            defaultValue={area?.id || ''}
+                            onChange={async (e) => {
+                              const newAreaId = e.target.value;
+                              setInlineAreaEdit(null);
+                              if (newAreaId === (area?.id || '')) return;
+                              try {
+                                if (newAreaId) {
+                                  await assignEmployee(newAreaId, emp.id);
+                                } else {
+                                  await removeEmployee(emp.id);
+                                }
+                                await fetchEmployees();
+                              } catch (err) {
+                                alert('Error al cambiar área: ' + err.message);
+                              }
+                            }}
+                            onBlur={() => setInlineAreaEdit(null)}
+                            style={{ fontSize: '0.75rem', padding: '0.15rem 0.3rem', width: 'auto' }}
+                          >
+                            <option value="">Sin área</option>
+                            {areas.map(a => (
+                              <option key={a.id} value={a.id}>{a.nombre}</option>
+                            ))}
+                          </select>
+                        ) : area ? (
                           <span
                             style={{
                               background: (area.color || '#6366f1') + '20',
@@ -503,12 +715,24 @@ export default function EmployeesPage() {
                               fontSize: '0.78rem',
                               fontWeight: 600,
                               whiteSpace: 'nowrap',
+                              cursor: 'pointer',
                             }}
+                            onClick={() => setInlineAreaEdit(emp.id)}
+                            title="Click para cambiar de área"
                           >
                             ● {area.nombre}
                           </span>
                         ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                          <span
+                            style={{
+                              color: 'var(--text-muted)',
+                              fontSize: '0.8rem',
+                              cursor: 'pointer',
+                              textDecoration: 'underline dotted',
+                            }}
+                            onClick={() => setInlineAreaEdit(emp.id)}
+                            title="Click para asignar un área"
+                          >
                             Sin área
                           </span>
                         )}
@@ -523,18 +747,43 @@ export default function EmployeesPage() {
                           {emp.tipo_contrato || '—'}
                         </span>
                       </td>
-                      <td style={{ textAlign: 'right', color: '#10b981', fontWeight: 600 }}>
-                        {formatMoney(emp.valor_hora)}
+                      <td style={{ textAlign: 'right' }}>
+                        <div style={{ color: '#10b981', fontWeight: 600 }}>
+                          {emp.salario_mensual ? formatCOP(emp.salario_mensual) : '—'}
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 400 }}>
+                          /h: {emp.valor_hora ? formatCOP(emp.valor_hora) : '—'}
+                        </div>
                       </td>
                       <td style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                         {formatDate(emp.fecha_ingreso)}
                       </td>
                       <td>
-                        {emp.activo ? (
-                          <span className="cw-badge cw-badge--success">● Activo</span>
-                        ) : (
-                          <span className="cw-badge cw-badge--muted">Inactivo</span>
-                        )}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                          {emp.activo ? (
+                            <span className="cw-badge cw-badge--success">● Activo</span>
+                          ) : (
+                            <span className="cw-badge cw-badge--muted">Inactivo</span>
+                          )}
+                          {novedadBadge && (
+                            <span
+                              title={novedad ? (novedad.tipo || 'Novedad activa') : undefined}
+                              style={{
+                                background: novedadBadge.bg,
+                                color: novedadBadge.color,
+                                padding: '0.1rem 0.4rem',
+                                borderRadius: 4,
+                                fontSize: '0.7rem',
+                                fontWeight: 600,
+                                whiteSpace: 'nowrap',
+                                display: 'inline-block',
+                                width: 'fit-content',
+                              }}
+                            >
+                              {novedadBadge.label}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td>
                         {emp.auth_user_id ? (

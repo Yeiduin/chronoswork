@@ -1,18 +1,11 @@
-// ============================================================
-// ChronosWork — Modal completo de creación/edición de Empleados
-// Con todos los tipos de contrato colombianos, seguridad social,
-// datos personales, datos bancarios y académicos.
-// ============================================================
-
 import { useState, useEffect } from 'react';
 import { supabase } from '../config/supabaseClient';
 import {
-  TIPOS_CONTRATO, TIPOS_JORNADA, PATRONES_ROTATIVOS,
+  TIPOS_CONTRATO, TIPOS_JORNADA,
   SMLV_2025, AUX_TRANSPORTE_2025, SMLV_HORA_2025,
-  TIPOS_NOVEDAD,
 } from '../config/laborCatalog';
 import {
-  MdClose, MdPerson, MdWork, MdAccountBalance, MdSchool, MdContactPhone, MdInfo,
+  MdClose, MdPerson, MdWork, MdAccountBalance, MdSchool, MdContactPhone,
 } from 'react-icons/md';
 
 const NIVELES_ARL = [
@@ -23,7 +16,6 @@ const NIVELES_ARL = [
   { value: 5, label: 'Nivel V — Riesgo Máximo (6.960%)' },
 ];
 
-// Catálogo común de EPS, AFP, ARL, Cajas (datos del usuario, no hardcoded oficial)
 const EPS_COMUNES = [
   'Nueva EPS', 'Sanitas', 'Sura EPS', 'Compensar EPS', 'Famisanar',
   'Salud Total', 'Coomeva', 'Medimás', 'Aliansalud', 'Cajacopi EPS',
@@ -49,7 +41,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
 
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(() => ({
-    // Paso 1: Identidad
     tipo_documento: employee?.tipo_documento || 'CC',
     cedula: employee?.cedula || '',
     lugar_expedicion: employee?.lugar_expedicion || '',
@@ -61,17 +52,17 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     tiene_discapacidad: employee?.tiene_discapacidad || false,
     descripcion_discapacidad: employee?.descripcion_discapacidad || '',
 
-    // Paso 2: Contacto
     direccion: employee?.direccion || '',
     ciudad: employee?.ciudad || '',
     departamento: employee?.departamento || '',
     telefono_contacto: employee?.telefono_contacto || '',
     email_personal: employee?.email_personal || '',
+    email_institucional: employee?.email_institucional || '',
     contacto_emergencia_nombre: employee?.contacto_emergencia_nombre || '',
     contacto_emergencia_telefono: employee?.contacto_emergencia_telefono || '',
     contacto_emergencia_parentesco: employee?.contacto_emergencia_parentesco || '',
+    embarazada: employee?.embarazada || false,
 
-    // Paso 3: Contrato
     fecha_ingreso: employee?.fecha_ingreso || new Date().toISOString().slice(0, 10),
     fecha_fin_contrato: employee?.fecha_fin_contrato || '',
     periodo_prueba_hasta: employee?.periodo_prueba_hasta || '',
@@ -83,12 +74,10 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     jornada_tipo: employee?.jornada_tipo || 'DIURNA',
     horas_semanales_contrato: employee?.horas_semanales_contrato ?? 42,
     horas_mensuales_contrato: employee?.horas_mensuales_contrato ?? 182,
-    duracion_jornada_horas: employee?.duracion_jornada_horas ?? 8,
     dias_descanso_semana: employee?.dias_descanso_semana ?? 1,
     turno_predeterminado_id: employee?.turno_predeterminado_id || '',
     jornada_partida: employee?.jornada_partida || false,
 
-    // Paso 3-bis: Preferencia de jornada (v4 — algoritmo mejorado)
     jornada_preferida: employee?.jornada_preferida || 'CUALQUIERA',
     solo_diurno: employee?.solo_diurno || false,
     solo_nocturno: employee?.solo_nocturno || false,
@@ -96,8 +85,11 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     horas_nocturnas_max_semana: employee?.horas_nocturnas_max_semana ?? '',
     horas_max_semana: employee?.horas_max_semana ?? '',
     permite_partido: employee?.permite_partido || false,
+    max_domingos_mes: employee?.max_domingos_mes ?? '',
+    dias_descanso_fijos: Array.isArray(employee?.dias_descanso_fijos)
+      ? employee.dias_descanso_fijos.join(',')
+      : (employee?.dias_descanso_fijos ? String(employee.dias_descanso_fijos) : ''),
 
-    // Paso 4: Salario
     valor_hora: employee?.valor_hora ?? SMLV_HORA_2025,
     salario_mensual: employee?.salario_mensual ?? SMLV_2025,
     bono_rodamiento: employee?.bono_rodamiento ?? 0,
@@ -105,9 +97,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     recibe_auxilio_transporte: employee?.recibe_auxilio_transporte ?? true,
     aplica_pago_dominical: employee?.aplica_pago_dominical ?? true,
     aplica_horas_extras: employee?.aplica_horas_extras ?? true,
-    es_especial: employee?.es_especial || false,  // salario personalizado
+    es_especial: employee?.es_especial || false,
 
-    // Paso 5: Seguridad social
     eps_nombre: employee?.eps_nombre || '',
     eps_codigo: employee?.eps_codigo || '',
     afp_nombre: employee?.afp_nombre || '',
@@ -121,13 +112,11 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     fondo_cesantias: employee?.fondo_cesantias || '',
     cesantias_afc: employee?.cesantias_afc || false,
 
-    // Paso 6: Bancarios
     banco_nombre: employee?.banco_nombre || '',
     tipo_cuenta: employee?.tipo_cuenta || 'AHORROS',
     numero_cuenta: employee?.numero_cuenta || '',
     titular_cuenta: employee?.titular_cuenta || '',
 
-    // Paso 7: Académico
     nivel_educacion: employee?.nivel_educacion || '',
     titulo_obtenido: employee?.titulo_obtenido || '',
     sena_aprendiz: employee?.sena_aprendiz || false,
@@ -135,14 +124,12 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     fecha_etapa_lectiva_inicio: employee?.fecha_etapa_lectiva_inicio || '',
     fecha_etapa_lectiva_fin: employee?.fecha_etapa_lectiva_fin || '',
 
-    // Paso 8: Datos fiscales
     responsable_iva: employee?.responsable_iva || false,
     declarante_renta: employee?.declarante_renta || false,
     aplica_retencion_fuente: employee?.aplica_retencion_fuente ?? true,
     numero_dependientes: employee?.numero_dependientes ?? 0,
     persona_mayor_dependiente: employee?.persona_mayor_dependiente || false,
 
-    // Permisos
     tiene_licencia_conduccion: employee?.tiene_licencia_conduccion || false,
     categoria_licencia: employee?.categoria_licencia || '',
     vencimiento_licencia: employee?.vencimiento_licencia || '',
@@ -154,7 +141,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
   const [loading, setLoading] = useState(false);
   const [templates, setTemplates] = useState([]);
 
-  // Cargar templates del área seleccionada
   useEffect(() => {
     if (!selectedAreaId) { setTemplates([]); return; }
     supabase.from('shift_templates')
@@ -162,7 +148,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
       .then(({ data }) => setTemplates(data || []));
   }, [selectedAreaId]);
 
-  // Al elegir área, aplicar defaults si NO es especial ni edición inicial
   useEffect(() => {
     if (!selectedAreaId) return;
     const area = areas.find(a => a.id === selectedAreaId);
@@ -176,7 +161,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
         updates.salario_mensual = area.valor_hora_default * 240;
       }
       if (area.tipo_contrato_predominante) updates.tipo_contrato = area.tipo_contrato_predominante;
-      if (area.duracion_jornada_horas) updates.duracion_jornada_horas = area.duracion_jornada_horas;
       if (area.dias_descanso_default) updates.dias_descanso_semana = area.dias_descanso_default;
       if (area.jornada_tipo) updates.jornada_tipo = area.jornada_tipo;
       if (area.nivel_riesgo_arl) updates.nivel_riesgo_arl = area.nivel_riesgo_arl;
@@ -187,7 +171,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     });
   }, [selectedAreaId, form.es_especial, areas, isEdit, initialAreaId]);
 
-  // Auto-completar SMLV si el empleado es aprendiz (productiva)
   useEffect(() => {
     if (form.sena_aprendiz && form.etapa_productiva && !form.es_especial) {
       setForm(prev => ({ ...prev, salario_mensual: Math.round(SMLV_2025 * 0.5) }));
@@ -206,7 +189,7 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
       if (!form.nombre?.trim()) e.nombre = 'El nombre es obligatorio.';
       if (!form.fecha_nacimiento) e.fecha_nacimiento = 'Fecha de nacimiento obligatoria.';
     }
-    if (s === 3) {
+    if (s === 2) {
       if (!form.cargo?.trim()) e.cargo = 'El cargo es obligatorio.';
       if (!selectedAreaId) e.area = 'Selecciona un área.';
       if (!form.fecha_ingreso) e.fecha_ingreso = 'La fecha de ingreso es obligatoria.';
@@ -214,19 +197,15 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
         e.fecha_fin_contrato = 'Contrato a término fijo requiere fecha de terminación.';
       }
     }
-    if (s === 4) {
-      if (!form.valor_hora || parseFloat(form.valor_hora) <= 0) e.valor_hora = 'Valor hora debe ser > 0.';
-    }
     setErrors(e);
     return Object.keys(e).length === 0;
   };
 
-  const next = () => { if (validateStep(step)) setStep(s => Math.min(8, s + 1)); };
+  const next = () => { if (validateStep(step)) setStep(s => Math.min(4, s + 1)); };
   const prev = () => setStep(s => Math.max(1, s - 1));
 
   const handleSubmit = async () => {
-    // Validar todos los pasos requeridos
-    for (let s = 1; s <= 4; s++) {
+    for (let s = 1; s <= 2; s++) {
       if (!validateStep(s)) {
         setStep(s);
         return;
@@ -244,15 +223,20 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
         numero_dependientes: parseInt(form.numero_dependientes) || 0,
         horas_semanales_contrato: parseInt(form.horas_semanales_contrato) || 42,
         horas_mensuales_contrato: parseInt(form.horas_mensuales_contrato) || 182,
-        duracion_jornada_horas: parseFloat(form.duracion_jornada_horas) || 8,
         dias_descanso_semana: parseInt(form.dias_descanso_semana) || 1,
         nivel_riesgo_arl: parseInt(form.nivel_riesgo_arl) || 1,
+        max_domingos_mes: form.max_domingos_mes !== '' ? parseInt(form.max_domingos_mes) || null : null,
+        dias_descanso_fijos: form.dias_descanso_fijos
+          ? String(form.dias_descanso_fijos).split(',').map(d => parseInt(d.trim(), 10)).filter(d => d >= 1 && d <= 7)
+          : null,
       }, selectedAreaId);
     } catch (err) {
       setErrors({ api: err.message });
       setLoading(false);
     }
   };
+
+  const salarioCalculado = (parseFloat(form.valor_hora) || 0) * 240;
 
   return (
     <div className="cw-modal-overlay">
@@ -264,9 +248,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
           <button className="cw-modal__close" onClick={onClose}><MdClose /></button>
         </div>
 
-        {/* Stepper compacto */}
         <div style={{ padding: '0 1.25rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-          {['Identidad', 'Contacto', 'Contrato', 'Salario', 'Seg. Social', 'Banco', 'Estudio', 'Fiscal'].map((title, i) => (
+          {['Datos Personales', 'Contrato y Jornada', 'Salario y Seg. Social', 'Formación y Fiscal'].map((title, i) => (
             <div key={i}
               onClick={() => validateStep(step) && setStep(i + 1)}
               style={{
@@ -280,7 +263,7 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
 
         {errors.api && <div className="cw-alert cw-alert--error" style={{ margin: '0 1.25rem 1rem' }}>🚫 {errors.api}</div>}
 
-        {/* ──────────── PASO 1: IDENTIDAD ──────────── */}
+        {/* ──────────── PASO 1: DATOS PERSONALES ──────────── */}
         {step === 1 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
             <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdPerson style={{ verticalAlign: 'middle' }} /> Identidad</h4>
@@ -361,13 +344,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                 )}
               </div>
             </div>
-          </div>
-        )}
 
-        {/* ──────────── PASO 2: CONTACTO ──────────── */}
-        {step === 2 && (
-          <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdContactPhone style={{ verticalAlign: 'middle' }} /> Contacto y emergencia</h4>
+            <h4 style={{ fontSize: '0.9rem', margin: '1rem 0 0.5rem' }}><MdContactPhone style={{ verticalAlign: 'middle' }} /> Contacto y emergencia</h4>
             <div className="cw-form-group">
               <label className="cw-label">Dirección</label>
               <input className="cw-input" value={form.direccion} onChange={e => set('direccion', e.target.value)} placeholder="Calle 100 #15-20" />
@@ -392,6 +370,14 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                 <input type="email" className="cw-input" value={form.email_personal} onChange={e => set('email_personal', e.target.value)} />
               </div>
             </div>
+            {form.email_institucional && (
+              <div className="cw-form-group">
+                <label className="cw-label">Email institucional</label>
+                <input className="cw-input" value={form.email_institucional} disabled readOnly
+                  style={{ opacity: 0.7, cursor: 'not-allowed' }} />
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Asignado por el sistema (solo lectura)</div>
+              </div>
+            )}
             <h5 style={{ fontSize: '0.8rem', marginTop: '0.75rem', color: 'var(--text-muted)' }}>Contacto de emergencia</h5>
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
@@ -407,15 +393,20 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                 <input className="cw-input" value={form.contacto_emergencia_parentesco} onChange={e => set('contacto_emergencia_parentesco', e.target.value)} placeholder="Madre, Esposo(a)..." />
               </div>
             </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem', marginTop: '0.75rem' }}>
+              <input type="checkbox" checked={form.embarazada}
+                onChange={e => set('embarazada', e.target.checked)} />
+              <span>🤰 Está embarazada (no nocturno, máx 8h/día)</span>
+            </label>
           </div>
         )}
 
-        {/* ──────────── PASO 3: CONTRATO ──────────── */}
-        {step === 3 && (
+        {/* ──────────── PASO 2: CONTRATO Y JORNADA ──────────── */}
+        {step === 2 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
             <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdWork style={{ verticalAlign: 'middle' }} /> Contrato y jornada</h4>
 
-            {/* Área */}
             <div className="cw-form-group">
               <label className="cw-label">Área de trabajo <span className="required">*</span></label>
               {areas.length === 0 ? (
@@ -519,7 +510,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               </div>
             </div>
 
-            {/* Turno predeterminado (solo si SALARIO_FIJO) */}
             {form.tipo_contrato === 'SALARIO_FIJO' && templates.length > 0 && (
               <div className="cw-form-group">
                 <label className="cw-label">Turno predeterminado (fijo)</label>
@@ -537,7 +527,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               <span>👑 Es jefe / tiene subordinados</span>
             </label>
 
-            {/* ── v4: Preferencia de jornada (CRÍTICO para 24/7) ── */}
             <div style={{ marginTop: '1rem', padding: '0.85rem', background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.3)', borderRadius: 10 }}>
               <h5 style={{ fontSize: '0.82rem', color: '#4f46e5', marginBottom: '0.5rem', fontWeight: 700 }}>
                 🌙 Preferencia de jornada (para call centers 24/7)
@@ -552,7 +541,6 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                 <select className="cw-input" value={form.jornada_preferida}
                   onChange={e => {
                     set('jornada_preferida', e.target.value);
-                    // Si selecciona específica, ajustar flags
                     if (e.target.value === 'DIURNA')   { set('solo_diurno', true);   set('solo_nocturno', false); }
                     if (e.target.value === 'NOCTURNA') { set('solo_nocturno', true); set('solo_diurno', false); }
                     if (e.target.value === 'MIXTA' || e.target.value === 'CUALQUIERA') {
@@ -604,12 +592,27 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
                 💡 Déjalo vacío para usar el límite del área o el legal (42h/sem).
               </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx domingos/mes</label>
+                  <input type="number" min="0" className="cw-input" placeholder="2 (CST)"
+                    value={form.max_domingos_mes} onChange={e => set('max_domingos_mes', e.target.value)} />
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>CST: mínimo 2 libres</div>
+                </div>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Días descanso fijos</label>
+                  <input className="cw-input" placeholder="6,7 = Sábado y Domingo"
+                    value={form.dias_descanso_fijos} onChange={e => set('dias_descanso_fijos', e.target.value)} />
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Números 1-7 separados por coma (1=Lun, 7=Dom)</div>
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* ──────────── PASO 4: SALARIO ──────────── */}
-        {step === 4 && (
+        {/* ──────────── PASO 3: SALARIO Y SEGURIDAD SOCIAL ──────────── */}
+        {step === 3 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
             <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>💰 Salario y beneficios</h4>
 
@@ -620,8 +623,11 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
             }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.es_especial} onChange={e => set('es_especial', e.target.checked)} />
-                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>⭐ Empleado especial — Salario personalizado (no toma el del área)</span>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>⭐ Salario personalizado (no toma el del área al editarla)</span>
               </label>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.3rem', marginLeft: '1.7rem' }}>
+                Si lo marcas, el salario de este empleado no se sobrescribe cuando cambias el valor hora del área.
+              </div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
@@ -633,6 +639,11 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                   SMLV/hora 2025: ${SMLV_HORA_2025.toLocaleString('es-CO')}
                 </div>
+                {parseFloat(form.valor_hora) > 0 && (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--cw-accent)', fontWeight: 600, marginTop: '0.2rem' }}>
+                    = ${salarioCalculado.toLocaleString('es-CO')}/mes
+                  </div>
+                )}
               </div>
               <div className="cw-form-group">
                 <label className="cw-label">Salario mensual (COP)</label>
@@ -674,13 +685,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                 <span>⏰ Aplica pago de horas extras</span>
               </label>
             </div>
-          </div>
-        )}
 
-        {/* ──────────── PASO 5: SEGURIDAD SOCIAL ──────────── */}
-        {step === 5 && (
-          <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdAccountBalance style={{ verticalAlign: 'middle' }} /> Seguridad social (PILA)</h4>
+            <h4 style={{ fontSize: '0.9rem', margin: '1.25rem 0 0.5rem' }}><MdAccountBalance style={{ verticalAlign: 'middle' }} /> Seguridad social (PILA)</h4>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
@@ -734,13 +740,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               <input type="checkbox" checked={form.cesantias_afc} onChange={e => set('cesantias_afc', e.target.checked)} />
               <span>💰 Tiene cuenta AFC (Auxilio de ahorro para cesantías — beneficio tributario)</span>
             </label>
-          </div>
-        )}
 
-        {/* ──────────── PASO 6: BANCARIOS ──────────── */}
-        {step === 6 && (
-          <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>🏦 Datos bancarios (para pago de nómina)</h4>
+            <h4 style={{ fontSize: '0.9rem', margin: '1.25rem 0 0.5rem' }}>🏦 Datos bancarios (para pago de nómina)</h4>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
                 <label className="cw-label">Banco</label>
@@ -766,8 +767,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
           </div>
         )}
 
-        {/* ──────────── PASO 7: ACADÉMICO ──────────── */}
-        {step === 7 && (
+        {/* ──────────── PASO 4: FORMACIÓN Y DATOS FISCALES ──────────── */}
+        {step === 4 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
             <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdSchool style={{ verticalAlign: 'middle' }} /> Formación y certificaciones</h4>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
@@ -846,13 +847,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               <label className="cw-label">Otras certificaciones / cursos</label>
               <textarea className="cw-input" rows={2} value={form.tiene_certificaciones} onChange={e => set('tiene_certificaciones', e.target.value)} placeholder="Trabajo en alturas, manipulación de alimentos, etc." />
             </div>
-          </div>
-        )}
 
-        {/* ──────────── PASO 8: DATOS FISCALES ──────────── */}
-        {step === 8 && (
-          <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>📊 Datos fiscales (DIAN)</h4>
+            <h4 style={{ fontSize: '0.9rem', margin: '1rem 0 0.5rem' }}>📊 Datos fiscales (DIAN)</h4>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem', fontSize: '0.82rem' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.responsable_iva} onChange={e => set('responsable_iva', e.target.checked)} />
@@ -894,8 +890,8 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
 
         <div className="cw-modal__footer">
           {step > 1 && <button type="button" className="cw-btn cw-btn--secondary" onClick={prev}>← Anterior</button>}
-          {step < 8 && <button type="button" className="cw-btn cw-btn--primary" onClick={next}>Siguiente →</button>}
-          {step === 8 && (
+          {step < 4 && <button type="button" className="cw-btn cw-btn--primary" onClick={next}>Siguiente →</button>}
+          {step === 4 && (
             <button type="button" className="cw-btn cw-btn--primary" onClick={handleSubmit} disabled={loading}>
               {loading ? <><span className="cw-spinner cw-spinner--sm"></span> Guardando...</>
                 : <>{isEdit ? '💾 Actualizar' : '➕ Registrar'} Colaborador</>}
