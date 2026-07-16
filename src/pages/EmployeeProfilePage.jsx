@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../config/supabaseClient';
 import { logger } from '../config/logger';
+import { useAnnouncements } from '../hooks/useAnnouncements';
 import { TIPOS_NOVEDAD, ABSENCE_CFG } from '../config/constants';
 import { formatDuracionNovedad } from '../core/dateUtils';
 import {
@@ -547,6 +548,7 @@ function MonthCalendar({ shifts, absences, month, year }) {
 
 export default function EmployeeProfilePage() {
   const { user, signOut } = useAuth();
+  const { announcements } = useAnnouncements();
   const [profile, setProfile]   = useState(null);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState('');
@@ -756,6 +758,52 @@ export default function EmployeeProfilePage() {
 
   return (
     <div className="emp-shell">
+      {announcements.length > 0 && (
+        <div style={{
+          display: 'flex',
+          gap: '0.75rem',
+          overflowX: 'auto',
+          padding: '0.75rem 1rem',
+          scrollSnapType: 'x mandatory',
+          WebkitOverflowScrolling: 'touch',
+        }}>
+          {announcements.map(a => (
+            <div key={a.id} style={{
+              flex: '0 0 280px',
+              background: 'var(--bg-glass)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 10,
+              padding: '0.75rem',
+              scrollSnapAlign: 'start',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.4rem',
+            }}>
+              <div style={{
+                fontWeight: 700, fontSize: '0.85rem',
+                color: 'var(--text-primary)',
+                display: 'flex', alignItems: 'center', gap: '0.3rem',
+              }}>
+                📢 {a.titulo}
+              </div>
+              <div style={{
+                fontSize: '0.78rem', color: 'var(--text-muted)',
+                overflow: 'hidden', display: '-webkit-box',
+                WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+              }}>
+                {a.contenido}
+              </div>
+              {a.tipo === 'IMAGEN' && a.media_url && (
+                <img src={a.media_url} alt={a.titulo}
+                  style={{
+                    width: '100%', height: 80,
+                    objectFit: 'cover', borderRadius: 6,
+                  }} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       {/* ════════════════════════════════════════════════════════
           HEADER HERO
           ════════════════════════════════════════════════════════ */}

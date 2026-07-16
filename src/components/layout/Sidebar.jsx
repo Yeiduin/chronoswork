@@ -3,7 +3,7 @@ import { useAuth, ROLE_SAAS_ADMIN, ROLE_SUPER_ADMIN, ROLE_COORDINATOR } from '..
 import {
   MdDashboard, MdPeople, MdEventBusy, MdCalendarMonth,
   MdCalculate, MdSettings, MdLogout, MdSchedule, MdDomain,
-  MdAdminPanelSettings, MdBusiness,
+  MdAdminPanelSettings, MdBusiness, MdCampaign,
 } from 'react-icons/md';
 
 // ── Configuración de navegación por rol ──────────────────────────────────────
@@ -29,6 +29,7 @@ const NAV_SUPER_ADMIN = [
     links: [
       { to: '/empleados',  icon: <MdPeople />,     label: 'Empleados' },
       { to: '/novedades',  icon: <MdEventBusy />,  label: 'Novedades' },
+      { to: '/anuncios',   icon: <MdCampaign />,   label: 'Anuncios' },
     ],
   },
   {
@@ -59,6 +60,7 @@ const NAV_COORDINATOR = [
     links: [
       { to: '/empleados', icon: <MdPeople />,    label: 'Empleados' },
       { to: '/novedades', icon: <MdEventBusy />, label: 'Novedades' },
+      { to: '/anuncios',  icon: <MdCampaign />,   label: 'Anuncios' },
     ],
   },
   {

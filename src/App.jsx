@@ -25,6 +25,7 @@ const PrenominaPage = lazy(() => import('./pages/PrenominaPage'));
 const ConfigPage = lazy(() => import('./pages/ConfigPage'));
 const SaasDashboardPage = lazy(() => import('./pages/SaasDashboardPage'));
 const EmployeeProfilePage = lazy(() => import('./pages/EmployeeProfilePage'));
+const AnnouncementsPage = lazy(() => import('./pages/AnnouncementsPage'));
 
 import NotFoundPage from './pages/NotFoundPage';
 
@@ -133,6 +134,14 @@ export default function App() {
             element={
               <ProtectedRoute allowedRoles={ADMIN_ROLES}>
                 <AppShell><AbsencesPage /></AppShell>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/anuncios"
+            element={
+              <ProtectedRoute allowedRoles={ADMIN_ROLES}>
+                <AppShell><AnnouncementsPage /></AppShell>
               </ProtectedRoute>
             }
           />
