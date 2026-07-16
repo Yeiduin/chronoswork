@@ -27,9 +27,8 @@ const NIVELES_EDUCATIVOS = ['NINGUNO', 'PRIMARIA', 'BACHILLERATO', 'TECNICO', 'T
 const NIVELES_ARL = [1, 2, 3, 4, 5];
 const NIVELES_CARGO = ['JUNIOR', 'SENIOR', 'COORDINADOR', 'SUPERVISOR', 'JEFE', 'GERENTE', 'DIRECTOR'];
 const TIPOS_CUENTA = ['AHORROS', 'CORRIENTE'];
-const MODOS_OPERACION = ['OFICINA', '24_7', '24_7_NIGHT_SPLIT'];
-const JORNADAS_VALUES = TIPOS_JORNADA.map(j => j.value);
-const PATRONES_VALUES = PATRONES_ROTATIVOS.map(p => p.value);
+const AFP_TIPOS = ['RAZON', 'PRIMAPROMEDIO'];
+const JORNADAS_PREF = ['DIURNA', 'NOCTURNA', 'MIXTA', 'CUALQUIERA'];
 
 const EPS_COMUNES = [
   'Nueva EPS', 'Sanitas', 'Sura EPS', 'Compensar EPS', 'Famisanar',
@@ -99,6 +98,16 @@ const COLUMN_ALIASES = {
   numero_cuenta:            ['numero_cuenta', 'n° cuenta', 'cuenta'],
   nivel_educacion:          ['nivel_educacion', 'nivel educativo', 'educacion', 'estudios'],
   sector:                   ['sector', 'industria', 'rubro'],
+  // Campos de jornada (v4)
+  jornada_preferida:        ['jornada_preferida', 'jornada preferida', 'preferencia jornada', 'jornada_pref'],
+  horas_max_diarias:        ['horas_max_diarias', 'max horas dia', 'max_horas_diarias'],
+  horas_max_semana:         ['horas_max_semana', 'max horas semana', 'max_horas_semana'],
+  horas_nocturnas_max_semana:['horas_nocturnas_max', 'max horas nocturnas', 'horas_nocturnas_max_semana'],
+  permite_partido:         ['permite_partido', 'turno_partido', 'partido'],
+  dias_descanso_fijos:      ['dias_descanso_fijos', 'descanso_fijo', 'descansos fijos'],
+  max_domingos_mes:        ['max_domingos', 'max domingos', 'max_domingos_mes'],
+  embarazada:              ['embarazada', 'embarazo', 'gestante'],
+  email_institucional:     ['email_institucional', 'email trabajo', 'correo trabajo', 'email_empresa'],
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -207,17 +216,15 @@ async function generateTemplate({ areas, shiftTemplatesByArea, allShiftTemplates
   wsL.getColumn(8).values = ['NivelEducacion', ...NIVELES_EDUCATIVOS];
   wsL.getColumn(9).values = ['NivelCargo', ...NIVELES_CARGO];
   wsL.getColumn(10).values = ['Sector', ...SECTORES.map(s => s.value)];
-  wsL.getColumn(11).values = ['ModoOperacion', 'OFICINA', '24_7'];
-  wsL.getColumn(12).values = ['JornadaTipo', ...JORNADAS_VALUES];
-  wsL.getColumn(13).values = ['Patron', ...PATRONES_VALUES];
-  wsL.getColumn(14).values = ['SiNo', 'Si', 'No'];
-  wsL.getColumn(15).values = ['Area', ...(areas || []).map(a => a.nombre)];
-  wsL.getColumn(16).values = ['EPS', ...EPS_COMUNES];
-  wsL.getColumn(17).values = ['AFP', ...AFP_COMUNES];
-  wsL.getColumn(18).values = ['ARL', ...ARL_COMUNES];
-  wsL.getColumn(19).values = ['CajaCompensacion', ...CAJAS_COMUNES];
-  wsL.getColumn(20).values = ['Banco', ...BANCOS_COMUNES];
-  wsL.getColumn(21).values = ['FondoCesantias', ...FONDOS_CESANTIAS];
+  wsL.getColumn(11).values = ['JornadaPreferida', ...JORNADAS_PREF];
+  wsL.getColumn(12).values = ['SiNo', 'Si', 'No'];
+  wsL.getColumn(13).values = ['Area', ...(areas || []).map(a => a.nombre)];
+  wsL.getColumn(14).values = ['EPS', ...EPS_COMUNES];
+  wsL.getColumn(15).values = ['AFP', ...AFP_COMUNES];
+  wsL.getColumn(16).values = ['ARL', ...ARL_COMUNES];
+  wsL.getColumn(17).values = ['CajaCompensacion', ...CAJAS_COMUNES];
+  wsL.getColumn(18).values = ['Banco', ...BANCOS_COMUNES];
+  wsL.getColumn(19).values = ['FondoCesantias', ...FONDOS_CESANTIAS];
 
   const wsT = wb.addWorksheet('__turnos_por_area__');
   wsT.state = 'veryHidden';
@@ -277,6 +284,16 @@ async function generateTemplate({ areas, shiftTemplatesByArea, allShiftTemplates
     { k: 'tipo_cuenta',            w: 14, req: false, l: 'tipo_cuenta' },
     { k: 'numero_cuenta',          w: 20, req: false, l: 'n°_cuenta' },
     { k: 'nivel_educacion',        w: 18, req: false, l: 'nivel_educacion' },
+    // Jornada y preferencias (v4)
+    { k: 'jornada_preferida',       w: 16, req: false, l: 'jornada_preferida' },
+    { k: 'horas_max_diarias',       w: 14, req: false, l: 'horas_max_diarias' },
+    { k: 'horas_max_semana',        w: 14, req: false, l: 'horas_max_semana' },
+    { k: 'horas_nocturnas_max_semana',w: 16, req: false, l: 'horas_nocturnas_max' },
+    { k: 'permite_partido',         w: 12, req: false, l: 'permite_partido' },
+    { k: 'dias_descanso_fijos',     w: 16, req: false, l: 'dias_descanso_fijos' },
+    { k: 'max_domingos_mes',        w: 14, req: false, l: 'max_domingos' },
+    { k: 'embarazada',              w: 12, req: false, l: 'embarazada' },
+    { k: 'email_institucional',     w: 24, req: false, l: 'email_institucional' },
   ];
 
   ws.columns = columns.map(c => ({ header: c.l, key: c.k, width: c.w }));
@@ -310,17 +327,15 @@ async function generateTemplate({ areas, shiftTemplatesByArea, allShiftTemplates
     nivelEduc: ref(8, NIVELES_EDUCATIVOS.length),
     nivelCargo: ref(9, NIVELES_CARGO.length),
     sector: ref(10, SECTORES.length),
-    modo: ref(11, MODOS_OPERACION.length),
-    jornada: ref(12, JORNADAS_VALUES.length),
-    patron: ref(13, PATRONES_VALUES.length),
-    siNo: ref(14, 2),
-    area: ref(15, (areas || []).length),
-    eps: ref(16, EPS_COMUNES.length),
-    afp: ref(17, AFP_COMUNES.length),
-    arl: ref(18, ARL_COMUNES.length),
-    caja: ref(19, CAJAS_COMUNES.length),
-    banco: ref(20, BANCOS_COMUNES.length),
-    cesantias: ref(21, FONDOS_CESANTIAS.length),
+    jornadaPref: ref(11, JORNADAS_PREF.length),
+    siNo: ref(12, 2),
+    area: ref(13, (areas || []).length),
+    eps: ref(14, EPS_COMUNES.length),
+    afp: ref(15, AFP_COMUNES.length),
+    arl: ref(16, ARL_COMUNES.length),
+    caja: ref(17, CAJAS_COMUNES.length),
+    banco: ref(18, BANCOS_COMUNES.length),
+    cesantias: ref(19, FONDOS_CESANTIAS.length),
   };
 
   for (let r = 2; r <= maxRow; r++) {
@@ -385,7 +400,7 @@ async function generateTemplate({ areas, shiftTemplatesByArea, allShiftTemplates
     addList('AA', 'siNo', { errorTitle: 'Inválido', error: 'Si o No', promptTitle: '🚌 Auxilio transporte', prompt: `Aplica para sueldos ≤ 2 SMLV ($${AUX_TRANSPORTE_2025.toLocaleString('es-CO')} en 2025)` });
     addList('AB', 'eps', { errorTitle: 'EPS inválida', error: 'Seleccione de la lista o escriba una nueva', promptTitle: '🏥 EPS', prompt: 'Nombre de la EPS. Si no está en la lista, puede escribirla.' });
     addList('AC', 'afp', { errorTitle: 'AFP inválida', error: 'Seleccione de la lista o escriba una nueva', promptTitle: '🏦 AFP', prompt: 'Porvenir, Protección, etc.' });
-    addList('AD', 'siNo', { errorTitle: 'Inválido', error: 'Si o No', promptTitle: 'Tipo AFP', prompt: 'RAZON o PRIMAPROMEDIO' });
+    addList('AD', 'siNo', { errorTitle: 'Inválido', error: 'Si o No', promptTitle: 'Tipo AFP', prompt: 'Si=PRIMAPROMEDIO, No=RAZON. Dejar vacio si no sabe.' });
     addList('AE', 'arl', { errorTitle: 'ARL inválida', error: 'Seleccione de la lista o escriba una nueva', promptTitle: '⛑️ ARL', prompt: 'Sura, Positiva, Bolívar, etc.' });
     addList('AF', 'nivelARL', { errorTitle: 'Inválido', error: '1 a 5' });
     addList('AG', 'caja', { errorTitle: 'Caja inválida', error: 'Seleccione de la lista o escriba una nueva', promptTitle: '💰 Caja compensación', prompt: 'Compensar, Comfama, Comfenalco, etc.' });
@@ -393,6 +408,16 @@ async function generateTemplate({ areas, shiftTemplatesByArea, allShiftTemplates
     addList('AI', 'banco', { errorTitle: 'Banco inválido', error: 'Seleccione de la lista o escriba uno nuevo', promptTitle: '🏦 Banco', prompt: 'Bancolombia, Davivienda, BBVA, Nequi, etc.' });
     addList('AJ', 'tipoCuenta', { errorTitle: 'Inválido', error: 'AHORROS o CORRIENTE' });
     addList('AL', 'nivelEduc', { errorTitle: 'Nivel educativo inválido', error: `Use: ${NIVELES_EDUCATIVOS.join(', ')}` });
+    // Nuevas columnas (v4): jornada_preferida, horas_max_*, permite_partido, etc.
+    addList('AM', 'jornadaPref', { errorTitle: 'Inválido', error: `Use: ${JORNADAS_PREF.join(', ')}`, promptTitle: 'Jornada preferida', prompt: 'DIURNA, NOCTURNA, MIXTA o CUALQUIERA. Default: CUALQUIERA.' });
+    addNum('AN', 'Max horas por dia. Default: 9. Dejar vacio para usar el del area.');
+    addNum('AO', 'Max horas por semana. Default: 42.');
+    addNum('AP', 'Max horas nocturnas por semana. Dejar vacio si no hay limite.');
+    addList('AQ', 'siNo', { errorTitle: 'Inválido', error: 'Si o No', promptTitle: 'Permite turno partido', prompt: 'Si el empleado puede tener turnos partidos (manana + tarde)' });
+    addInt('AR', 0, 'Dias de descanso fijos por semana (0-7). Ej: 6,7 = sabado y domingo. Dejar vacio si no tiene fijos.');
+    addInt('AS', 0, 'Maximo domingos por mes. CST: minimo 2. Default: 2.');
+    addList('AT', 'siNo', { errorTitle: 'Inválido', error: 'Si o No', promptTitle: 'Embarazada', prompt: 'Si la colaboradora esta embarazada (no nocturno, max 8h/dia)' });
+    // AU = email_institucional (texto libre, no necesita validacion)
   }
 
   ws.autoFilter = { from: 'A1', to: `${colLetter(columns.length)}1` };
@@ -632,6 +657,18 @@ export default function BulkImportModal({ areas = [], onClose, onBulkSave }) {
           numero_cuenta: row.numero_cuenta ? String(row.numero_cuenta).trim() : null,
           nivel_educacion: row.nivel_educacion ? String(row.nivel_educacion).toUpperCase().trim() : null,
           sector: row.sector ? String(row.sector).toUpperCase().trim() : null,
+          // Campos de jornada v4
+          jornada_preferida: row.jornada_preferida ? String(row.jornada_preferida).toUpperCase().trim() : 'CUALQUIERA',
+          solo_diurno: String(row.jornada_preferida || '').toUpperCase().trim() === 'DIURNA',
+          solo_nocturno: String(row.jornada_preferida || '').toUpperCase().trim() === 'NOCTURNA',
+          horas_max_diarias: row.horas_max_diarias ? parseFloat(row.horas_max_diarias) : null,
+          horas_max_semana: row.horas_max_semana ? parseFloat(row.horas_max_semana) : null,
+          horas_nocturnas_max_semana: row.horas_nocturnas_max_semana ? parseInt(row.horas_nocturnas_max_semana, 10) : null,
+          permite_partido: normFn('permite_partido', row.permite_partido) ?? false,
+          dias_descanso_fijos: row.dias_descanso_fijos ? String(row.dias_descanso_fijos).split(',').map(d => parseInt(d.trim(), 10)).filter(d => d >= 1 && d <= 7) : null,
+          max_domingos_mes: row.max_domingos_mes ? parseInt(row.max_domingos_mes, 10) : null,
+          embarazada: normFn('embarazada', row.embarazada) ?? false,
+          email_institucional: row.email_institucional ? String(row.email_institucional).trim() : null,
           activo: true,
         };
 
