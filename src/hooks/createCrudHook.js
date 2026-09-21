@@ -56,6 +56,10 @@ export function createCrudHook(tableOrOptions) {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const mountedRef = useRef(true);
+    // Contador incremental para descartar respuestas stale de fetch anteriores
+    // (race condition: al cambiar de periodo rápido, el fetch viejo puede
+    // resolver después del nuevo y pisar datos correctos con stale).
+    const fetchIdRef = useRef(0);
 
     // ── Caché opcional ──────────────────────────────────────────
     const cacheRef = useRef({ data: null, ts: 0, key: null });
@@ -91,6 +95,10 @@ export function createCrudHook(tableOrOptions) {
         return;
       }
 
+      // Identificador de esta invocación: si otra fetch arranca después,
+      // la nuestra queda stale y se descarta tras el await.
+      const myFetchId = ++fetchIdRef.current;
+
       setLoading(true);
       setError(null);
       try {
@@ -100,6 +108,8 @@ export function createCrudHook(tableOrOptions) {
         }
         const { data: result, error: fetchErr } = await query;
         if (fetchErr) throw fetchErr;
+        // Descartar si una fetch más reciente ya está en curso
+        if (myFetchId !== fetchIdRef.current) return;
         const transformed = transformResponse
           ? transformResponse(result || [], tenant)
           : (result || []);
@@ -108,9 +118,10 @@ export function createCrudHook(tableOrOptions) {
         }
         if (mountedRef.current) setData(transformed);
       } catch (err) {
+        if (myFetchId !== fetchIdRef.current) return;
         if (mountedRef.current) setError(err.message);
       } finally {
-        if (mountedRef.current) setLoading(false);
+        if (myFetchId === fetchIdRef.current && mountedRef.current) setLoading(false);
       }
     }, [tenant, buildBaseQuery, ...hookParams, ...extraDeps]);
 

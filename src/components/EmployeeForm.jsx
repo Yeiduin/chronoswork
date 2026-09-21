@@ -1,11 +1,26 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '../config/supabaseClient';
+import { useAuth } from '../context/AuthContext';
 import {
   TIPOS_CONTRATO, TIPOS_JORNADA,
   SMLV_2025, AUX_TRANSPORTE_2025, SMLV_HORA_2025,
 } from '../config/laborCatalog';
 import {
+  BANCOS_COLOMBIA,
+  EPS_COLOMBIA,
+  AFP_COLOMBIA,
+  FONDOS_CESANTIAS_COLOMBIA,
+  ARL_COLOMBIA,
+  CAJAS_COMPENSACION_COLOMBIA,
+  PARENTESCOS_EMERGENCIA,
+  DEPARTAMENTOS_Y_CIUDADES,
+  onlyDigits,
+  onlyLettersAndSpaces,
+  onlyTextPunctuation,
+} from '../config/colombiaCatalogs';
+import {
   MdClose, MdPerson, MdWork, MdAccountBalance, MdSchool, MdContactPhone,
+  MdCheck, MdArrowForward, MdArrowBack, MdSave, MdCheckCircle,
 } from 'react-icons/md';
 
 const NIVELES_ARL = [
@@ -16,33 +31,157 @@ const NIVELES_ARL = [
   { value: 5, label: 'Nivel V — Riesgo Máximo (6.960%)' },
 ];
 
-const EPS_COMUNES = [
-  'Nueva EPS', 'Sanitas', 'Sura EPS', 'Compensar EPS', 'Famisanar',
-  'Salud Total', 'Coomeva', 'Medimás', 'Aliansalud', 'Cajacopi EPS',
-];
-const AFP_COMUNES = [
-  'Porvenir', 'Protección', 'Colfondos', 'Skandia (Old Mutual)',
-  'Cafam', 'Colpensiones (público)',
-];
-const ARL_COMUNES = [
-  'Sura ARL', 'Positiva ARL', 'Bolívar ARL', 'Colmena Seguros ARL',
-  'Liberty Seguros ARL', 'Mapfre ARL', 'La Equidad Seguros',
-];
-const CAJAS_COMUNES = [
-  'Compensar', 'Comfama', 'Comfenalco Antioquia', 'Comfandi', 'Cajacopi',
-  'Comfamiliar Atlántico', 'Comfacasanare', 'Comfenalco Quindío',
+const DIAS_SEMANA = [
+  { num: 1, label: 'Lun', nombre: 'Lunes' },
+  { num: 2, label: 'Mar', nombre: 'Martes' },
+  { num: 3, label: 'Mié', nombre: 'Miércoles' },
+  { num: 4, label: 'Jue', nombre: 'Jueves' },
+  { num: 5, label: 'Vie', nombre: 'Viernes' },
+  { num: 6, label: 'Sáb', nombre: 'Sábado' },
+  { num: 7, label: 'Dom', nombre: 'Domingo' },
 ];
 
+// ─────────────────────────────────────────────────────────────
+// Componente selector configurable con opción "Otro (especificar)"
+// ─────────────────────────────────────────────────────────────
+function SelectWithOther({
+  id,
+  label,
+  required,
+  value,
+  onChange,
+  options, // Array de strings o array de objetos { nombre, codigo? }
+  placeholder = '— Seleccionar —',
+  otherPlaceholder = 'Escribe el nombre si no está en la lista...',
+  onSelectOption,
+  error,
+  allowDigitsInOther = false,
+  badgeText,
+  secondaryAction,
+}) {
+  const optionsList = useMemo(() => {
+    return options.map(opt => (typeof opt === 'string' ? opt : opt.nombre));
+  }, [options]);
+
+  const isKnown = Boolean(value && optionsList.includes(value));
+  const [forceOther, setForceOther] = useState(() => Boolean(value && !optionsList.includes(value)));
+
+  useEffect(() => {
+    if (value && !optionsList.includes(value)) {
+      setForceOther(true);
+    } else if (value && optionsList.includes(value)) {
+      setForceOther(false);
+    }
+  }, [value, optionsList]);
+
+  const selectVal = forceOther ? '__OTRO__' : (isKnown ? value : '');
+
+  const handleSelectChange = (e) => {
+    const chosen = e.target.value;
+    if (chosen === '__OTRO__') {
+      setForceOther(true);
+      if (isKnown) onChange('');
+    } else {
+      setForceOther(false);
+      onChange(chosen);
+      if (onSelectOption) {
+        const fullItem = options.find(opt => (typeof opt === 'string' ? opt : opt.nombre) === chosen);
+        if (fullItem) onSelectOption(fullItem);
+      }
+    }
+  };
+
+  const handleTextChange = (e) => {
+    const raw = e.target.value;
+    const clean = allowDigitsInOther ? onlyTextPunctuation(raw) : onlyLettersAndSpaces(raw);
+    onChange(clean);
+  };
+
+  return (
+    <div className="cw-form-group">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+        <label className="cw-label" htmlFor={id} style={{ marginBottom: 0 }}>
+          {label} {required && <span className="required">*</span>}
+        </label>
+        {badgeText && (
+          <span style={{ fontSize: '0.68rem', color: 'var(--cw-accent)', fontWeight: 600 }}>{badgeText}</span>
+        )}
+        {secondaryAction}
+      </div>
+
+      <select
+        id={id}
+        className={`cw-input cw-select ${error ? 'error' : ''}`}
+        value={selectVal}
+        onChange={handleSelectChange}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((opt, idx) => {
+          const name = typeof opt === 'string' ? opt : opt.nombre;
+          const code = typeof opt === 'object' && opt.codigo ? ` (${opt.codigo})` : '';
+          return (
+            <option key={idx} value={name}>
+              {name}{code}
+            </option>
+          );
+        })}
+        <option value="__OTRO__">➕ Otra / No aparece en la lista (escribir)...</option>
+      </select>
+
+      {forceOther && (
+        <div style={{ marginTop: '0.4rem' }}>
+          <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+            <input
+              type="text"
+              className={`cw-input ${error ? 'error' : ''}`}
+              value={isKnown ? '' : (value || '')}
+              onChange={handleTextChange}
+              placeholder={otherPlaceholder}
+              autoFocus
+            />
+            <button
+              type="button"
+              className="cw-btn cw-btn--secondary"
+              style={{ padding: '0.4rem 0.6rem', fontSize: '0.72rem', whiteSpace: 'nowrap' }}
+              onClick={() => {
+                setForceOther(false);
+                onChange('');
+              }}
+              title="Volver a seleccionar de la lista desplegable"
+            >
+              Ver lista
+            </button>
+          </div>
+          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+            ✏️ Ingresa el nombre personalizado (solo texto)
+          </span>
+        </div>
+      )}
+
+      {error && <span className="cw-input-error">⚠ {error}</span>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Modal principal de registro y edición de empleado
+// ─────────────────────────────────────────────────────────────
 export default function EmployeeFormModal({ employee, areas, onClose, onSave }) {
+  const { tenant } = useAuth();
   const isEdit = !!employee;
   const initialAreaId = !isEdit
     ? ''
-    : areas.find(a => a.area_employees?.some(ae => ae.employee_id === employee.id))?.id || '';
+    : (
+        employee?.area_employees?.[0]?.area_id ||
+        employee?.area_employees?.[0]?.areas?.id ||
+        areas.find(a => a.area_employees?.some(ae => ae.employee_id === employee.id))?.id ||
+        ''
+      );
 
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(() => ({
     tipo_documento: employee?.tipo_documento || 'CC',
-    cedula: employee?.cedula || '',
+    cedula: employee?.cedula ? onlyDigits(employee.cedula) : '',
     lugar_expedicion: employee?.lugar_expedicion || '',
     nombre: employee?.nombre || '',
     fecha_nacimiento: employee?.fecha_nacimiento || '',
@@ -55,11 +194,11 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     direccion: employee?.direccion || '',
     ciudad: employee?.ciudad || '',
     departamento: employee?.departamento || '',
-    telefono_contacto: employee?.telefono_contacto || '',
+    telefono_contacto: employee?.telefono_contacto ? onlyDigits(employee.telefono_contacto) : '',
     email_personal: employee?.email_personal || '',
     email_institucional: employee?.email_institucional || '',
     contacto_emergencia_nombre: employee?.contacto_emergencia_nombre || '',
-    contacto_emergencia_telefono: employee?.contacto_emergencia_telefono || '',
+    contacto_emergencia_telefono: employee?.contacto_emergencia_telefono ? onlyDigits(employee.contacto_emergencia_telefono) : '',
     contacto_emergencia_parentesco: employee?.contacto_emergencia_parentesco || '',
     embarazada: employee?.embarazada || false,
 
@@ -114,7 +253,7 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
 
     banco_nombre: employee?.banco_nombre || '',
     tipo_cuenta: employee?.tipo_cuenta || 'AHORROS',
-    numero_cuenta: employee?.numero_cuenta || '',
+    numero_cuenta: employee?.numero_cuenta ? onlyDigits(employee.numero_cuenta) : '',
     titular_cuenta: employee?.titular_cuenta || '',
 
     nivel_educacion: employee?.nivel_educacion || '',
@@ -136,29 +275,69 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     tiene_certificaciones: employee?.tiene_certificaciones || '',
   }));
 
-  const [selectedAreaId, setSelectedAreaId] = useState(initialAreaId);
+  const [selectedAreaId, setSelectedAreaId] = useState(
+    !isEdit && areas.length === 1 ? areas[0].id : initialAreaId
+  );
+  const prevSelectedAreaRef = useRef(selectedAreaId);
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [templates, setTemplates] = useState([]);
 
+  // Cargos ya usados en la organización
+  const cargosExistentes = useMemo(
+    () => Array.from(new Set(
+      areas.flatMap(a => (a.area_employees || [])
+        .map(ae => ae.employees?.cargo)
+        .filter(Boolean))
+    )).sort((a, b) => a.localeCompare(b, 'es')),
+    [areas]
+  );
+
+  // Ciudades dinámicas según el departamento seleccionado
+  const deptActual = useMemo(() => {
+    return DEPARTAMENTOS_Y_CIUDADES.find(d => d.departamento === form.departamento);
+  }, [form.departamento]);
+
+  const ciudadesDelDepartamento = useMemo(() => {
+    return deptActual?.ciudades || [];
+  }, [deptActual]);
+
   useEffect(() => {
     if (!selectedAreaId) { setTemplates([]); return; }
-    supabase.from('shift_templates')
-      .select('*').eq('area_id', selectedAreaId).eq('activo', true).order('hora_inicio')
-      .then(({ data }) => setTemplates(data || []));
-  }, [selectedAreaId]);
+    let cancelled = false;
+    let query = supabase.from('shift_templates')
+      .select('*')
+      .eq('area_id', selectedAreaId)
+      .eq('activo', true)
+      .order('hora_inicio');
+    if (tenant?.id) {
+      query = query.eq('tenant_id', tenant.id);
+    }
+    query.then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) { setTemplates([]); return; }
+      setTemplates(data || []);
+    });
+    return () => { cancelled = true; };
+  }, [selectedAreaId, tenant?.id]);
 
   useEffect(() => {
     if (!selectedAreaId) return;
+    const areaChanged = prevSelectedAreaRef.current !== selectedAreaId;
+    prevSelectedAreaRef.current = selectedAreaId;
+
+    if (!areaChanged) return;
+
     const area = areas.find(a => a.id === selectedAreaId);
     if (!area) return;
     if (form.es_especial) return;
-    if (isEdit && selectedAreaId === initialAreaId) return;
+
     setForm(prev => {
       const updates = {};
+      const horasMes = parseInt(prev.horas_mensuales_contrato, 10) || Math.round((parseInt(prev.horas_semanales_contrato, 10) || 42) * 4.333) || 182;
       if (area.valor_hora_default) {
         updates.valor_hora = area.valor_hora_default;
-        updates.salario_mensual = area.valor_hora_default * 240;
+        updates.salario_mensual = Math.round(area.valor_hora_default * horasMes);
       }
       if (area.tipo_contrato_predominante) updates.tipo_contrato = area.tipo_contrato_predominante;
       if (area.dias_descanso_default) updates.dias_descanso_semana = area.dias_descanso_default;
@@ -172,31 +351,135 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
   }, [selectedAreaId, form.es_especial, areas, isEdit, initialAreaId]);
 
   useEffect(() => {
+    if (isEdit) return;
     if (form.sena_aprendiz && form.etapa_productiva && !form.es_especial) {
       setForm(prev => ({ ...prev, salario_mensual: Math.round(SMLV_2025 * 0.5) }));
     }
-  }, [form.sena_aprendiz, form.etapa_productiva, form.es_especial]);
+  }, [form.sena_aprendiz, form.etapa_productiva, form.es_especial, isEdit]);
 
   const set = (key, val) => {
     setForm(prev => ({ ...prev, [key]: val }));
     setErrors(prev => ({ ...prev, [key]: '' }));
   };
 
-  const validateStep = (s) => {
+  const horasMesDe = (f) => parseInt(f.horas_mensuales_contrato, 10)
+    || Math.round((parseInt(f.horas_semanales_contrato, 10) || 42) * 4.333)
+    || 182;
+
+  const setValorHora = (val) => {
+    const cleanDigits = onlyDigits(val);
+    setForm(prev => {
+      const vh = parseFloat(cleanDigits);
+      return {
+        ...prev,
+        valor_hora: cleanDigits,
+        salario_mensual: Number.isNaN(vh) ? prev.salario_mensual : Math.round(vh * horasMesDe(prev)),
+      };
+    });
+    setErrors(prev => ({ ...prev, valor_hora: '' }));
+  };
+
+  const setHorasContrato = (key, val) => {
+    const cleanDigits = onlyDigits(val);
+    setForm(prev => {
+      const next = { ...prev, [key]: cleanDigits };
+      const vh = parseFloat(prev.valor_hora);
+      if (!Number.isNaN(vh) && vh > 0) next.salario_mensual = Math.round(vh * horasMesDe(next));
+      return next;
+    });
+  };
+
+  const setPreferenciaJornada = (campo, checked) => {
+    setForm(prev => {
+      const solo_diurno = campo === 'solo_diurno' ? checked : (campo === 'solo_nocturno' && checked ? false : prev.solo_diurno);
+      const solo_nocturno = campo === 'solo_nocturno' ? checked : (campo === 'solo_diurno' && checked ? false : prev.solo_nocturno);
+      const jornada_preferida = solo_diurno ? 'DIURNA' : solo_nocturno ? 'NOCTURNA' : 'CUALQUIERA';
+      return { ...prev, solo_diurno, solo_nocturno, jornada_preferida };
+    });
+  };
+
+  // Días de descanso fijos parseados
+  const diasDescansoSeleccionados = useMemo(() => {
+    if (!form.dias_descanso_fijos) return [];
+    return String(form.dias_descanso_fijos)
+      .split(',')
+      .map(p => parseInt(p.trim(), 10))
+      .filter(n => !Number.isNaN(n) && n >= 1 && n <= 7);
+  }, [form.dias_descanso_fijos]);
+
+  const toggleDiaDescanso = (num) => {
+    let next;
+    if (diasDescansoSeleccionados.includes(num)) {
+      next = diasDescansoSeleccionados.filter(d => d !== num);
+    } else {
+      next = [...diasDescansoSeleccionados, num].sort((a, b) => a - b);
+    }
+    set('dias_descanso_fijos', next.join(','));
+  };
+
+  const setDiasPreset = (arr) => {
+    set('dias_descanso_fijos', arr.join(','));
+  };
+
+  const buildStepErrors = (s) => {
     const e = {};
     if (s === 1) {
-      if (!form.cedula?.trim()) e.cedula = 'La cédula es obligatoria.';
-      if (!form.nombre?.trim()) e.nombre = 'El nombre es obligatorio.';
-      if (!form.fecha_nacimiento) e.fecha_nacimiento = 'Fecha de nacimiento obligatoria.';
+      if (!form.cedula?.trim()) {
+        e.cedula = 'El número de identificación es obligatorio.';
+      } else if (form.cedula.length < 5) {
+        e.cedula = 'Debe tener al menos 5 dígitos.';
+      }
+      if (!form.nombre?.trim()) {
+        e.nombre = 'El nombre completo es obligatorio.';
+      } else if (form.nombre.trim().split(/\s+/).length < 2) {
+        e.nombre = 'Ingresa nombre y apellido.';
+      }
+      if (!form.fecha_nacimiento) {
+        e.fecha_nacimiento = 'Fecha de nacimiento obligatoria.';
+      } else if (new Date(form.fecha_nacimiento) > new Date()) {
+        e.fecha_nacimiento = 'La fecha de nacimiento no puede ser en el futuro.';
+      }
     }
     if (s === 2) {
       if (!form.cargo?.trim()) e.cargo = 'El cargo es obligatorio.';
       if (!selectedAreaId) e.area = 'Selecciona un área.';
-      if (!form.fecha_ingreso) e.fecha_ingreso = 'La fecha de ingreso es obligatoria.';
-      if (form.tipo_contrato === 'TERMINO_FIJO' && !form.fecha_fin_contrato) {
-        e.fecha_fin_contrato = 'Contrato a término fijo requiere fecha de terminación.';
+      if (!form.fecha_ingreso) {
+        e.fecha_ingreso = 'La fecha de ingreso es obligatoria.';
+      }
+      if (form.fecha_ingreso && form.fecha_fin_contrato) {
+        if (form.fecha_fin_contrato < form.fecha_ingreso) {
+          e.fecha_fin_contrato = 'La fecha de terminación debe ser posterior o igual a la de ingreso.';
+        }
+      }
+      if (form.fecha_ingreso && form.periodo_prueba_hasta) {
+        if (form.periodo_prueba_hasta < form.fecha_ingreso) {
+          e.periodo_prueba_hasta = 'El período de prueba debe ser posterior o igual al ingreso.';
+        }
+      }
+      if ((form.tipo_contrato === 'TERMINO_FIJO' || form.tipo_contrato === 'OBRA_LABOR') && !form.fecha_fin_contrato) {
+        e.fecha_fin_contrato = 'Este tipo de contrato requiere fecha de terminación.';
       }
     }
+    if (s === 3) {
+      const vh = parseFloat(form.valor_hora);
+      if (!vh || vh <= 0) {
+        e.valor_hora = 'El valor por hora es obligatorio.';
+      } else if (vh < SMLV_HORA_2025) {
+        e.valor_hora = `El valor mínimo por hora es $${SMLV_HORA_2025.toLocaleString('es-CO')} (SMLV 2025).`;
+      }
+    }
+    if (s === 4) {
+      if (form.sena_aprendiz && form.fecha_etapa_lectiva_inicio && form.fecha_etapa_lectiva_fin) {
+        if (form.fecha_etapa_lectiva_fin < form.fecha_etapa_lectiva_inicio) {
+          e.fecha_etapa_lectiva_fin = 'El fin de etapa lectiva debe ser posterior o igual al inicio.';
+        }
+      }
+    }
+    return e;
+  };
+
+  const validateStep = (s) => {
+    const e = buildStepErrors(s);
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -205,29 +488,45 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
   const prev = () => setStep(s => Math.max(1, s - 1));
 
   const handleSubmit = async () => {
-    for (let s = 1; s <= 2; s++) {
-      if (!validateStep(s)) {
+    for (let s = 1; s <= 4; s++) {
+      const e = buildStepErrors(s);
+      if (Object.keys(e).length > 0) {
         setStep(s);
+        setErrors(e);
         return;
       }
     }
     setLoading(true);
     try {
+      const optNum = (v) => {
+        if (v === '' || v === null || v === undefined) return null;
+        const n = parseFloat(v);
+        return Number.isNaN(n) ? null : n;
+      };
+
       await onSave({
         ...form,
+        nombre: form.nombre.trim(),
+        cedula: String(form.cedula).trim(),
+        cargo: form.cargo.trim(),
         valor_hora: parseFloat(form.valor_hora) || 0,
         salario_mensual: parseFloat(form.salario_mensual) || 0,
         bono_rodamiento: parseFloat(form.bono_rodamiento) || 0,
         bonificacion_fija: parseFloat(form.bonificacion_fija) || 0,
-        numero_hijos: parseInt(form.numero_hijos) || 0,
-        numero_dependientes: parseInt(form.numero_dependientes) || 0,
-        horas_semanales_contrato: parseInt(form.horas_semanales_contrato) || 42,
-        horas_mensuales_contrato: parseInt(form.horas_mensuales_contrato) || 182,
-        dias_descanso_semana: parseInt(form.dias_descanso_semana) || 1,
-        nivel_riesgo_arl: parseInt(form.nivel_riesgo_arl) || 1,
-        max_domingos_mes: form.max_domingos_mes !== '' ? parseInt(form.max_domingos_mes) || null : null,
+        numero_hijos: parseInt(form.numero_hijos, 10) || 0,
+        numero_dependientes: parseInt(form.numero_dependientes, 10) || 0,
+        horas_semanales_contrato: parseInt(form.horas_semanales_contrato, 10) || 42,
+        horas_mensuales_contrato: parseInt(form.horas_mensuales_contrato, 10) || 182,
+        dias_descanso_semana: parseInt(form.dias_descanso_semana, 10) || 1,
+        nivel_riesgo_arl: parseInt(form.nivel_riesgo_arl, 10) || 1,
+        horas_max_diarias: optNum(form.horas_max_diarias),
+        horas_max_semana: optNum(form.horas_max_semana),
+        horas_nocturnas_max_semana: optNum(form.horas_nocturnas_max_semana),
+        max_domingos_mes: form.max_domingos_mes !== ''
+          ? (Number.isNaN(parseInt(form.max_domingos_mes, 10)) ? null : parseInt(form.max_domingos_mes, 10))
+          : null,
         dias_descanso_fijos: form.dias_descanso_fijos
-          ? String(form.dias_descanso_fijos).split(',').map(d => parseInt(d.trim(), 10)).filter(d => d >= 1 && d <= 7)
+          ? String(form.dias_descanso_fijos).split(',').map(d => parseInt(d.trim(), 10)).filter(d => !Number.isNaN(d) && d >= 1 && d <= 7)
           : null,
       }, selectedAreaId);
     } catch (err) {
@@ -236,87 +535,200 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
     }
   };
 
-  const salarioCalculado = (parseFloat(form.valor_hora) || 0) * 240;
+  const salarioCalculado = Math.round((parseFloat(form.valor_hora) || 0) * horasMesDe(form));
 
   return (
     <div className="cw-modal-overlay">
-      <div className="cw-modal animate-slide-up" style={{ maxWidth: 720, maxHeight: '90vh', overflowY: 'auto' }}>
-        <div className="cw-modal__header">
-          <h3 className="cw-modal__title">
-            {isEdit ? `Editar: ${employee.nombre}` : '👤 Nuevo Colaborador'}
-          </h3>
-          <button className="cw-modal__close" onClick={onClose}><MdClose /></button>
+      <div className="cw-modal animate-slide-up" style={{ maxWidth: 760, maxHeight: '92vh', overflowY: 'auto' }}>
+        {/* Cabecera del modal */}
+        <div className="cw-modal__header" style={{ paddingBottom: '0.75rem' }}>
+          <div>
+            <h3 className="cw-modal__title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {isEdit ? `Editar colaborador: ${employee.nombre}` : '👤 Registrar nuevo colaborador'}
+            </h3>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              Diligenciamiento optimizado para Colombia (CST, Ley 2101/21 y PILA)
+            </span>
+          </div>
+          <button className="cw-modal__close" onClick={onClose} aria-label="Cerrar modal"><MdClose /></button>
         </div>
 
-        <div style={{ padding: '0 1.25rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-          {['Datos Personales', 'Contrato y Jornada', 'Salario y Seg. Social', 'Formación y Fiscal'].map((title, i) => (
-            <div key={i}
-              onClick={() => validateStep(step) && setStep(i + 1)}
-              style={{
-                padding: '0.3rem 0.6rem', borderRadius: 6, cursor: 'pointer',
-                fontSize: '0.7rem', fontWeight: 600,
-                background: step === i + 1 ? 'var(--cw-accent)' : (step > i + 1 ? 'var(--cw-success)' : 'var(--bg-glass)'),
-                color: (step === i + 1 || step > i + 1) ? 'white' : 'var(--text-muted)',
-              }}>{step > i + 1 ? '✓' : i + 1} {title}</div>
-          ))}
+        {/* Barra de progreso de pasos */}
+        <div style={{
+          padding: '0.5rem 1.25rem 0.75rem',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: '0.5rem',
+          borderBottom: '1px solid var(--border-subtle, rgba(0,0,0,0.06))',
+          marginBottom: '0.5rem',
+        }}>
+          {[
+            { n: 1, title: 'Datos Personales', icon: <MdPerson /> },
+            { n: 2, title: 'Contrato y Turno', icon: <MdWork /> },
+            { n: 3, title: 'Salario y Afiliaciones', icon: <MdAccountBalance /> },
+            { n: 4, title: 'Educación y Fiscal', icon: <MdSchool /> },
+          ].map(s => {
+            const isDone = step > s.n;
+            const isCurrent = step === s.n;
+            return (
+              <button
+                key={s.n}
+                type="button"
+                onClick={() => setStep(s.n)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  padding: '0.45rem 0.6rem',
+                  borderRadius: 8,
+                  border: isCurrent ? '1px solid var(--cw-accent)' : '1px solid transparent',
+                  background: isCurrent ? 'rgba(79, 70, 229, 0.12)' : (isDone ? 'rgba(16, 185, 129, 0.08)' : 'var(--bg-glass, rgba(0,0,0,0.02))'),
+                  color: isCurrent ? 'var(--cw-accent)' : (isDone ? '#059669' : 'var(--text-muted)'),
+                  fontWeight: isCurrent ? 700 : 500,
+                  fontSize: '0.74rem',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 18,
+                  height: 18,
+                  borderRadius: '50%',
+                  background: isCurrent ? 'var(--cw-accent)' : (isDone ? '#10b981' : 'rgba(150,150,150,0.2)'),
+                  color: (isCurrent || isDone) ? '#fff' : 'inherit',
+                  fontSize: '0.65rem',
+                  flexShrink: 0,
+                }}>
+                  {isDone ? <MdCheck /> : s.n}
+                </span>
+                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {s.title}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
-        {errors.api && <div className="cw-alert cw-alert--error" style={{ margin: '0 1.25rem 1rem' }}>🚫 {errors.api}</div>}
+        {errors.api && (
+          <div className="cw-alert cw-alert--error" style={{ margin: '0.5rem 1.25rem 0.75rem' }}>
+            🚫 {errors.api}
+          </div>
+        )}
 
         {/* ──────────── PASO 1: DATOS PERSONALES ──────────── */}
         {step === 1 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdPerson style={{ verticalAlign: 'middle' }} /> Identidad</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
+              <MdPerson style={{ color: 'var(--cw-accent)', fontSize: '1.2rem' }} />
+              <h4 style={{ fontSize: '0.92rem', margin: 0, fontWeight: 700 }}>Identidad y contacto</h4>
+            </div>
+
+            {/* Documento y número */}
+            <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
-                <label className="cw-label">Tipo doc</label>
-                <select className="cw-input" value={form.tipo_documento} onChange={e => set('tipo_documento', e.target.value)}>
-                  <option value="CC">CC</option>
-                  <option value="CE">CE</option>
-                  <option value="TI">TI</option>
+                <label className="cw-label">Tipo doc <span className="required">*</span></label>
+                <select className="cw-input cw-select" value={form.tipo_documento} onChange={e => set('tipo_documento', e.target.value)}>
+                  <option value="CC">CC — Cédula</option>
+                  <option value="CE">CE — Cédula Ext.</option>
+                  <option value="TI">TI — Tarjeta Id.</option>
+                  <option value="PPT">PPT — Permiso Prot.</option>
                   <option value="PA">Pasaporte</option>
-                  <option value="PPT">PPT</option>
                   <option value="NIT">NIT</option>
                 </select>
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Número <span className="required">*</span></label>
-                <input className={`cw-input ${errors.cedula ? 'error' : ''}`}
-                  value={form.cedula} onChange={e => set('cedula', e.target.value)} disabled={isEdit} />
+                <label className="cw-label">
+                  Número de documento <span className="required">*</span>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400 }}> (solo números)</span>
+                </label>
+                <input
+                  className={`cw-input ${errors.cedula ? 'error' : ''}`}
+                  inputMode="numeric"
+                  placeholder="Ej: 1020304050"
+                  autoFocus
+                  value={form.cedula}
+                  onChange={e => set('cedula', onlyDigits(e.target.value))}
+                  disabled={isEdit}
+                />
                 {errors.cedula && <span className="cw-input-error">⚠ {errors.cedula}</span>}
               </div>
+
+              <div className="cw-form-group">
+                <label className="cw-label">
+                  Lugar de expedición
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400 }}> (solo texto)</span>
+                </label>
+                <input
+                  list="ciudades-expedicion"
+                  className="cw-input"
+                  placeholder="Ej: Bogotá D.C., Medellín..."
+                  value={form.lugar_expedicion}
+                  onChange={e => set('lugar_expedicion', onlyLettersAndSpaces(e.target.value))}
+                />
+                <datalist id="ciudades-expedicion">
+                  <option value="Bogotá D.C." />
+                  <option value="Medellín" />
+                  <option value="Cali" />
+                  <option value="Barranquilla" />
+                  <option value="Bucaramanga" />
+                  <option value="Cartagena" />
+                  <option value="Pereira" />
+                  <option value="Manizales" />
+                  <option value="Ibagué" />
+                  <option value="Cúcuta" />
+                  <option value="Santa Marta" />
+                </datalist>
+              </div>
             </div>
+
+            {/* Nombre completo */}
             <div className="cw-form-group">
-              <label className="cw-label">Lugar de expedición</label>
-              <input className="cw-input" value={form.lugar_expedicion} onChange={e => set('lugar_expedicion', e.target.value)} placeholder="Bogotá D.C." />
-            </div>
-            <div className="cw-form-group">
-              <label className="cw-label">Nombre completo <span className="required">*</span></label>
-              <input className={`cw-input ${errors.nombre ? 'error' : ''}`}
-                value={form.nombre} onChange={e => set('nombre', e.target.value)} />
+              <label className="cw-label">
+                Nombre completo <span className="required">*</span>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400 }}> (solo letras y espacios)</span>
+              </label>
+              <input
+                className={`cw-input ${errors.nombre ? 'error' : ''}`}
+                placeholder="Nombres y apellidos completos..."
+                value={form.nombre}
+                onChange={e => set('nombre', onlyLettersAndSpaces(e.target.value))}
+              />
               {errors.nombre && <span className="cw-input-error">⚠ {errors.nombre}</span>}
             </div>
+
+            {/* Fecha nacimiento, Género, Estado civil */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
                 <label className="cw-label">F. nacimiento <span className="required">*</span></label>
-                <input type="date" className={`cw-input ${errors.fecha_nacimiento ? 'error' : ''}`}
-                  value={form.fecha_nacimiento} onChange={e => set('fecha_nacimiento', e.target.value)} />
+                <input
+                  type="date"
+                  max={new Date().toISOString().slice(0, 10)}
+                  className={`cw-input ${errors.fecha_nacimiento ? 'error' : ''}`}
+                  value={form.fecha_nacimiento}
+                  onChange={e => set('fecha_nacimiento', e.target.value)}
+                />
                 {errors.fecha_nacimiento && <span className="cw-input-error">⚠ {errors.fecha_nacimiento}</span>}
               </div>
+
               <div className="cw-form-group">
                 <label className="cw-label">Género</label>
-                <select className="cw-input" value={form.genero} onChange={e => set('genero', e.target.value)}>
-                  <option value="">—</option>
+                <select className="cw-input cw-select" value={form.genero} onChange={e => set('genero', e.target.value)}>
+                  <option value="">— Seleccionar —</option>
                   <option value="M">Masculino</option>
                   <option value="F">Femenino</option>
                   <option value="OTRO">Otro</option>
                   <option value="PREFIERO_NO_DECIR">Prefiero no decir</option>
                 </select>
               </div>
+
               <div className="cw-form-group">
                 <label className="cw-label">Estado civil</label>
-                <select className="cw-input" value={form.estado_civil} onChange={e => set('estado_civil', e.target.value)}>
-                  <option value="">—</option>
+                <select className="cw-input cw-select" value={form.estado_civil} onChange={e => set('estado_civil', e.target.value)}>
+                  <option value="">— Seleccionar —</option>
                   <option value="SOLTERO">Soltero(a)</option>
                   <option value="CASADO">Casado(a)</option>
                   <option value="UNION_LIBRE">Unión libre</option>
@@ -326,78 +738,202 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                 </select>
               </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
+
+            {/* Hijos y discapacidad */}
+            <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
                 <label className="cw-label">N° hijos</label>
-                <input type="number" min="0" className="cw-input"
-                  value={form.numero_hijos} onChange={e => set('numero_hijos', e.target.value)} />
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.numero_hijos}
+                  onChange={e => set('numero_hijos', onlyDigits(e.target.value))}
+                />
               </div>
+
               <div className="cw-form-group">
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem', marginTop: '1.4rem' }}>
-                  <input type="checkbox" checked={form.tiene_discapacidad}
-                    onChange={e => set('tiene_discapacidad', e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={form.tiene_discapacidad}
+                    onChange={e => set('tiene_discapacidad', e.target.checked)}
+                  />
                   <span>♿ Tiene discapacidad (Ley 1618/13 — estabilidad reforzada)</span>
                 </label>
                 {form.tiene_discapacidad && (
-                  <input className="cw-input" placeholder="Detalle de la discapacidad"
-                    value={form.descripcion_discapacidad} onChange={e => set('descripcion_discapacidad', e.target.value)} />
+                  <input
+                    className="cw-input"
+                    placeholder="Detalle de la discapacidad..."
+                    style={{ marginTop: '0.35rem' }}
+                    value={form.descripcion_discapacidad}
+                    onChange={e => set('descripcion_discapacidad', onlyLettersAndSpaces(e.target.value))}
+                  />
                 )}
               </div>
             </div>
 
-            <h4 style={{ fontSize: '0.9rem', margin: '1rem 0 0.5rem' }}><MdContactPhone style={{ verticalAlign: 'middle' }} /> Contacto y emergencia</h4>
-            <div className="cw-form-group">
-              <label className="cw-label">Dirección</label>
-              <input className="cw-input" value={form.direccion} onChange={e => set('direccion', e.target.value)} placeholder="Calle 100 #15-20" />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', margin: '1rem 0 0.5rem' }}>
+              <MdContactPhone style={{ color: 'var(--cw-accent)', fontSize: '1.1rem' }} />
+              <h4 style={{ fontSize: '0.88rem', margin: 0, fontWeight: 700 }}>Ubicación y comunicación</h4>
             </div>
+
+            {/* Dirección */}
+            <div className="cw-form-group">
+              <label className="cw-label">Dirección residencial</label>
+              <input
+                className="cw-input"
+                value={form.direccion}
+                onChange={e => set('direccion', e.target.value)}
+                placeholder="Calle 100 #15-20, Apto 301"
+              />
+            </div>
+
+            {/* Departamento y Ciudad (Selects optimizados) */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              <SelectWithOther
+                id="select-departamento"
+                label="Departamento"
+                value={form.departamento}
+                options={DEPARTAMENTOS_Y_CIUDADES.map(d => d.departamento)}
+                placeholder="— Seleccionar Departamento —"
+                onChange={val => {
+                  set('departamento', val);
+                  // Si cambia departamento y la ciudad actual no pertenece, sugerir capital
+                  const found = DEPARTAMENTOS_Y_CIUDADES.find(d => d.departamento === val);
+                  if (found && found.ciudades.length > 0) {
+                    set('ciudad', found.ciudades[0]);
+                  }
+                }}
+              />
+
+              {ciudadesDelDepartamento.length > 0 ? (
+                <SelectWithOther
+                  id="select-ciudad"
+                  label="Ciudad / Municipio"
+                  value={form.ciudad}
+                  options={ciudadesDelDepartamento}
+                  placeholder="— Seleccionar Ciudad —"
+                  onChange={val => set('ciudad', val)}
+                />
+              ) : (
+                <div className="cw-form-group">
+                  <label className="cw-label">
+                    Ciudad / Municipio
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 400 }}> (solo texto)</span>
+                  </label>
+                  <input
+                    className="cw-input"
+                    value={form.ciudad}
+                    onChange={e => set('ciudad', onlyLettersAndSpaces(e.target.value))}
+                    placeholder="Escribe la ciudad..."
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Teléfono y Email personal */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
-                <label className="cw-label">Ciudad</label>
-                <input className="cw-input" value={form.ciudad} onChange={e => set('ciudad', e.target.value)} />
+                <label className="cw-label">
+                  Teléfono de contacto <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>(solo números)</span>
+                </label>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  className="cw-input"
+                  maxLength={10}
+                  value={form.telefono_contacto}
+                  onChange={e => set('telefono_contacto', onlyDigits(e.target.value))}
+                  placeholder="3001234567"
+                />
               </div>
-              <div className="cw-form-group">
-                <label className="cw-label">Departamento</label>
-                <input className="cw-input" value={form.departamento} onChange={e => set('departamento', e.target.value)} />
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
-              <div className="cw-form-group">
-                <label className="cw-label">Teléfono</label>
-                <input className="cw-input" value={form.telefono_contacto} onChange={e => set('telefono_contacto', e.target.value)} placeholder="+57 300 1234567" />
-              </div>
+
               <div className="cw-form-group">
                 <label className="cw-label">Email personal</label>
-                <input type="email" className="cw-input" value={form.email_personal} onChange={e => set('email_personal', e.target.value)} />
-              </div>
-            </div>
-            {form.email_institucional && (
-              <div className="cw-form-group">
-                <label className="cw-label">Email institucional</label>
-                <input className="cw-input" value={form.email_institucional} disabled readOnly
-                  style={{ opacity: 0.7, cursor: 'not-allowed' }} />
-                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Asignado por el sistema (solo lectura)</div>
-              </div>
-            )}
-            <h5 style={{ fontSize: '0.8rem', marginTop: '0.75rem', color: 'var(--text-muted)' }}>Contacto de emergencia</h5>
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '0.5rem' }}>
-              <div className="cw-form-group">
-                <label className="cw-label">Nombre</label>
-                <input className="cw-input" value={form.contacto_emergencia_nombre} onChange={e => set('contacto_emergencia_nombre', e.target.value)} />
-              </div>
-              <div className="cw-form-group">
-                <label className="cw-label">Teléfono</label>
-                <input className="cw-input" value={form.contacto_emergencia_telefono} onChange={e => set('contacto_emergencia_telefono', e.target.value)} />
-              </div>
-              <div className="cw-form-group">
-                <label className="cw-label">Parentesco</label>
-                <input className="cw-input" value={form.contacto_emergencia_parentesco} onChange={e => set('contacto_emergencia_parentesco', e.target.value)} placeholder="Madre, Esposo(a)..." />
+                <input
+                  type="email"
+                  className="cw-input"
+                  value={form.email_personal}
+                  onChange={e => set('email_personal', e.target.value.trim())}
+                  placeholder="nombre@ejemplo.com"
+                />
               </div>
             </div>
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem', marginTop: '0.75rem' }}>
-              <input type="checkbox" checked={form.embarazada}
-                onChange={e => set('embarazada', e.target.checked)} />
-              <span>🤰 Está embarazada (no nocturno, máx 8h/día)</span>
+            {form.email_institucional && (
+              <div className="cw-form-group">
+                <label className="cw-label">Email institucional</label>
+                <input
+                  className="cw-input"
+                  value={form.email_institucional}
+                  disabled
+                  readOnly
+                  style={{ opacity: 0.7, cursor: 'not-allowed' }}
+                />
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Asignado automáticamente por el sistema</div>
+              </div>
+            )}
+
+            {/* Contacto de emergencia */}
+            <div style={{
+              marginTop: '0.75rem',
+              padding: '0.75rem',
+              borderRadius: 8,
+              background: 'var(--bg-glass, rgba(0,0,0,0.02))',
+              border: '1px solid var(--border-subtle, rgba(0,0,0,0.06))',
+            }}>
+              <h5 style={{ fontSize: '0.8rem', margin: '0 0 0.5rem', color: 'var(--text-secondary)' }}>
+                🚨 Contacto en caso de emergencia
+              </h5>
+              <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1.2fr', gap: '0.5rem' }}>
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.74rem' }}>
+                    Nombre <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>(solo texto)</span>
+                  </label>
+                  <input
+                    className="cw-input"
+                    value={form.contacto_emergencia_nombre}
+                    onChange={e => set('contacto_emergencia_nombre', onlyLettersAndSpaces(e.target.value))}
+                    placeholder="Nombre del familiar..."
+                  />
+                </div>
+
+                <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                  <label className="cw-label" style={{ fontSize: '0.74rem' }}>
+                    Teléfono <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>(solo números)</span>
+                  </label>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    className="cw-input"
+                    maxLength={10}
+                    value={form.contacto_emergencia_telefono}
+                    onChange={e => set('contacto_emergencia_telefono', onlyDigits(e.target.value))}
+                    placeholder="3101234567"
+                  />
+                </div>
+
+                <div style={{ marginBottom: 0 }}>
+                  <SelectWithOther
+                    id="select-parentesco"
+                    label="Parentesco"
+                    value={form.contacto_emergencia_parentesco}
+                    options={PARENTESCOS_EMERGENCIA}
+                    placeholder="— Parentesco —"
+                    onChange={val => set('contacto_emergencia_parentesco', val)}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem', marginTop: '0.85rem' }}>
+              <input
+                type="checkbox"
+                checked={form.embarazada}
+                onChange={e => set('embarazada', e.target.checked)}
+              />
+              <span>🤰 Está en período de embarazo / lactancia (CST: no nocturno, máx 8h/día)</span>
             </label>
           </div>
         )}
@@ -405,22 +941,32 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
         {/* ──────────── PASO 2: CONTRATO Y JORNADA ──────────── */}
         {step === 2 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdWork style={{ verticalAlign: 'middle' }} /> Contrato y jornada</h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
+              <MdWork style={{ color: 'var(--cw-accent)', fontSize: '1.2rem' }} />
+              <h4 style={{ fontSize: '0.92rem', margin: 0, fontWeight: 700 }}>Contrato, cargo y asignación</h4>
+            </div>
 
+            {/* Área */}
             <div className="cw-form-group">
-              <label className="cw-label">Área de trabajo <span className="required">*</span></label>
+              <label className="cw-label">Área operativa / Departamento <span className="required">*</span></label>
               {areas.length === 0 ? (
                 <div className="cw-alert cw-alert--warning" style={{ fontSize: '0.8rem' }}>
                   ⚠️ Primero crea al menos un área. <a href="/areas" style={{ color: 'var(--cw-accent)' }}>Ir a Áreas</a>
                 </div>
               ) : (
                 <>
-                  <select className={`cw-input ${errors.area ? 'error' : ''}`}
-                    value={selectedAreaId} onChange={e => setSelectedAreaId(e.target.value)}>
-                    <option value="">— Seleccionar —</option>
+                  <select
+                    className={`cw-input cw-select ${errors.area ? 'error' : ''}`}
+                    value={selectedAreaId}
+                    onChange={e => setSelectedAreaId(e.target.value)}
+                  >
+                    <option value="">— Seleccionar área de trabajo —</option>
+                    {isEdit && initialAreaId && !areas.some(a => a.id === initialAreaId) && (
+                      <option value={initialAreaId}>⚠️ Área actual archivada</option>
+                    )}
                     {areas.map(a => (
                       <option key={a.id} value={a.id}>
-                        ● {a.nombre} {a.sector && `· ${a.sector}`}
+                        ● {a.nombre} {a.sector && `· [${a.sector}]`}
                       </option>
                     ))}
                   </select>
@@ -429,16 +975,29 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               )}
             </div>
 
+            {/* Cargo y Nivel */}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
-                <label className="cw-label">Cargo <span className="required">*</span></label>
-                <input className={`cw-input ${errors.cargo ? 'error' : ''}`}
-                  value={form.cargo} onChange={e => set('cargo', e.target.value)} />
+                <label className="cw-label">
+                  Cargo / Rol <span className="required">*</span>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}> (solo texto)</span>
+                </label>
+                <input
+                  list="cargos-list"
+                  className={`cw-input ${errors.cargo ? 'error' : ''}`}
+                  value={form.cargo}
+                  onChange={e => set('cargo', onlyLettersAndSpaces(e.target.value))}
+                  placeholder="Escribe o elige un cargo..."
+                />
+                <datalist id="cargos-list">
+                  {cargosExistentes.map(c => <option key={c} value={c} />)}
+                </datalist>
                 {errors.cargo && <span className="cw-input-error">⚠ {errors.cargo}</span>}
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Nivel</label>
-                <select className="cw-input" value={form.nivel_cargo} onChange={e => set('nivel_cargo', e.target.value)}>
+                <label className="cw-label">Nivel jerárquico</label>
+                <select className="cw-input cw-select" value={form.nivel_cargo} onChange={e => set('nivel_cargo', e.target.value)}>
                   <option value="JUNIOR">Junior</option>
                   <option value="SENIOR">Senior</option>
                   <option value="COORDINADOR">Coordinador</option>
@@ -450,161 +1009,271 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
               </div>
             </div>
 
+            {/* Tipo de contrato */}
             <div className="cw-form-group">
-              <label className="cw-label">Tipo de contrato <span className="required">*</span></label>
-              <select className="cw-input" value={form.tipo_contrato} onChange={e => set('tipo_contrato', e.target.value)}>
+              <label className="cw-label">Tipo de contrato laboral <span className="required">*</span></label>
+              <select className="cw-input cw-select" value={form.tipo_contrato} onChange={e => set('tipo_contrato', e.target.value)}>
                 {TIPOS_CONTRATO.map(t => (
                   <option key={t.value} value={t.value}>{t.icono} {t.label}</option>
                 ))}
               </select>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
                 {TIPOS_CONTRATO.find(t => t.value === form.tipo_contrato)?.desc}
               </div>
             </div>
 
+            {/* Fechas de contrato */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
                 <label className="cw-label">Fecha de ingreso <span className="required">*</span></label>
-                <input type="date" className={`cw-input ${errors.fecha_ingreso ? 'error' : ''}`}
-                  value={form.fecha_ingreso} onChange={e => set('fecha_ingreso', e.target.value)} />
+                <input
+                  type="date"
+                  className={`cw-input ${errors.fecha_ingreso ? 'error' : ''}`}
+                  value={form.fecha_ingreso}
+                  onChange={e => set('fecha_ingreso', e.target.value)}
+                />
                 {errors.fecha_ingreso && <span className="cw-input-error">⚠ {errors.fecha_ingreso}</span>}
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Fin contrato</label>
-                <input type="date" className={`cw-input ${errors.fecha_fin_contrato ? 'error' : ''}`}
-                  value={form.fecha_fin_contrato} onChange={e => set('fecha_fin_contrato', e.target.value)} />
+                <label className="cw-label">
+                  Fecha fin de contrato
+                  {(form.tipo_contrato === 'TERMINO_FIJO' || form.tipo_contrato === 'OBRA_LABOR') && (
+                    <span className="required"> *</span>
+                  )}
+                </label>
+                <input
+                  type="date"
+                  className={`cw-input ${errors.fecha_fin_contrato ? 'error' : ''}`}
+                  value={form.fecha_fin_contrato}
+                  onChange={e => set('fecha_fin_contrato', e.target.value)}
+                />
                 {errors.fecha_fin_contrato && <span className="cw-input-error">⚠ {errors.fecha_fin_contrato}</span>}
-                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Si aplica</div>
               </div>
+
               <div className="cw-form-group">
                 <label className="cw-label">Período de prueba hasta</label>
-                <input type="date" className="cw-input" value={form.periodo_prueba_hasta} onChange={e => set('periodo_prueba_hasta', e.target.value)} />
-                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>2 meses máx. CST</div>
+                <input
+                  type="date"
+                  className={`cw-input ${errors.periodo_prueba_hasta ? 'error' : ''}`}
+                  value={form.periodo_prueba_hasta}
+                  onChange={e => set('periodo_prueba_hasta', e.target.value)}
+                />
+                {errors.periodo_prueba_hasta && <span className="cw-input-error">⚠ {errors.periodo_prueba_hasta}</span>}
               </div>
             </div>
 
+            {/* Jornada y Horas */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
                 <label className="cw-label">Tipo jornada</label>
-                <select className="cw-input" value={form.jornada_tipo} onChange={e => set('jornada_tipo', e.target.value)}>
+                <select className="cw-input cw-select" value={form.jornada_tipo} onChange={e => set('jornada_tipo', e.target.value)}>
                   {TIPOS_JORNADA.map(j => <option key={j.value} value={j.value}>{j.label.split(' ')[0]}</option>)}
                 </select>
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Horas/sem</label>
-                <input type="number" className="cw-input" value={form.horas_semanales_contrato}
-                  onChange={e => set('horas_semanales_contrato', e.target.value)} />
+                <label className="cw-label">
+                  Horas/sem <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>(números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.horas_semanales_contrato}
+                  onChange={e => setHorasContrato('horas_semanales_contrato', e.target.value)}
+                />
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Horas/mes</label>
-                <input type="number" className="cw-input" value={form.horas_mensuales_contrato}
-                  onChange={e => set('horas_mensuales_contrato', e.target.value)} />
+                <label className="cw-label">
+                  Horas/mes <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>(números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.horas_mensuales_contrato}
+                  onChange={e => setHorasContrato('horas_mensuales_contrato', e.target.value)}
+                />
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Días desc.</label>
-                <select className="cw-input" value={form.dias_descanso_semana}
-                  onChange={e => set('dias_descanso_semana', parseInt(e.target.value))}>
-                  <option value={1}>1</option>
-                  <option value={2}>2</option>
+                <label className="cw-label">Días descanso</label>
+                <select
+                  className="cw-input cw-select"
+                  value={form.dias_descanso_semana}
+                  onChange={e => set('dias_descanso_semana', parseInt(e.target.value, 10))}
+                >
+                  <option value={1}>1 día / sem</option>
+                  <option value={2}>2 días / sem</option>
                 </select>
               </div>
             </div>
 
             {form.tipo_contrato === 'SALARIO_FIJO' && templates.length > 0 && (
               <div className="cw-form-group">
-                <label className="cw-label">Turno predeterminado (fijo)</label>
-                <select className="cw-input" value={form.turno_predeterminado_id} onChange={e => set('turno_predeterminado_id', e.target.value)}>
+                <label className="cw-label">Turno predeterminado fijo</label>
+                <select className="cw-input cw-select" value={form.turno_predeterminado_id} onChange={e => set('turno_predeterminado_id', e.target.value)}>
                   <option value="">— Ninguno —</option>
                   {templates.map(t => (
-                    <option key={t.id} value={t.id}>{t.nombre} ({t.hora_inicio.slice(0,5)}-{t.hora_fin.slice(0,5)})</option>
+                    <option key={t.id} value={t.id}>{t.nombre} ({t.hora_inicio.slice(0,5)} - {t.hora_fin.slice(0,5)})</option>
                   ))}
                 </select>
               </div>
             )}
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem', marginTop: '0.5rem' }}>
               <input type="checkbox" checked={form.es_jefe} onChange={e => set('es_jefe', e.target.checked)} />
-              <span>👑 Es jefe / tiene subordinados</span>
+              <span>👑 Es líder / jefe de equipo (tiene personal a cargo)</span>
             </label>
 
-            <div style={{ marginTop: '1rem', padding: '0.85rem', background: 'rgba(99, 102, 241, 0.08)', border: '1px solid rgba(99, 102, 241, 0.3)', borderRadius: 10 }}>
-              <h5 style={{ fontSize: '0.82rem', color: '#4f46e5', marginBottom: '0.5rem', fontWeight: 700 }}>
-                🌙 Preferencia de jornada (para call centers 24/7)
+            {/* Preferencias de Turnos y Días Fijos */}
+            <div style={{
+              marginTop: '1rem',
+              padding: '0.85rem',
+              background: 'rgba(99, 102, 241, 0.05)',
+              border: '1px solid rgba(99, 102, 241, 0.25)',
+              borderRadius: 10,
+            }}>
+              <h5 style={{ fontSize: '0.82rem', color: '#4f46e5', margin: '0 0 0.5rem', fontWeight: 700 }}>
+                🌙 Parámetros de programación automática y turnos rotativos
               </h5>
-              <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.4 }}>
-                Define en qué horarios este empleado puede trabajar. En áreas 24/7, el sistema usará esto para asignar
-                empleados dedicados a la noche (22:00-06:00) o evitar asignar noche a quien no quiere.
-              </p>
 
               <div className="cw-form-group" style={{ marginBottom: '0.75rem' }}>
-                <label className="cw-label">Jornada preferida</label>
-                <select className="cw-input" value={form.jornada_preferida}
+                <label className="cw-label">Jornada preferida para asignación</label>
+                <select
+                  className="cw-input cw-select"
+                  value={form.jornada_preferida}
                   onChange={e => {
-                    set('jornada_preferida', e.target.value);
-                    if (e.target.value === 'DIURNA')   { set('solo_diurno', true);   set('solo_nocturno', false); }
-                    if (e.target.value === 'NOCTURNA') { set('solo_nocturno', true); set('solo_diurno', false); }
-                    if (e.target.value === 'MIXTA' || e.target.value === 'CUALQUIERA') {
+                    const val = e.target.value;
+                    set('jornada_preferida', val);
+                    if (val === 'DIURNA')   { set('solo_diurno', true);   set('solo_nocturno', false); }
+                    if (val === 'NOCTURNA') { set('solo_nocturno', true); set('solo_diurno', false); }
+                    if (val === 'MIXTA' || val === 'CUALQUIERA') {
                       set('solo_diurno', false); set('solo_nocturno', false);
                     }
-                  }}>
-                  <option value="CUALQUIERA">🔄 Cualquiera (el sistema decide)</option>
-                  <option value="DIURNA">☀️ Solo Diurna (04:00-22:00)</option>
-                  <option value="NOCTURNA">🌙 Solo Nocturna (cubre 22:00-06:00)</option>
-                  <option value="MIXTA">🌓 Mixta (puede cubrir ambas)</option>
+                  }}
+                >
+                  <option value="CUALQUIERA">🔄 Flexible / Cualquier jornada</option>
+                  <option value="DIURNA">☀️ Diurna exclusiva (04:00 - 22:00)</option>
+                  <option value="NOCTURNA">🌙 Nocturna dedicada (22:00 - 06:00)</option>
+                  <option value="MIXTA">🌓 Mixta</option>
                 </select>
               </div>
 
-              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
-                  <input type="checkbox" checked={form.solo_diurno}
-                    onChange={e => { set('solo_diurno', e.target.checked); if (e.target.checked) set('solo_nocturno', false); }} />
-                  <span>☀️ Solo diurno</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
-                  <input type="checkbox" checked={form.solo_nocturno}
-                    onChange={e => { set('solo_nocturno', e.target.checked); if (e.target.checked) set('solo_diurno', false); }} />
-                  <span>🌙 Solo nocturno</span>
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.78rem' }}>
-                  <input type="checkbox" checked={form.permite_partido}
-                    onChange={e => set('permite_partido', e.target.checked)} />
-                  <span>⏸️ Acepta turno partido</span>
-                </label>
+              {/* Botones de selección rápida de días fijos de descanso */}
+              <div style={{ marginTop: '0.75rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                  <label className="cw-label" style={{ fontSize: '0.74rem', marginBottom: 0 }}>
+                    Días de descanso fijos semanales:
+                  </label>
+                  <div style={{ display: 'flex', gap: '0.3rem' }}>
+                    <button
+                      type="button"
+                      className="cw-btn cw-btn--secondary"
+                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.68rem' }}
+                      onClick={() => setDiasPreset([6, 7])}
+                    >
+                      Sáb + Dom
+                    </button>
+                    <button
+                      type="button"
+                      className="cw-btn cw-btn--secondary"
+                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.68rem' }}
+                      onClick={() => setDiasPreset([7])}
+                    >
+                      Solo Dom
+                    </button>
+                    <button
+                      type="button"
+                      className="cw-btn cw-btn--secondary"
+                      style={{ padding: '0.2rem 0.5rem', fontSize: '0.68rem' }}
+                      onClick={() => setDiasPreset([])}
+                    >
+                      Rotativo
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                  {DIAS_SEMANA.map(d => {
+                    const isSelected = diasDescansoSeleccionados.includes(d.num);
+                    return (
+                      <button
+                        key={d.num}
+                        type="button"
+                        onClick={() => toggleDiaDescanso(d.num)}
+                        style={{
+                          padding: '0.35rem 0.65rem',
+                          borderRadius: 6,
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          border: isSelected ? '1px solid var(--cw-accent)' : '1px solid var(--border-medium)',
+                          background: isSelected ? 'var(--cw-accent)' : 'var(--bg-input)',
+                          color: isSelected ? '#ffffff' : 'var(--text-primary)',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        {isSelected && <MdCheck style={{ verticalAlign: 'middle', marginRight: 2 }} />}
+                        {d.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                  {diasDescansoSeleccionados.length > 0
+                    ? `Descansa fijos: ${diasDescansoSeleccionados.map(n => DIAS_SEMANA.find(d => d.num === n)?.nombre).join(', ')}`
+                    : 'Sin días fijos (descansos variables según cuadrante)'}
+                </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+              {/* Restricciones numéricas adicionales */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
                 <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx horas/día</label>
-                  <input type="number" step="0.5" className="cw-input" placeholder="Auto"
-                    value={form.horas_max_diarias} onChange={e => set('horas_max_diarias', e.target.value)} />
+                  <label className="cw-label" style={{ fontSize: '0.7rem' }}>Máx h/día</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="cw-input"
+                    placeholder="8 o 10"
+                    value={form.horas_max_diarias}
+                    onChange={e => set('horas_max_diarias', onlyDigits(e.target.value))}
+                  />
                 </div>
                 <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx horas/sem</label>
-                  <input type="number" className="cw-input" placeholder="Auto (42)"
-                    value={form.horas_max_semana} onChange={e => set('horas_max_semana', e.target.value)} />
+                  <label className="cw-label" style={{ fontSize: '0.7rem' }}>Máx h/sem</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="cw-input"
+                    placeholder="42 (Legal)"
+                    value={form.horas_max_semana}
+                    onChange={e => set('horas_max_semana', onlyDigits(e.target.value))}
+                  />
                 </div>
                 <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx horas NOCHE/sem</label>
-                  <input type="number" className="cw-input" placeholder="Sin tope"
-                    value={form.horas_nocturnas_max_semana} onChange={e => set('horas_nocturnas_max_semana', e.target.value)} />
-                </div>
-              </div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.4rem' }}>
-                💡 Déjalo vacío para usar el límite del área o el legal (42h/sem).
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
-                <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Máx domingos/mes</label>
-                  <input type="number" min="0" className="cw-input" placeholder="2 (CST)"
-                    value={form.max_domingos_mes} onChange={e => set('max_domingos_mes', e.target.value)} />
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>CST: mínimo 2 libres</div>
+                  <label className="cw-label" style={{ fontSize: '0.7rem' }}>Máx h noche/sem</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="cw-input"
+                    placeholder="Sin tope"
+                    value={form.horas_nocturnas_max_semana}
+                    onChange={e => set('horas_nocturnas_max_semana', onlyDigits(e.target.value))}
+                  />
                 </div>
                 <div className="cw-form-group" style={{ marginBottom: 0 }}>
-                  <label className="cw-label" style={{ fontSize: '0.72rem' }}>Días descanso fijos</label>
-                  <input className="cw-input" placeholder="6,7 = Sábado y Domingo"
-                    value={form.dias_descanso_fijos} onChange={e => set('dias_descanso_fijos', e.target.value)} />
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Números 1-7 separados por coma (1=Lun, 7=Dom)</div>
+                  <label className="cw-label" style={{ fontSize: '0.7rem' }}>Máx domingos/mes</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="cw-input"
+                    placeholder="2 (CST)"
+                    value={form.max_domingos_mes}
+                    onChange={e => set('max_domingos_mes', onlyDigits(e.target.value))}
+                  />
                 </div>
               </div>
             </div>
@@ -614,155 +1283,302 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
         {/* ──────────── PASO 3: SALARIO Y SEGURIDAD SOCIAL ──────────── */}
         {step === 3 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}>💰 Salario y beneficios</h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
+              <MdAccountBalance style={{ color: 'var(--cw-accent)', fontSize: '1.2rem' }} />
+              <h4 style={{ fontSize: '0.92rem', margin: 0, fontWeight: 700 }}>Salario, beneficios y seguridad social</h4>
+            </div>
 
+            {/* Check salario personalizado */}
             <div style={{
-              padding: '0.75rem', background: form.es_especial ? 'rgba(245,158,11,0.08)' : 'var(--bg-glass)',
-              border: `1px solid ${form.es_especial ? 'rgba(245,158,11,0.35)' : 'var(--border-subtle)'}`,
-              borderRadius: 8, marginBottom: '1rem',
+              padding: '0.65rem 0.85rem',
+              background: form.es_especial ? 'rgba(245,158,11,0.08)' : 'var(--bg-glass, rgba(0,0,0,0.02))',
+              border: `1px solid ${form.es_especial ? 'rgba(245,158,11,0.35)' : 'var(--border-subtle, rgba(0,0,0,0.08))'}`,
+              borderRadius: 8,
+              marginBottom: '0.85rem',
             }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.es_especial} onChange={e => set('es_especial', e.target.checked)} />
-                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>⭐ Salario personalizado (no toma el del área al editarla)</span>
+                <span style={{ fontSize: '0.84rem', fontWeight: 600 }}>⭐ Salario personalizado (no se sobrescribe al editar el área)</span>
               </label>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.3rem', marginLeft: '1.7rem' }}>
-                Si lo marcas, el salario de este empleado no se sobrescribe cuando cambias el valor hora del área.
-              </div>
             </div>
 
+            {/* Valor hora y Salario mensual */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
-                <label className="cw-label">Valor hora (COP) <span className="required">*</span></label>
-                <input type="number" className={`cw-input ${errors.valor_hora ? 'error' : ''}`}
-                  value={form.valor_hora} onChange={e => set('valor_hora', e.target.value)} />
+                <label className="cw-label">
+                  Valor hora ordinaria (COP) <span className="required">*</span>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}> (solo números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className={`cw-input ${errors.valor_hora ? 'error' : ''}`}
+                  value={form.valor_hora}
+                  onChange={e => setValorHora(e.target.value)}
+                />
                 {errors.valor_hora && <span className="cw-input-error">⚠ {errors.valor_hora}</span>}
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                  SMLV/hora 2025: ${SMLV_HORA_2025.toLocaleString('es-CO')}
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  Mínimo legal 2025: ${SMLV_HORA_2025.toLocaleString('es-CO')} COP/hora
                 </div>
                 {parseFloat(form.valor_hora) > 0 && (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--cw-accent)', fontWeight: 600, marginTop: '0.2rem' }}>
-                    = ${salarioCalculado.toLocaleString('es-CO')}/mes
+                  <div style={{ fontSize: '0.74rem', color: 'var(--cw-accent)', fontWeight: 600, marginTop: '0.2rem' }}>
+                    ≈ ${salarioCalculado.toLocaleString('es-CO')} COP / mes ({horasMesDe(form)}h)
                   </div>
                 )}
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Salario mensual (COP)</label>
-                <input type="number" className="cw-input" value={form.salario_mensual}
-                  onChange={e => set('salario_mensual', e.target.value)} />
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                  SMLV 2025: ${SMLV_2025.toLocaleString('es-CO')}
+                <label className="cw-label">
+                  Salario mensual pactado (COP)
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}> (solo números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.salario_mensual}
+                  onChange={e => set('salario_mensual', onlyDigits(e.target.value))}
+                />
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  SMLV 2025: ${SMLV_2025.toLocaleString('es-CO')} COP
                 </div>
               </div>
             </div>
 
+            {/* Bonos */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
-                <label className="cw-label">Bono rodamiento</label>
-                <input type="number" className="cw-input" value={form.bono_rodamiento}
-                  onChange={e => set('bono_rodamiento', e.target.value)} placeholder="Minera/petrolera" />
+                <label className="cw-label">
+                  Bono de rodamiento (COP)
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}> (solo números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.bono_rodamiento}
+                  onChange={e => set('bono_rodamiento', onlyDigits(e.target.value))}
+                  placeholder="0"
+                />
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Bonificación fija</label>
-                <input type="number" className="cw-input" value={form.bonificacion_fija}
-                  onChange={e => set('bonificacion_fija', e.target.value)} placeholder="Alimentación, etc." />
+                <label className="cw-label">
+                  Bonificación fija (COP)
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}> (solo números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.bonificacion_fija}
+                  onChange={e => set('bonificacion_fija', onlyDigits(e.target.value))}
+                  placeholder="0"
+                />
               </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.82rem' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
-                <input type="checkbox" checked={form.recibe_auxilio_transporte}
-                  onChange={e => set('recibe_auxilio_transporte', e.target.checked)} />
-                <span>🚌 Recibe auxilio de transporte (${AUX_TRANSPORTE_2025.toLocaleString('es-CO')})</span>
+            {/* Checkboxes de beneficios */}
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.8rem', margin: '0.5rem 0 1rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.recibe_auxilio_transporte}
+                  onChange={e => set('recibe_auxilio_transporte', e.target.checked)}
+                />
+                <span>🚌 Auxilio de transporte (${AUX_TRANSPORTE_2025.toLocaleString('es-CO')})</span>
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
-                <input type="checkbox" checked={form.aplica_pago_dominical}
-                  onChange={e => set('aplica_pago_dominical', e.target.checked)} />
-                <span>⛪ Aplica pago dominical (Art. 179 CST)</span>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.aplica_pago_dominical}
+                  onChange={e => set('aplica_pago_dominical', e.target.checked)}
+                />
+                <span>⛪ Recargo dominical / festivo (Art. 179 CST)</span>
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
-                <input type="checkbox" checked={form.aplica_horas_extras}
-                  onChange={e => set('aplica_horas_extras', e.target.checked)} />
-                <span>⏰ Aplica pago de horas extras</span>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.aplica_horas_extras}
+                  onChange={e => set('aplica_horas_extras', e.target.checked)}
+                />
+                <span>⏰ Liquidación de horas extras</span>
               </label>
             </div>
 
-            <h4 style={{ fontSize: '0.9rem', margin: '1.25rem 0 0.5rem' }}><MdAccountBalance style={{ verticalAlign: 'middle' }} /> Seguridad social (PILA)</h4>
+            {/* Afiliaciones PILA (EPS, AFP, ARL, Caja, Cesantías) con SELECT COMPLETO + OTRO */}
+            <h5 style={{ fontSize: '0.82rem', color: 'var(--text-primary)', margin: '1rem 0 0.5rem', fontWeight: 700 }}>
+              🛡️ Seguridad Social Integral (Afiliaciones PILA Colombia)
+            </h5>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '0.5rem' }}>
+              {/* EPS */}
+              <SelectWithOther
+                id="select-eps"
+                label="EPS (Entidad Promotora de Salud)"
+                value={form.eps_nombre}
+                options={EPS_COLOMBIA}
+                placeholder="— Seleccionar EPS —"
+                otherPlaceholder="Escribe el nombre de la EPS..."
+                onChange={val => set('eps_nombre', val)}
+                onSelectOption={item => {
+                  if (item?.codigo) set('eps_codigo', item.codigo);
+                }}
+              />
+
               <div className="cw-form-group">
-                <label className="cw-label">EPS</label>
-                <input list="eps-list" className="cw-input" value={form.eps_nombre}
-                  onChange={e => set('eps_nombre', e.target.value)} placeholder="Sanitas, Sura, Nueva EPS..." />
-                <datalist id="eps-list">{EPS_COMUNES.map(e => <option key={e} value={e} />)}</datalist>
+                <label className="cw-label">Código EPS PILA</label>
+                <input
+                  className="cw-input"
+                  value={form.eps_codigo}
+                  onChange={e => set('eps_codigo', e.target.value.toUpperCase().trim())}
+                  placeholder="Ej: EPS037"
+                />
               </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '0.5rem' }}>
+              {/* AFP */}
+              <SelectWithOther
+                id="select-afp"
+                label="AFP (Fondo de Pensiones)"
+                value={form.afp_nombre}
+                options={AFP_COLOMBIA}
+                placeholder="— Seleccionar Fondo de Pensiones —"
+                otherPlaceholder="Escribe el fondo de pensiones..."
+                onChange={val => set('afp_nombre', val)}
+                onSelectOption={item => {
+                  if (item?.codigo) set('afp_codigo', item.codigo);
+                }}
+              />
+
               <div className="cw-form-group">
-                <label className="cw-label">Código EPS</label>
-                <input className="cw-input" value={form.eps_codigo} onChange={e => set('eps_codigo', e.target.value)} />
-              </div>
-              <div className="cw-form-group">
-                <label className="cw-label">AFP</label>
-                <input list="afp-list" className="cw-input" value={form.afp_nombre}
-                  onChange={e => set('afp_nombre', e.target.value)} placeholder="Porvenir, Protección..." />
-                <datalist id="afp-list">{AFP_COMUNES.map(e => <option key={e} value={e} />)}</datalist>
-              </div>
-              <div className="cw-form-group">
-                <label className="cw-label">Tipo AFP</label>
-                <select className="cw-input" value={form.afp_tipo} onChange={e => set('afp_tipo', e.target.value)}>
-                  <option value="RAZON">Razón (último salario)</option>
-                  <option value="PRIMAPROMEDIO">Prima Promedio (10 años)</option>
+                <label className="cw-label">Régimen pensión</label>
+                <select className="cw-input cw-select" value={form.afp_tipo} onChange={e => set('afp_tipo', e.target.value)}>
+                  <option value="RAZON">RAIS — Cuenta individual</option>
+                  <option value="PRIMAPROMEDIO">RPM — Colpensiones</option>
                 </select>
               </div>
-              <div className="cw-form-group">
-                <label className="cw-label">ARL</label>
-                <input list="arl-list" className="cw-input" value={form.arl_nombre}
-                  onChange={e => set('arl_nombre', e.target.value)} placeholder="Sura, Positiva, Bolívar..." />
-                <datalist id="arl-list">{ARL_COMUNES.map(e => <option key={e} value={e} />)}</datalist>
-              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '0.5rem' }}>
+              {/* ARL */}
+              <SelectWithOther
+                id="select-arl"
+                label="ARL (Riesgos Laborales)"
+                value={form.arl_nombre}
+                options={ARL_COLOMBIA}
+                placeholder="— Seleccionar ARL —"
+                otherPlaceholder="Escribe el nombre de la ARL..."
+                onChange={val => set('arl_nombre', val)}
+                onSelectOption={item => {
+                  if (item?.codigo) set('arl_codigo', item.codigo);
+                }}
+              />
+
               <div className="cw-form-group">
                 <label className="cw-label">Nivel riesgo ARL</label>
-                <select className="cw-input" value={form.nivel_riesgo_arl} onChange={e => set('nivel_riesgo_arl', parseInt(e.target.value))}>
+                <select className="cw-input cw-select" value={form.nivel_riesgo_arl} onChange={e => set('nivel_riesgo_arl', parseInt(e.target.value, 10))}>
                   {NIVELES_ARL.map(n => <option key={n.value} value={n.value}>{n.label}</option>)}
                 </select>
               </div>
-              <div className="cw-form-group">
-                <label className="cw-label">Caja de compensación</label>
-                <input list="caja-list" className="cw-input" value={form.caja_compensacion}
-                  onChange={e => set('caja_compensacion', e.target.value)} placeholder="Compensar, Comfama..." />
-                <datalist id="caja-list">{CAJAS_COMUNES.map(e => <option key={e} value={e} />)}</datalist>
-              </div>
-              <div className="cw-form-group">
-                <label className="cw-label">Fondo de cesantías</label>
-                <input className="cw-input" value={form.fondo_cesantias} onChange={e => set('fondo_cesantias', e.target.value)} placeholder="Porvenir, Protección..." />
-              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              {/* Caja de Compensación */}
+              <SelectWithOther
+                id="select-caja"
+                label="Caja de Compensación Familiar"
+                value={form.caja_compensacion}
+                options={CAJAS_COMPENSACION_COLOMBIA}
+                placeholder="— Seleccionar Caja —"
+                otherPlaceholder="Escribe el nombre de la caja..."
+                onChange={val => set('caja_compensacion', val)}
+              />
+
+              {/* Fondo de Cesantías */}
+              <SelectWithOther
+                id="select-cesantias"
+                label="Fondo de Cesantías"
+                value={form.fondo_cesantias}
+                options={FONDOS_CESANTIAS_COLOMBIA}
+                placeholder="— Seleccionar Fondo Cesantías —"
+                otherPlaceholder="Escribe el fondo de cesantías..."
+                onChange={val => set('fondo_cesantias', val)}
+                secondaryAction={
+                  form.afp_nombre && (
+                    <button
+                      type="button"
+                      className="cw-btn cw-btn--secondary"
+                      style={{ padding: '0.15rem 0.45rem', fontSize: '0.65rem' }}
+                      onClick={() => set('fondo_cesantias', form.afp_nombre)}
+                      title="Copiar el mismo fondo de pensiones"
+                    >
+                      Mismo que AFP
+                    </button>
+                  )
+                }
+              />
             </div>
 
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.8rem', marginTop: '0.5rem' }}>
               <input type="checkbox" checked={form.cesantias_afc} onChange={e => set('cesantias_afc', e.target.checked)} />
-              <span>💰 Tiene cuenta AFC (Auxilio de ahorro para cesantías — beneficio tributario)</span>
+              <span>💰 Tiene cuenta de ahorro programado AFC (beneficio tributario de vivienda)</span>
             </label>
 
-            <h4 style={{ fontSize: '0.9rem', margin: '1.25rem 0 0.5rem' }}>🏦 Datos bancarios (para pago de nómina)</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.5rem' }}>
+            {/* DATOS BANCARIOS (TODOS LOS BANCOS DE COLOMBIA) */}
+            <h5 style={{ fontSize: '0.82rem', color: 'var(--text-primary)', margin: '1.15rem 0 0.5rem', fontWeight: 700 }}>
+              🏦 Información bancaria para dispersión de nómina
+            </h5>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 120px 1.2fr', gap: '0.5rem' }}>
+              {/* Selector de Banco de Colombia */}
+              <SelectWithOther
+                id="select-banco"
+                label="Entidad Bancaria"
+                value={form.banco_nombre}
+                options={BANCOS_COLOMBIA}
+                placeholder="— Seleccionar Banco —"
+                otherPlaceholder="Escribe el nombre del banco o billetera..."
+                onChange={val => set('banco_nombre', val)}
+              />
+
               <div className="cw-form-group">
-                <label className="cw-label">Banco</label>
-                <input className="cw-input" value={form.banco_nombre} onChange={e => set('banco_nombre', e.target.value)} placeholder="Bancolombia, Davivienda..." />
-              </div>
-              <div className="cw-form-group">
-                <label className="cw-label">Tipo de cuenta</label>
-                <select className="cw-input" value={form.tipo_cuenta} onChange={e => set('tipo_cuenta', e.target.value)}>
+                <label className="cw-label">Tipo cuenta</label>
+                <select className="cw-input cw-select" value={form.tipo_cuenta} onChange={e => set('tipo_cuenta', e.target.value)}>
                   <option value="AHORROS">Ahorros</option>
                   <option value="CORRIENTE">Corriente</option>
                 </select>
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">N° de cuenta</label>
-                <input className="cw-input" value={form.numero_cuenta} onChange={e => set('numero_cuenta', e.target.value)} />
+                <label className="cw-label">
+                  N° de cuenta <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>(solo números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.numero_cuenta}
+                  onChange={e => set('numero_cuenta', onlyDigits(e.target.value))}
+                  placeholder="Número de cuenta bancaria..."
+                />
               </div>
             </div>
+
             <div className="cw-form-group">
-              <label className="cw-label">Titular de la cuenta</label>
-              <input className="cw-input" value={form.titular_cuenta} onChange={e => set('titular_cuenta', e.target.value)} />
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Si es diferente al empleado</div>
+              <label className="cw-label">
+                Titular de la cuenta
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}> (solo texto — dejar en blanco si es el mismo empleado)</span>
+              </label>
+              <input
+                className="cw-input"
+                value={form.titular_cuenta}
+                onChange={e => set('titular_cuenta', onlyLettersAndSpaces(e.target.value))}
+                placeholder={form.nombre || 'Nombre del titular si es cuenta de terceros...'}
+              />
             </div>
           </div>
         )}
@@ -770,42 +1586,59 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
         {/* ──────────── PASO 4: FORMACIÓN Y DATOS FISCALES ──────────── */}
         {step === 4 && (
           <div style={{ padding: '0.5rem 1.25rem 1rem' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '0.5rem' }}><MdSchool style={{ verticalAlign: 'middle' }} /> Formación y certificaciones</h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
+              <MdSchool style={{ color: 'var(--cw-accent)', fontSize: '1.2rem' }} />
+              <h4 style={{ fontSize: '0.92rem', margin: 0, fontWeight: 700 }}>Perfil profesional, formación y datos tributarios</h4>
+            </div>
+
+            {/* Nivel educativo y título */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '0.5rem' }}>
               <div className="cw-form-group">
-                <label className="cw-label">Nivel educativo</label>
-                <select className="cw-input" value={form.nivel_educacion} onChange={e => set('nivel_educacion', e.target.value)}>
-                  <option value="">—</option>
+                <label className="cw-label">Nivel de educación</label>
+                <select className="cw-input cw-select" value={form.nivel_educacion} onChange={e => set('nivel_educacion', e.target.value)}>
+                  <option value="">— Seleccionar —</option>
                   <option value="PRIMARIA">Primaria</option>
                   <option value="BACHILLERATO">Bachillerato</option>
                   <option value="TECNICO">Técnico</option>
                   <option value="TECNOLOGO">Tecnólogo</option>
-                  <option value="PREGRADO">Pregrado</option>
+                  <option value="PREGRADO">Pregrado / Profesional</option>
                   <option value="ESPECIALIZACION">Especialización</option>
                   <option value="MAESTRIA">Maestría</option>
                   <option value="DOCTORADO">Doctorado</option>
                 </select>
               </div>
+
               <div className="cw-form-group">
-                <label className="cw-label">Título obtenido</label>
-                <input className="cw-input" value={form.titulo_obtenido} onChange={e => set('titulo_obtenido', e.target.value)} placeholder="Ingeniero Industrial, Bachiller..." />
+                <label className="cw-label">
+                  Título obtenido <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>(solo texto)</span>
+                </label>
+                <input
+                  className="cw-input"
+                  value={form.titulo_obtenido}
+                  onChange={e => set('titulo_obtenido', onlyTextPunctuation(e.target.value))}
+                  placeholder="Ej: Ingeniero de Sistemas, Administrador, Bachiller..."
+                />
               </div>
             </div>
 
+            {/* Aprendiz SENA */}
             <div style={{
-              padding: '0.75rem', background: form.sena_aprendiz ? 'rgba(59,130,246,0.08)' : 'var(--bg-glass)',
-              border: `1px solid ${form.sena_aprendiz ? 'rgba(59,130,246,0.3)' : 'var(--border-subtle)'}`,
-              borderRadius: 8, marginBottom: '0.75rem',
+              padding: '0.75rem',
+              background: form.sena_aprendiz ? 'rgba(59,130,246,0.08)' : 'var(--bg-glass, rgba(0,0,0,0.02))',
+              border: `1px solid ${form.sena_aprendiz ? 'rgba(59,130,246,0.3)' : 'var(--border-subtle, rgba(0,0,0,0.08))'}`,
+              borderRadius: 8,
+              marginBottom: '0.75rem',
             }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.sena_aprendiz} onChange={e => set('sena_aprendiz', e.target.checked)} />
-                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>🎓 Aprendiz SENA (Ley 1882/2018)</span>
+                <span style={{ fontSize: '0.84rem', fontWeight: 600 }}>🎓 Aprendiz SENA (Ley 789/02 y Ley 1882/18)</span>
               </label>
+
               {form.sena_aprendiz && (
                 <div style={{ marginTop: '0.5rem' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.78rem' }}>
                     <input type="checkbox" checked={form.etapa_productiva} onChange={e => set('etapa_productiva', e.target.checked)} />
-                    <span>En etapa productiva (50% SMLV, sin prestaciones)</span>
+                    <span>En etapa productiva (Apoyo del 50% SMLV, sin prestaciones sociales)</span>
                   </label>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem', marginTop: '0.4rem' }}>
                     <div className="cw-form-group" style={{ marginBottom: 0 }}>
@@ -814,89 +1647,174 @@ export default function EmployeeFormModal({ employee, areas, onClose, onSave }) 
                     </div>
                     <div className="cw-form-group" style={{ marginBottom: 0 }}>
                       <label className="cw-label" style={{ fontSize: '0.72rem' }}>Fin etapa lectiva</label>
-                      <input type="date" className="cw-input" value={form.fecha_etapa_lectiva_fin} onChange={e => set('fecha_etapa_lectiva_fin', e.target.value)} />
+                      <input
+                        type="date"
+                        className={`cw-input ${errors.fecha_etapa_lectiva_fin ? 'error' : ''}`}
+                        value={form.fecha_etapa_lectiva_fin}
+                        onChange={e => set('fecha_etapa_lectiva_fin', e.target.value)}
+                      />
+                      {errors.fecha_etapa_lectiva_fin && <span className="cw-input-error">⚠ {errors.fecha_etapa_lectiva_fin}</span>}
                     </div>
                   </div>
                 </div>
               )}
             </div>
 
+            {/* Licencia de conducción */}
             <div className="cw-form-group">
               <label className="cw-label">Licencia de conducción</label>
-              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.8rem' }}>
+              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.8rem', cursor: 'pointer' }}>
                   <input type="checkbox" checked={form.tiene_licencia_conduccion} onChange={e => set('tiene_licencia_conduccion', e.target.checked)} />
-                  <span>Tiene</span>
+                  <span>Tiene licencia vigente</span>
                 </label>
                 {form.tiene_licencia_conduccion && (
                   <>
-                    <select className="cw-input" style={{ width: 100 }} value={form.categoria_licencia} onChange={e => set('categoria_licencia', e.target.value)}>
-                      <option value="">Cat.</option>
-                      <option value="A1">A1</option><option value="A2">A2</option>
-                      <option value="B1">B1</option><option value="B2">B2</option>
-                      <option value="C1">C1</option><option value="C2">C2</option>
-                      <option value="C3">C3</option>
+                    <select
+                      className="cw-input cw-select"
+                      style={{ width: 140 }}
+                      value={form.categoria_licencia}
+                      onChange={e => set('categoria_licencia', e.target.value)}
+                    >
+                      <option value="">Categoría</option>
+                      <option value="A1">A1 (Moto ≤125cc)</option>
+                      <option value="A2">A2 (Moto &gt;125cc)</option>
+                      <option value="B1">B1 (Automóvil part.)</option>
+                      <option value="B2">B2 (Camión part.)</option>
+                      <option value="B3">B3 (Articulado part.)</option>
+                      <option value="C1">C1 (Automóvil públ.)</option>
+                      <option value="C2">C2 (Camión públ.)</option>
+                      <option value="C3">C3 (Articulado públ.)</option>
                     </select>
-                    <input type="date" className="cw-input" style={{ flex: 1 }} value={form.vencimiento_licencia} onChange={e => set('vencimiento_licencia', e.target.value)} />
+                    <input
+                      type="date"
+                      className="cw-input"
+                      style={{ flex: 1, minWidth: 140 }}
+                      value={form.vencimiento_licencia}
+                      onChange={e => set('vencimiento_licencia', e.target.value)}
+                      title="Fecha de vencimiento de la licencia"
+                    />
                   </>
                 )}
               </div>
             </div>
 
+            {/* Otras certificaciones */}
             <div className="cw-form-group">
-              <label className="cw-label">Otras certificaciones / cursos</label>
-              <textarea className="cw-input" rows={2} value={form.tiene_certificaciones} onChange={e => set('tiene_certificaciones', e.target.value)} placeholder="Trabajo en alturas, manipulación de alimentos, etc." />
+              <label className="cw-label">
+                Certificaciones laborales o cursos habilitantes
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}> (solo texto)</span>
+              </label>
+              <textarea
+                className="cw-input"
+                rows={2}
+                value={form.tiene_certificaciones}
+                onChange={e => set('tiene_certificaciones', onlyTextPunctuation(e.target.value))}
+                placeholder="Trabajo seguro en alturas, manipulación de alimentos, primeros auxilios..."
+              />
             </div>
 
-            <h4 style={{ fontSize: '0.9rem', margin: '1rem 0 0.5rem' }}>📊 Datos fiscales (DIAN)</h4>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem', fontSize: '0.82rem' }}>
+            {/* Datos tributarios DIAN */}
+            <h5 style={{ fontSize: '0.82rem', color: 'var(--text-primary)', margin: '1rem 0 0.5rem', fontWeight: 700 }}>
+              📊 Parámetros tributarios (DIAN / Retención en la fuente)
+            </h5>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.8rem' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.responsable_iva} onChange={e => set('responsable_iva', e.target.checked)} />
-                <span>Responsable de IVA</span>
+                <span>Responsable de IVA (Art. 437 E.T.)</span>
               </label>
+
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.declarante_renta} onChange={e => set('declarante_renta', e.target.checked)} />
-                <span>Declarante de renta</span>
+                <span>Declarante del impuesto sobre la renta</span>
               </label>
+
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.aplica_retencion_fuente} onChange={e => set('aplica_retencion_fuente', e.target.checked)} />
-                <span>Aplica retención en la fuente</span>
+                <span>Aplica retención en la fuente laboral (Art. 383 E.T.)</span>
               </label>
+
               <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
                 <input type="checkbox" checked={form.persona_mayor_dependiente} onChange={e => set('persona_mayor_dependiente', e.target.checked)} />
-                <span>Tiene persona mayor dependiente</span>
+                <span>Tiene persona mayor de 60 años dependiente</span>
               </label>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginTop: '0.5rem' }}>
-              <div className="cw-form-group">
-                <label className="cw-label">N° dependientes</label>
-                <input type="number" min="0" className="cw-input"
-                  value={form.numero_dependientes} onChange={e => set('numero_dependientes', e.target.value)} />
-                <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Reduce retención en la fuente</div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: '0.5rem', marginTop: '0.75rem' }}>
+              <div className="cw-form-group" style={{ marginBottom: 0 }}>
+                <label className="cw-label">
+                  N° dependientes <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>(números)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="cw-input"
+                  value={form.numero_dependientes}
+                  onChange={e => set('numero_dependientes', onlyDigits(e.target.value))}
+                />
+              </div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+                💡 Hijos dependientes o cónyuge a cargo reducen la base gravable de retención en la fuente.
               </div>
             </div>
 
+            {/* Resumen rápido de comprobación */}
             <div style={{
-              marginTop: '0.75rem', padding: '0.75rem', background: 'var(--bg-glass)',
-              borderRadius: 8, fontSize: '0.78rem', color: 'var(--text-secondary)',
+              marginTop: '1rem',
+              padding: '0.75rem',
+              background: 'var(--bg-glass, rgba(0,0,0,0.03))',
+              border: '1px solid var(--border-subtle, rgba(0,0,0,0.08))',
+              borderRadius: 8,
+              fontSize: '0.76rem',
+              color: 'var(--text-secondary)',
+              lineHeight: 1.5,
             }}>
-              <strong>📋 Resumen:</strong> {form.nombre || 'Empleado'} · CC {form.cedula} · {form.cargo || '—'}<br/>
-              <strong>Contrato:</strong> {TIPOS_CONTRATO.find(t => t.value === form.tipo_contrato)?.label}<br/>
-              <strong>Salario:</strong> ${(parseFloat(form.salario_mensual) || 0).toLocaleString('es-CO')} / mes
-              · ${(parseFloat(form.valor_hora) || 0).toLocaleString('es-CO')} / hora
+              <div style={{ fontWeight: 700, marginBottom: '0.2rem', color: 'var(--cw-accent)' }}>
+                📋 Resumen de la ficha del colaborador:
+              </div>
+              <div><strong>Colaborador:</strong> {form.nombre || '—'} · {form.tipo_documento} {form.cedula || '—'}</div>
+              <div><strong>Cargo y Contrato:</strong> {form.cargo || '—'} · {TIPOS_CONTRATO.find(t => t.value === form.tipo_contrato)?.label}</div>
+              <div><strong>Salario pactado:</strong> ${(parseFloat(form.salario_mensual) || 0).toLocaleString('es-CO')} COP/mes · ${(parseFloat(form.valor_hora) || 0).toLocaleString('es-CO')} COP/hora</div>
+              <div><strong>Seguridad Social:</strong> EPS {form.eps_nombre || '—'} · AFP {form.afp_nombre || '—'} · ARL {form.arl_nombre || '—'}</div>
+              <div><strong>Dispersión:</strong> {form.banco_nombre || '—'} ({form.tipo_cuenta}) N° {form.numero_cuenta || '—'}</div>
             </div>
           </div>
         )}
 
-        <div className="cw-modal__footer">
-          {step > 1 && <button type="button" className="cw-btn cw-btn--secondary" onClick={prev}>← Anterior</button>}
-          {step < 4 && <button type="button" className="cw-btn cw-btn--primary" onClick={next}>Siguiente →</button>}
-          {step === 4 && (
-            <button type="button" className="cw-btn cw-btn--primary" onClick={handleSubmit} disabled={loading}>
-              {loading ? <><span className="cw-spinner cw-spinner--sm"></span> Guardando...</>
-                : <>{isEdit ? '💾 Actualizar' : '➕ Registrar'} Colaborador</>}
+        {/* Pie del modal con navegación */}
+        <div className="cw-modal__footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            {step > 1 && (
+              <button type="button" className="cw-btn cw-btn--secondary" onClick={prev}>
+                <MdArrowBack /> Anterior
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <button type="button" className="cw-btn cw-btn--secondary" onClick={onClose}>
+              Cancelar
             </button>
-          )}
+
+            {step < 4 ? (
+              <button type="button" className="cw-btn cw-btn--primary" onClick={next}>
+                Siguiente paso <MdArrowForward />
+              </button>
+            ) : (
+              <button type="button" className="cw-btn cw-btn--primary" onClick={handleSubmit} disabled={loading}>
+                {loading ? (
+                  <>
+                    <span className="cw-spinner cw-spinner--sm"></span> Guardando datos...
+                  </>
+                ) : (
+                  <>
+                    <MdSave /> {isEdit ? 'Actualizar Colaborador' : 'Guardar y Registrar Colaborador'}
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

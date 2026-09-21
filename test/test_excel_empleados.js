@@ -4,6 +4,8 @@
 import ExcelJS from 'exceljs';
 import XLSX from 'xlsx';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 let pass = 0, fail = 0;
 const log = (ok, msg) => { ok ? (pass++, console.log(`  ✅ ${msg}`)) : (fail++, console.log(`  ❌ ${msg}`)); };
@@ -90,24 +92,19 @@ async function generateTemplate() {
   wsL.getColumn(1).values = ['TipoContrato', ...TIPOS_CONTRATO_VALUES];
   wsL.getColumn(2).values = ['TipoDocumento', ...TIPOS_DOC];
   wsL.getColumn(3).values = ['Genero', ...GENEROS];
-  wsL.getColumn(4).values = ['EstadoCivil', ...ESTADOS_CIVIL];
-  wsL.getColumn(5).values = ['DiasDescanso', '1', '2'];
-  wsL.getColumn(6).values = ['NivelARL', '1', '2', '3', '4', '5'];
-  wsL.getColumn(7).values = ['TipoCuenta', 'AHORROS', 'CORRIENTE'];
-  wsL.getColumn(8).values = ['NivelEducacion', ...NIVELES_EDUCATIVOS];
-  wsL.getColumn(9).values = ['NivelCargo', ...NIVELES_CARGO];
-  wsL.getColumn(10).values = ['Sector', ...SECTORES];
-  wsL.getColumn(11).values = ['ModoOperacion', 'OFICINA', '24_7'];
-  wsL.getColumn(12).values = ['JornadaTipo', ...JORNADAS_VALUES];
-  wsL.getColumn(13).values = ['Patron', ...PATRONES_VALUES];
-  wsL.getColumn(14).values = ['SiNo', 'Si', 'No'];
-  wsL.getColumn(15).values = ['Area', ...areas.map(a => a.nombre)];
-  wsL.getColumn(16).values = ['EPS', ...EPS_COMUNES];
-  wsL.getColumn(17).values = ['AFP', ...AFP_COMUNES];
-  wsL.getColumn(18).values = ['ARL', ...ARL_COMUNES];
-  wsL.getColumn(19).values = ['CajaCompensacion', ...CAJAS_COMUNES];
-  wsL.getColumn(20).values = ['Banco', ...BANCOS_COMUNES];
-  wsL.getColumn(21).values = ['FondoCesantias', ...FONDOS_CESANTIAS];
+  wsL.getColumn(4).values = ['DiasDescanso', '1', '2'];
+  wsL.getColumn(5).values = ['NivelARL', '1', '2', '3', '4', '5'];
+  wsL.getColumn(6).values = ['TipoCuenta', 'AHORROS', 'CORRIENTE'];
+  wsL.getColumn(7).values = ['JornadaPreferida', 'CUALQUIERA', 'DIURNA', 'NOCTURNA', 'MIXTA'];
+  wsL.getColumn(8).values = ['SiNo', 'Si', 'No'];
+  wsL.getColumn(9).values = ['Area', ...areas.map(a => a.nombre)];
+  wsL.getColumn(10).values = ['EPS', ...EPS_COMUNES];
+  wsL.getColumn(11).values = ['AFP', ...AFP_COMUNES];
+  wsL.getColumn(12).values = ['ARL', ...ARL_COMUNES];
+  wsL.getColumn(13).values = ['CajaCompensacion', ...CAJAS_COMUNES];
+  wsL.getColumn(14).values = ['Banco', ...BANCOS_COMUNES];
+  wsL.getColumn(15).values = ['FondoCesantias', ...FONDOS_CESANTIAS];
+  wsL.getColumn(16).values = ['Departamento', 'Bogotá D.C.', 'Antioquia', 'Valle del Cauca', 'Cundinamarca', 'Atlántico'];
 
   const wsT = wb.addWorksheet('__turnos_por_area__');
   wsT.state = 'veryHidden';
@@ -122,44 +119,34 @@ async function generateTemplate() {
 
   const ws = wb.addWorksheet('Empleados');
   const columns = [
-    { k: 'cedula', w: 14, req: true, l: 'cedula' },
-    { k: 'tipo_documento', w: 12, req: false, l: 'tipo_documento' },
-    { k: 'nombre', w: 32, req: true, l: 'nombre' },
-    { k: 'lugar_expedicion', w: 20, req: false, l: 'lugar_expedicion' },
-    { k: 'fecha_nacimiento', w: 14, req: false, l: 'fecha_nacimiento' },
-    { k: 'genero', w: 10, req: false, l: 'genero' },
-    { k: 'estado_civil', w: 14, req: false, l: 'estado_civil' },
-    { k: 'numero_hijos', w: 10, req: false, l: 'numero_hijos' },
-    { k: 'telefono_contacto', w: 18, req: false, l: 'telefono' },
-    { k: 'email_personal', w: 24, req: false, l: 'email' },
-    { k: 'direccion', w: 26, req: false, l: 'direccion' },
-    { k: 'ciudad', w: 16, req: false, l: 'ciudad' },
-    { k: 'departamento', w: 16, req: false, l: 'departamento' },
-    { k: 'cargo', w: 24, req: true, l: 'cargo' },
-    { k: 'nivel_cargo', w: 14, req: false, l: 'nivel_cargo' },
-    { k: 'sector', w: 18, req: false, l: 'sector' },
-    { k: 'area', w: 20, req: true, l: 'area' },
-    { k: 'turno_predeterminado', w: 24, req: false, l: 'turno_predeterminado' },
-    { k: 'tipo_contrato', w: 22, req: false, l: 'tipo_contrato' },
-    { k: 'fecha_ingreso', w: 14, req: false, l: 'fecha_ingreso' },
-    { k: 'fecha_fin_contrato', w: 14, req: false, l: 'fecha_fin_contrato' },
-    { k: 'horas_semanales_contrato', w: 12, req: false, l: 'horas_semana' },
-    { k: 'dias_descanso_semana', w: 12, req: false, l: 'dias_descanso' },
-    { k: 'valor_hora', w: 14, req: false, l: 'valor_hora' },
-    { k: 'salario_mensual', w: 16, req: false, l: 'salario_mensual' },
-    { k: 'es_especial', w: 12, req: false, l: 'es_especial' },
-    { k: 'recibe_auxilio_transporte', w: 14, req: false, l: 'auxilio_transporte' },
-    { k: 'eps_nombre', w: 18, req: false, l: 'eps' },
-    { k: 'afp_nombre', w: 18, req: false, l: 'afp' },
-    { k: 'afp_tipo', w: 14, req: false, l: 'afp_tipo' },
-    { k: 'arl_nombre', w: 18, req: false, l: 'arl' },
-    { k: 'nivel_riesgo_arl', w: 12, req: false, l: 'nivel_arl' },
-    { k: 'caja_compensacion', w: 18, req: false, l: 'caja' },
-    { k: 'fondo_cesantias', w: 18, req: false, l: 'cesantias' },
-    { k: 'banco_nombre', w: 18, req: false, l: 'banco' },
-    { k: 'tipo_cuenta', w: 14, req: false, l: 'tipo_cuenta' },
-    { k: 'numero_cuenta', w: 20, req: false, l: 'n°_cuenta' },
-    { k: 'nivel_educacion', w: 18, req: false, l: 'nivel_educacion' },
+    { k: 'cedula',                    w: 16, req: true,  l: 'cedula' },
+    { k: 'tipo_documento',            w: 14, req: false, l: 'tipo_documento' },
+    { k: 'nombre',                    w: 32, req: true,  l: 'nombre' },
+    { k: 'telefono_contacto',         w: 18, req: false, l: 'telefono' },
+    { k: 'email_personal',            w: 26, req: false, l: 'email' },
+    { k: 'cargo',                     w: 24, req: true,  l: 'cargo' },
+    { k: 'area',                      w: 22, req: true,  l: 'area' },
+    { k: 'turno_predeterminado',      w: 24, req: false, l: 'turno_predeterminado' },
+    { k: 'tipo_contrato',             w: 22, req: false, l: 'tipo_contrato' },
+    { k: 'fecha_ingreso',             w: 14, req: false, l: 'fecha_ingreso' },
+    { k: 'fecha_fin_contrato',        w: 16, req: false, l: 'fecha_fin_contrato' },
+    { k: 'horas_semanales_contrato',   w: 14, req: false, l: 'horas_semana' },
+    { k: 'dias_descanso_semana',      w: 14, req: false, l: 'dias_descanso' },
+    { k: 'salario_mensual',           w: 18, req: false, l: 'salario_mensual' },
+    { k: 'recibe_auxilio_transporte', w: 16, req: false, l: 'auxilio_transporte' },
+    { k: 'jornada_preferida',         w: 18, req: false, l: 'jornada_preferida' },
+    { k: 'departamento',              w: 20, req: false, l: 'departamento' },
+    { k: 'ciudad',                    w: 18, req: false, l: 'ciudad' },
+    { k: 'genero',                    w: 12, req: false, l: 'genero' },
+    { k: 'eps_nombre',                w: 24, req: false, l: 'eps' },
+    { k: 'afp_nombre',                w: 22, req: false, l: 'afp' },
+    { k: 'arl_nombre',                w: 24, req: false, l: 'arl' },
+    { k: 'nivel_riesgo_arl',          w: 12, req: false, l: 'nivel_arl' },
+    { k: 'caja_compensacion',         w: 24, req: false, l: 'caja' },
+    { k: 'fondo_cesantias',           w: 22, req: false, l: 'cesantias' },
+    { k: 'banco_nombre',              w: 24, req: false, l: 'banco' },
+    { k: 'tipo_cuenta',               w: 14, req: false, l: 'tipo_cuenta' },
+    { k: 'numero_cuenta',             w: 20, req: false, l: 'n°_cuenta' },
   ];
   ws.columns = columns.map(c => ({ header: c.l, key: c.k, width: c.w }));
   columns.forEach((c, i) => {
@@ -177,23 +164,19 @@ async function generateTemplate() {
     tipoContrato: ref(1, TIPOS_CONTRATO_VALUES.length),
     tipoDoc: ref(2, TIPOS_DOC.length),
     genero: ref(3, GENEROS.length),
-    estadoCivil: ref(4, ESTADOS_CIVIL.length),
-    diasDescanso: ref(5, 2),
-    nivelARL: ref(6, NIVELES_ARL.length),
-    tipoCuenta: ref(7, TIPOS_CUENTA.length),
-    nivelEduc: ref(8, NIVELES_EDUCATIVOS.length),
-    nivelCargo: ref(9, NIVELES_CARGO.length),
-    sector: ref(10, SECTORES.length),
-    jornada: ref(12, JORNADAS_VALUES.length),
-    patron: ref(13, PATRONES_VALUES.length),
-    siNo: ref(14, 2),
-    area: ref(15, areas.length),
-    eps: ref(16, EPS_COMUNES.length),
-    afp: ref(17, AFP_COMUNES.length),
-    arl: ref(18, ARL_COMUNES.length),
-    caja: ref(19, CAJAS_COMUNES.length),
-    banco: ref(20, BANCOS_COMUNES.length),
-    cesantias: ref(21, FONDOS_CESANTIAS.length),
+    diasDescanso: ref(4, 2),
+    nivelARL: ref(5, NIVELES_ARL.length),
+    tipoCuenta: ref(6, TIPOS_CUENTA.length),
+    jornadaPref: ref(7, 4),
+    siNo: ref(8, 2),
+    area: ref(9, areas.length),
+    eps: ref(10, EPS_COMUNES.length),
+    afp: ref(11, AFP_COMUNES.length),
+    arl: ref(12, ARL_COMUNES.length),
+    caja: ref(13, CAJAS_COMUNES.length),
+    banco: ref(14, BANCOS_COMUNES.length),
+    cesantias: ref(15, FONDOS_CESANTIAS.length),
+    departamento: ref(16, 5),
   };
   for (let r = 2; r <= maxRow; r++) {
     const addList = (col, refsKey) => {
@@ -219,15 +202,29 @@ async function generateTemplate() {
         type: 'date', allowBlank: true, showErrorMessage: true, errorStyle: 'stop', showInputMessage: true,
       };
     };
-    addList('B', 'tipoDoc'); addDate('E'); addList('F', 'genero'); addList('G', 'estadoCivil');
-    addInt('H'); addList('O', 'nivelCargo'); addList('P', 'sector'); addList('Q', 'area');
+
+    addList('B', 'tipoDoc');
+    addList('G', 'area');
     const refTodos = `__turnos_por_area__!${colLetter(areas.length + 1)}$2:${colLetter(areas.length + 1)}${allShiftTemplates.length + 1}`;
-    ws.getCell(`R${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refTodos], showErrorMessage: true, errorStyle: 'stop' };
-    addList('S', 'tipoContrato'); addDate('T'); addDate('U'); addInt('V'); addList('W', 'diasDescanso');
-    addNum('X'); addNum('Y'); addList('Z', 'siNo'); addList('AA', 'siNo');
-    addList('AB', 'eps'); addList('AC', 'afp'); addList('AD', 'siNo');
-    addList('AE', 'arl'); addList('AF', 'nivelARL'); addList('AG', 'caja'); addList('AH', 'cesantias');
-    addList('AI', 'banco'); addList('AJ', 'tipoCuenta'); addList('AL', 'nivelEduc');
+    ws.getCell(`H${r}`).dataValidation = { type: 'list', allowBlank: true, formulae: [refTodos], showErrorMessage: true, errorStyle: 'stop' };
+    addList('I', 'tipoContrato');
+    addDate('J');
+    addDate('K');
+    addInt('L');
+    addList('M', 'diasDescanso');
+    addNum('N');
+    addList('O', 'siNo');
+    addList('P', 'jornadaPref');
+    addList('Q', 'departamento');
+    addList('S', 'genero');
+    addList('T', 'eps');
+    addList('U', 'afp');
+    addList('V', 'arl');
+    addList('W', 'nivelARL');
+    addList('X', 'caja');
+    addList('Y', 'cesantias');
+    addList('Z', 'banco');
+    addList('AA', 'tipoCuenta');
   }
   return wb;
 }
@@ -236,7 +233,9 @@ async function runTests() {
   console.log('\n🧪 ===== TEST PLANTILLA EMPLEADOS v4 =====\n');
   const wb = await generateTemplate();
   const buffer = await wb.xlsx.writeBuffer();
-  const tmpFile = '/tmp/test_plantilla_empleados.xlsx';
+  // os.tmpdir() es multiplataforma: en Windows → C:\Users\...\AppData\Local\Temp
+  // (antes estaba hardcodeado /tmp, que solo existe en Unix → ENOENT en Windows)
+  const tmpFile = path.join(os.tmpdir(), 'test_plantilla_empleados.xlsx');
   fs.writeFileSync(tmpFile, buffer);
   console.log(`📄 Plantilla generada: ${tmpFile} (${fs.statSync(tmpFile).size} bytes)\n`);
 
@@ -252,11 +251,11 @@ async function runTests() {
   console.log('\n📊 Hoja Empleados:');
   const ws = wb.getWorksheet('Empleados');
   // ExcelJS: maxColumn viene de columnCount, no de maxColumn
-  log(ws.columnCount === 38, `38 columnas (real: ${ws.columnCount})`);
+  log(ws.columnCount === 28, `28 columnas (real: ${ws.columnCount})`);
   log(ws.getCell('A1').value === 'cedula *', 'A1 = "cedula *"');
   log(ws.getCell('C1').value === 'nombre *', 'C1 = "nombre *"');
-  log(ws.getCell('N1').value === 'cargo *', 'N1 = "cargo *"');
-  log(ws.getCell('Q1').value === 'area *', 'Q1 = "area *"');
+  log(ws.getCell('F1').value === 'cargo *', 'F1 = "cargo *"');
+  log(ws.getCell('G1').value === 'area *', 'G1 = "area *"');
 
   // 3. Test data validations
   console.log('\n🔒 Data validations:');
@@ -277,18 +276,20 @@ async function runTests() {
   log(td.length === 7 && td.includes('CC'), `6 tipos de documento (real: ${td.length - 1})`);
   const g = filterVals(3);
   log(g.length === 5, `4 géneros (real: ${g.length - 1})`);
-  const s = filterVals(10);
-  log(s.length === 15 && s.includes('CALL_CENTER'), `14 sectores (real: ${s.length - 1})`);
-  const e = filterVals(16);
+  const e = filterVals(10);
   log(e.length >= 10 && e.includes('Sanitas'), `>= 10 EPS (real: ${e.length - 1})`);
-  const a = filterVals(17);
+  const a = filterVals(11);
   log(a.length >= 5 && a.includes('Porvenir'), `>= 5 AFP (real: ${a.length - 1})`);
-  const ar = filterVals(18);
+  const ar = filterVals(12);
   log(ar.length >= 5 && ar.includes('Sura ARL'), `>= 5 ARL (real: ${ar.length - 1})`);
-  const cj = filterVals(19);
+  const cj = filterVals(13);
   log(cj.length >= 5 && cj.includes('Compensar'), `>= 5 Cajas (real: ${cj.length - 1})`);
-  const bn = filterVals(20);
+  const bn = filterVals(14);
   log(bn.length >= 5 && bn.includes('Bancolombia'), `>= 5 Bancos (real: ${bn.length - 1})`);
+  const cs = filterVals(15);
+  log(cs.length >= 5 && cs.includes('Porvenir'), `>= 5 Fondos Cesantías (real: ${cs.length - 1})`);
+  const dp = filterVals(16);
+  log(dp.length >= 5 && dp.includes('Antioquia'), `>= 5 Departamentos (real: ${dp.length - 1})`);
 
   // 5. Test turnos por área
   console.log('\n🕐 Turnos por área:');

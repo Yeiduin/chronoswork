@@ -29,10 +29,17 @@ const prevPeriod = (p) => {
 const weekOfMonth = (ds) => Math.ceil(new Date(ds + 'T12:00:00').getDate() / 7);
 const hrsDiff = (s) => (new Date(s.end_time) - new Date(s.start_time)) / 3600000;
 const sumHrs = (arr) => arr.reduce((acc, s) => acc + hrsDiff(s), 0);
+// Extrae la fecha de un objeto Date LOCAL de calendario (no de timestamps ISO).
+// Se usa con fechas construidas con new Date(y, m-1, i) — ahí getFullYear/getMonth/
+// getDate dan la fecha correcta. NO usar con new Date(isoTimestamp) (aplica zona).
 const localDate = (d) => {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0');
   return `${y}-${m}-${String(d.getDate()).padStart(2, '0')}`;
 };
+// Extrae la fecha del string ISO directamente (slice) para timestamps de turnos.
+// La convención de la app: timestamps guardan "hora de reloj" en UTC (sufijo Z),
+// así que slice(0,10) da la fecha correcta sin conversión de zona.
+const isoDate = (isoStr) => (typeof isoStr === 'string' ? isoStr.slice(0, 10) : '');
 
 // Verifica si una hora cae en franja nocturna legal (19:00-06:00)
 const isNightHour = (h) => h >= 19 || h < 6;
@@ -42,7 +49,10 @@ const shiftNightHours = (s) => {
   const end = new Date(s.end_time);
   let cursor = new Date(start);
   while (cursor < end) {
-    if (isNightHour(cursor.getHours())) total += 1 / 60;
+    // getUTCHours() lee la "hora de reloj" del timestamp (convención de la app).
+    // getHours() aplicaría el offset del navegador (UTC-5) y clasificaría
+    // 22:00Z como 17:00 → diurna, perdiendo el recargo nocturno.
+    if (isNightHour(cursor.getUTCHours())) total += 1 / 60;
     cursor = new Date(cursor.getTime() + 60000);
   }
   return total;
@@ -83,7 +93,11 @@ export default function DashboardPage() {
 
   const [anio, mes] = periodo.split('-').map(Number);
   const nombreMes = getNombreMes(mes);
-  const hoyStr = new Date().toISOString().slice(0, 10);
+  // "Hoy" en zona horaria de Colombia (America/Bogota, UTC-5).
+  // toISOString() salta al día siguiente después de 19:00 hora Colombia,
+  // lo que vaciaba el dashboard "HOY" por la noche. Usar toLocaleDateString
+  // con zona Bogotá da la fecha correcta consistente con la convención de la app.
+  const hoyStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Bogota' });
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
 
@@ -111,7 +125,7 @@ export default function DashboardPage() {
       const turnosEmp = shifts.filter(s => s.employee_id === emp.id);
       if (turnosEmp.length === 0) continue;
 
-      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos);
+      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos, emp.tipo_contrato);
       costoTotal += calculo.total_bruto || 0;
       horasExtras += calculo.total_horas_extras || 0;
       horasOrdinarias += calculo.total_horas_ordinarias || 0;
@@ -141,7 +155,7 @@ export default function DashboardPage() {
     for (const emp of employees) {
       const turnosEmp = prevShifts.filter(s => s.employee_id === emp.id);
       if (turnosEmp.length === 0) continue;
-      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos);
+      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos, emp.tipo_contrato);
       total += calculo.total_bruto || 0;
     }
     return Math.round(total);
@@ -175,6 +189,11 @@ export default function DashboardPage() {
     }
 
     const { monday, sunday } = weekBounds(hoy);
+    // Strings de fecha (YYYY-MM-DD) para comparar contra start_time.slice(0,10).
+    // Comparar new Date(s.start_time) contra monday/sunday (que son local midnight)
+    // desplazaba los turnos nocturnos del lunes temprano (00:00-05:00Z) al domingo.
+    const mondayStr = monday.toISOString().slice(0, 10);
+    const sundayStr = sunday.toISOString().slice(0, 10);
     let cumplen = 0;
     let exceden = 0;
     const excedidos = [];
@@ -182,8 +201,8 @@ export default function DashboardPage() {
     for (const emp of employees) {
       const turnosSemana = shifts.filter(s => {
         if (s.employee_id !== emp.id) return false;
-        const d = new Date(s.start_time);
-        return d >= monday && d <= sunday;
+        const ds = isoDate(s.start_time);
+        return ds >= mondayStr && ds <= sundayStr;
       });
       const horasSemana = sumHrs(turnosSemana);
       if (horasSemana > 42) {
@@ -201,7 +220,7 @@ export default function DashboardPage() {
 
   // ═══ Resumen de HOY ══════════════════════════════════════════════════════════
   const resumenHoy = useMemo(() => {
-    const turnosHoy = shifts.filter(s => localDate(new Date(s.start_time)) === hoyStr);
+    const turnosHoy = shifts.filter(s => isoDate(s.start_time) === hoyStr);
     const personasHoy = new Set(turnosHoy.map(s => s.employee_id)).size;
     const nocturnoHoy = turnosHoy.filter(s => shiftNightHours(s) > 0).length;
     const horasHoy = sumHrs(turnosHoy);
@@ -231,17 +250,24 @@ export default function DashboardPage() {
   // ═══ Trend: costo proyectado por semana (ordinarias vs extras) ═══════════════
   const trendData = useMemo(() => {
     const w = { ord: {}, ext: {} };
-    for (const s of shifts) {
-      const k = weekOfMonth(s.start_time.slice(0, 10));
-      const emp = employees.find(e => e.id === s.employee_id);
-      if (!emp) continue;
-      const turnosEmp = shifts.filter(sh =>
-        sh.employee_id === emp.id &&
-        weekOfMonth(sh.start_time.slice(0, 10)) === k
-      );
-      const calc = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos);
-      w.ord[k] = (w.ord[k] || 0) + (calc.total_bruto - (calc.desglose.HED?.valor || 0) - (calc.desglose.HEN?.valor || 0) - (calc.desglose.HEDD_A?.valor || 0) - (calc.desglose.HEDD_B?.valor || 0) - (calc.desglose.HEND_A?.valor || 0) - (calc.desglose.HEND_B?.valor || 0));
-      w.ext[k] = (w.ext[k] || 0) + (calc.desglose.HED?.valor || 0) + (calc.desglose.HEN?.valor || 0) + (calc.desglose.HEDD_A?.valor || 0) + (calc.desglose.HEDD_B?.valor || 0) + (calc.desglose.HEND_A?.valor || 0) + (calc.desglose.HEND_B?.valor || 0);
+    // Procesar cada par (empleado, semana) UNA sola vez.
+    // Antes se iteraba por turno y se procesaba la semana entera del empleado
+    // en cada iteración → el costo semanal se multiplicaba por el nº de turnos.
+    const processed = new Set();
+    for (const emp of employees) {
+      for (let n = 1; n <= 5; n++) {
+        const key = `${emp.id}|${n}`;
+        if (processed.has(key)) continue;
+        const turnosEmp = shifts.filter(sh =>
+          sh.employee_id === emp.id &&
+          weekOfMonth(sh.start_time.slice(0, 10)) === n
+        );
+        if (turnosEmp.length === 0) continue;
+        processed.add(key);
+        const calc = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos, emp.tipo_contrato);
+        w.ord[n] = (w.ord[n] || 0) + (calc.total_bruto - (calc.desglose.HED?.valor || 0) - (calc.desglose.HEN?.valor || 0) - (calc.desglose.HEDD_A?.valor || 0) - (calc.desglose.HEDD_B?.valor || 0) - (calc.desglose.HEND_A?.valor || 0) - (calc.desglose.HEND_B?.valor || 0));
+        w.ext[n] = (w.ext[n] || 0) + (calc.desglose.HED?.valor || 0) + (calc.desglose.HEN?.valor || 0) + (calc.desglose.HEDD_A?.valor || 0) + (calc.desglose.HEDD_B?.valor || 0) + (calc.desglose.HEND_A?.valor || 0) + (calc.desglose.HEND_B?.valor || 0);
+      }
     }
     return [1, 2, 3, 4, 5].map(n => ({
       name: `Sem ${n}`,
@@ -283,7 +309,7 @@ export default function DashboardPage() {
       days.forEach(day => {
         if (!dias.includes(day.dow)) return;
         tpls.forEach(t => {
-          if (shifts.some(s => s.template_id === t.id && localDate(new Date(s.start_time)) === day.ds)) return;
+          if (shifts.some(s => s.template_id === t.id && isoDate(s.start_time) === day.ds)) return;
           out.push({ date: day.d, ds: day.ds, area: area.nombre, tpl: t.nombre, hr: `${t.hora_inicio.slice(0, 5)} a ${t.hora_fin.slice(0, 5)}` });
         });
       });

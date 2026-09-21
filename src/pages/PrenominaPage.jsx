@@ -474,7 +474,7 @@ export default function PrenominaPage() {
 
     const res = employees.map(emp => {
       const turnosEmp = shifts.filter(s => s.employee_id === emp.id);
-      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos);
+      const calculo = procesarTurnosEmpleado(turnosEmp, emp.valor_hora, festivos, emp.tipo_contrato);
       const empArea = areaByEmp[emp.id];
       return {
         ...emp,
@@ -495,8 +495,11 @@ export default function PrenominaPage() {
     if (employees.length > 0 && shifts.length > 0) {
       handleCalcular();
       autoCalcRef.current = true;
-    } else if (employees.length > 0 && !autoCalcRef.current && !calculando) {
-      // Sin turnos pero con empleados: mostrar resultados vacíos
+    } else if (employees.length > 0) {
+      // Sin turnos pero con empleados: mostrar resultados vacíos.
+      // ⚠️ Importante: resetear calculando=false aquí, sin depender de
+      // autoCalcRef.current. Sin este reset, tras una primera calc exitosa,
+      // navegar a un mes sin turnos deja calculando=true para siempre → spinner infinito.
       setResultados(employees.map(emp => ({
         ...emp,
         turnos: 0,
@@ -507,9 +510,14 @@ export default function PrenominaPage() {
         advertencias: [],
       })));
       setCalculado(true);
+      setCalculando(false);
+    } else {
+      // Sin empleados ni turnos: también resetear para no dejar spinner colgado
+      setCalculando(false);
+      setCalculado(false);
     }
     setIsInitialLoad(false);
-  }, [mes, anio, employees, shifts.length, handleCalcular, calculando]);
+  }, [mes, anio, employees, shifts.length, handleCalcular]);
 
   const handleExportCSV = () => {
     const headers = ['Empleado','Cédula','Cargo','Área','Valor/Hora','Turnos',

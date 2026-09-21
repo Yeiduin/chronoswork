@@ -299,7 +299,7 @@ function TemplatesPanel({ area, shifts, periodo, onAutoAssign, autoAssignLoading
 
       templates.forEach(t => {
         turnosTotales++;
-        const isCovered = shifts.some(s => s.template_id === t.id && getLocalYYYYMMDD(new Date(s.start_time)) === dateStr);
+        const isCovered = shifts.some(s => s.template_id === t.id && String(s.start_time).slice(0, 10) === dateStr);
         if (isCovered) {
           turnosCubiertos++;
         } else {

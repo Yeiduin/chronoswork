@@ -1,6 +1,8 @@
 import { supabase } from '../config/supabaseClient';
+import { logger } from '../config/logger';
 import { useAuth } from '../context/AuthContext';
 import { createCrudHook } from './createCrudHook';
+import { DEFAULT_HORAS_MENSUALES } from '../config/constants';
 
 // ─── Factory: hook base para areas (solo fetch + estado + soft delete) ────────
 const useCrudAreas = createCrudHook({
@@ -83,23 +85,27 @@ export function useAreas() {
         shift_kind: t.shift_kind || 'STANDARD',
         activo: true,
       }));
-      await supabase.from('shift_templates').insert(templatesToInsert);
+      const { error: tplErr } = await supabase.from('shift_templates').insert(templatesToInsert);
+      if (tplErr) logger.warn('useAreas', 'Error al crear franjas iniciales:', tplErr.message);
     } else {
       // Si no, copiamos las globales como respaldo
-      const { data: globalTemplates } = await supabase
+      const { data: globalTemplates, error: globErr } = await supabase
         .from('shift_templates')
         .select('nombre, hora_inicio, hora_fin, cruza_medianoche, color, shift_kind, activo')
         .eq('tenant_id', tenant.id)
         .is('area_id', null)
         .eq('activo', true);
 
-      if (globalTemplates && globalTemplates.length > 0) {
+      if (globErr) {
+        logger.warn('useAreas', 'Error al leer plantillas globales:', globErr.message);
+      } else if (globalTemplates && globalTemplates.length > 0) {
         const templatesToInsert = globalTemplates.map(t => ({
           ...t,
           area_id: data.id,
           tenant_id: tenant.id
         }));
-        await supabase.from('shift_templates').insert(templatesToInsert);
+        const { error: tplErr } = await supabase.from('shift_templates').insert(templatesToInsert);
+        if (tplErr) logger.warn('useAreas', 'Error al crear plantillas de respaldo:', tplErr.message);
       }
     }
 
@@ -123,22 +129,44 @@ export function useAreas() {
       .single();
     if (updErr) throw updErr;
 
-    // Propagar valor_hora_default a empleados no especiales SOLO si se solicitó
+    // Propagar valor_hora_default y salario_mensual a empleados no especiales SOLO si se solicitó
     if (propagarSalario && updates.valor_hora_default !== undefined) {
-      const { data: areaEmps } = await supabase
+      const { data: areaEmps, error: empErr } = await supabase
         .from('area_employees')
         .select('employee_id')
         .eq('area_id', id)
         .eq('tenant_id', tenant.id);
+      if (empErr) logger.warn('useAreas', 'Error al leer empleados del área:', empErr.message);
 
       if (areaEmps && areaEmps.length > 0) {
         const empIds = areaEmps.map(ae => ae.employee_id);
-        await supabase
+        const { data: empsToUpdate, error: empReadErr } = await supabase
           .from('employees')
-          .update({ valor_hora: updates.valor_hora_default })
+          .select('id, horas_mensuales_contrato, horas_semanales_contrato')
           .in('id', empIds)
           .eq('es_especial', false)
           .eq('tenant_id', tenant.id);
+
+        if (empReadErr) {
+          logger.warn('useAreas', 'Error al leer datos de empleados para propagar salario:', empReadErr.message);
+        } else if (empsToUpdate && empsToUpdate.length > 0) {
+          const newValorHora = parseFloat(updates.valor_hora_default);
+          const updatePromises = empsToUpdate.map(emp => {
+            const horasMensuales = emp.horas_mensuales_contrato || (emp.horas_semanales_contrato ? Math.round(emp.horas_semanales_contrato * 4.333) : DEFAULT_HORAS_MENSUALES);
+            const newSalarioMensual = Math.round(newValorHora * horasMensuales);
+            return supabase
+              .from('employees')
+              .update({
+                valor_hora: newValorHora,
+                salario_mensual: newSalarioMensual,
+              })
+              .eq('id', emp.id)
+              .eq('tenant_id', tenant.id);
+          });
+          const results = await Promise.all(updatePromises);
+          const hasError = results.some(r => r.error);
+          if (hasError) logger.warn('useAreas', 'Error al propagar salario en algunos empleados');
+        }
       }
     }
 
@@ -160,11 +188,18 @@ export function useAreas() {
 
   /** Asigna un empleado a un área (remueve de la anterior si tenía) */
   const assignEmployee = async (areaId, employeeId) => {
-    await supabase
+    // Validar que areaId pertenece al tenant actual (anti cross-tenant).
+    const areaPertenece = areas.some(a => a.id === areaId);
+    if (!areaPertenece) {
+      throw new Error(`El área ${areaId} no pertenece al tenant actual.`);
+    }
+
+    const { error: delErr } = await supabase
       .from('area_employees')
       .delete()
       .eq('employee_id', employeeId)
       .eq('tenant_id', tenant.id);
+    if (delErr) throw delErr;
 
     const { error: insErr } = await supabase
       .from('area_employees')

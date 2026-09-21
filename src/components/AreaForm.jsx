@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // ChronosWork — Modal de creación/edición de Áreas
 // Wizard 3 pasos con explicaciones claras para cualquier empresa.
 // Todos los campos inicializados siempre (creación y edición).
@@ -225,64 +225,92 @@ export default function AreaFormModal({ area, onClose }) {
   };
 
   // ── Validaciones por paso ────────────────────────────────────────────────
-  const validateStep = (s) => {
-    setError('');
+  // Devuelve el mensaje de error del paso, o '' si es válido (función pura:
+  // handleSubmit la usa para validar todos los pasos sin pisar errores).
+  const stepError = (s) => {
     if (s === 1) {
-      if (!form.nombre.trim()) { setError('El nombre del área es obligatorio.'); return false; }
-      if (!form.sector) { setError('Selecciona el sector económico de tu empresa.'); return false; }
-      if (!form.dias_trabajo.length) { setError('Selecciona al menos un día de trabajo.'); return false; }
+      if (!form.nombre.trim()) return 'El nombre del área es obligatorio.';
+      if (!form.sector) return 'Selecciona el sector económico de tu empresa.';
+      if (!form.dias_trabajo.length) return 'Selecciona al menos un día de trabajo.';
     }
     if (s === 2) {
       const v = parseFloat(form.valor_hora_default);
-      if (!v || v <= 0) { setError('El valor por hora debe ser mayor a 0.'); return false; }
-      if (v < 5000) { setError(`El valor por hora ($${v}) es muy bajo. El SMLV/hora 2025 es $${SMLV_HORA_2025}.`); return false; }
-      if (form.hora_inicio_dia && form.hora_fin_dia) {
+      if (!v || v <= 0) return 'El valor por hora debe ser mayor a 0.';
+      if (v < SMLV_HORA_2025) {
+        return `El valor por hora ($${v.toLocaleString('es-CO')}) es inferior al mínimo legal ($${SMLV_HORA_2025.toLocaleString('es-CO')}).`;
+      }
+      if (!es247 && form.hora_inicio_dia && form.hora_fin_dia) {
         if (form.hora_inicio_dia >= form.hora_fin_dia) {
-          setError('La hora de inicio del día debe ser anterior a la hora de cierre.'); return false;
+          return 'En horario diurno/oficina, la hora de inicio debe ser anterior a la de cierre.';
         }
       }
       if (form.min_empleados_dia && form.max_empleados_dia) {
         if (parseInt(form.min_empleados_dia) > parseInt(form.max_empleados_dia)) {
-          setError('El mínimo de personas por día no puede ser mayor al máximo.'); return false;
+          return 'El mínimo de personas por día no puede ser mayor al máximo.';
         }
       }
     }
     if (s === 3) {
       if (es247 && form.night_shift_enabled) {
         if (!form.night_shift_start || !form.night_shift_end) {
-          setError('Configura las horas de inicio y fin del turno nocturno.'); return false;
+          return 'Configura las horas de inicio y fin del turno nocturno.';
         }
         if (form.min_empleados_noche < 1) {
-          setError('Debe haber al menos 1 persona en el turno nocturno.'); return false;
+          return 'Debe haber al menos 1 persona en el turno nocturno.';
         }
       }
     }
-    return true;
+    return '';
+  };
+
+  const validateStep = (s) => {
+    const msg = stepError(s);
+    setError(msg);
+    return !msg;
   };
 
   const next = () => { if (validateStep(step)) setStep(s => Math.min(3, s + 1)); };
   const prev = () => { setError(''); setStep(s => Math.max(1, s - 1)); };
 
   const handleSubmit = async () => {
-    if (!validateStep(1) || !validateStep(2) || !validateStep(3)) return;
+    // Validar todos los pasos y mostrar el error del PRIMERO que falle
+    // (antes los pasos posteriores válidos pisaban el mensaje con '').
+    for (let s = 1; s <= 3; s++) {
+      const msg = stepError(s);
+      if (msg) {
+        setStep(s);
+        setError(msg);
+        return;
+      }
+    }
 
-    // Si en edición se cambió el valor_hora, pedir confirmación
-    // (la propagación recalcula la nómina de todos los empleados del área)
+    // Si en edición se cambió el valor_hora, pedir confirmación explícita:
+    // la propagación recalcula la nómina de TODOS los empleados del área.
     if (isEdit && showSalaryWarning) {
-      // El warning ya se mostró; el usuario ya vio el mensaje.
-      // Procedemos: el hook updateArea se encarga de la propagación.
+      const ok = window.confirm(
+        `¿Confirmas propagar el nuevo valor hora ($${parseFloat(form.valor_hora_default).toLocaleString('es-CO')}) ` +
+        `a TODOS los empleados del área? Esto recalcula la nómina de cada empleado no especial.`
+      );
+      if (!ok) return;
     }
 
     setLoading(true);
     try {
-      // Limpiar el payload: quitar break_minutos (reemplazado por break_policy)
-      // y franjas_iniciales (solo relevantes en creación)
-      const { break_minutos, franjas_iniciales, ...restForm } = form;
+      // Limpiar el payload: quitar break_minutos (reemplazado por break_policy).
+      // ⚠️ franjas_iniciales SÍ se pasan a createArea (en creación): es la lista
+      // de turnos típicos del sector que useAreas.createArea inserta en
+      // shift_templates automáticamente. En edición vienen vacías ([]), por lo
+      // que createArea no las procesa — pero updateArea las descarta abajo.
+      const { break_minutos, ...restForm } = form;
       const valorNum = parseFloat(form.valor_hora_default);
       const payload = { ...restForm, valor_hora_default: valorNum };
 
       if (isEdit) {
-        await updateArea(area.id, payload);
+        // En edición las franjas_iniciales no aplican (ya se crearon al alta).
+        // propagarSalario: true solo si el usuario confirmó el cambio de valor_hora.
+        const { franjas_iniciales, ...editPayload } = payload;
+        if (showSalaryWarning) editPayload.propagarSalario = true;
+        await updateArea(area.id, editPayload);
       } else {
         await createArea(payload);
       }
@@ -463,27 +491,33 @@ export default function AreaFormModal({ area, onClose }) {
                 {es247 && ' Para 24/7, elige un patrón rotativo (ej: 6x1 = trabaja 6, descansa 1).'}
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.4rem' }}>
-                {PATRONES_ROTATIVOS.map(p => (
+                {PATRONES_ROTATIVOS.map(p => {
+                  const isPersonalizado = p.value === 'PERSONALIZADO';
+                  const isSelected = form.patron_rotativo === p.value
+                    || (isPersonalizado && !form.patron_rotativo);
+                  return (
                   <button key={p.value} type="button"
                     onClick={() => {
-                      const isPersonalizado = p.value === 'PERSONALIZADO';
+                      // "Personalizado" NO cambia los días de descanso (antes
+                      // asignaba 0, guardando un área sin descansos).
                       setForm(prev => ({
                         ...prev,
                         patron_rotativo: isPersonalizado ? null : p.value,
-                        dias_descanso: p.diasDescanso,
-                        dias_descanso_default: p.diasDescanso,
+                        dias_descanso: isPersonalizado ? prev.dias_descanso : p.diasDescanso,
+                        dias_descanso_default: isPersonalizado ? prev.dias_descanso_default : p.diasDescanso,
                       }));
                     }}
                     style={{
                       padding: '0.5rem', borderRadius: 8, cursor: 'pointer',
-                      border: `2px solid ${form.patron_rotativo === p.value ? 'var(--cw-accent)' : 'var(--border-subtle)'}`,
-                      background: form.patron_rotativo === p.value ? 'var(--cw-accent)18' : 'var(--bg-glass)',
+                      border: `2px solid ${isSelected ? 'var(--cw-accent)' : 'var(--border-subtle)'}`,
+                      background: isSelected ? 'var(--cw-accent)18' : 'var(--bg-glass)',
                       textAlign: 'left', fontSize: '0.72rem',
                     }}>
                     <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{p.label}</div>
                     <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>{p.desc}</div>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -562,7 +596,7 @@ export default function AreaFormModal({ area, onClose }) {
                     = {new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 })
                       .format(parseFloat(form.valor_hora_default) || 0)} / hora
                     {' · '}
-                    {(parseFloat(form.valor_hora_default) * 240).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 })} / mes (240h)
+                    {Math.round(parseFloat(form.valor_hora_default) * 182).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 })} / mes (~182h / 42h sem)
                   </div>
                 )}
                 <div className="field-hint">
@@ -850,7 +884,7 @@ export default function AreaFormModal({ area, onClose }) {
                 <label style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-primary)' }}>Máx. domingos/mes:</label>
                 <input type="number" min="0" max="5" step="1" className="cw-input" style={{ width: 70 }}
                   value={form.max_domingos_mes_area}
-                  onChange={e => setForm(p => ({ ...p, max_domingos_mes_area: parseInt(e.target.value) || 2 }))} />
+                  onChange={e => setForm(p => ({ ...p, max_domingos_mes_area: Number.isNaN(parseInt(e.target.value, 10)) ? 2 : parseInt(e.target.value, 10) }))} />
                 <span className="field-hint">CST Colombia: mínimo 2 de descanso</span>
               </div>
             </div>
@@ -894,14 +928,6 @@ export default function AreaFormModal({ area, onClose }) {
                 ☕ Los descansos (almuerzo y breaks) se configuran en <strong>Política de Descansos</strong>
                 al seleccionar el área, donde defines su duración, espaciado y reglas por horas de turno.
               </div>
-            </div>
-
-            <div className="cw-form-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.85rem' }}>
-                <input type="checkbox" checked={form.jornada_partida}
-                  onChange={e => setForm(p => ({ ...p, jornada_partida: e.target.checked }))} />
-                <span>Permitir turnos partidos (con hora de almuerzo)</span>
-              </label>
             </div>
 
             <div className="cw-form-group">

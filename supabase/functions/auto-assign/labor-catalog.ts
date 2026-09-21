@@ -5,7 +5,8 @@
 
 /** Defaults legales Colombia (Ley 2101/2021 + Ley 2466/2025) */
 export const LEGAL_DEFAULTS_CO = {
-  maxHorasSemanales: 42,
+  maxHorasSemanales: 42,        // general (Ley 2101/2021)
+  maxHorasSemanalesPorHoras: 30, // contrato POR_HORAS (Art. 47 CST)
   minHorasTurno: 4,
   maxHorasTurno: 9,
   maxHorasDiarias: 9,

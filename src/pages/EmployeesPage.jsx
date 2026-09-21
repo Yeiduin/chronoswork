@@ -4,9 +4,10 @@
 import { useDragScroll } from '../hooks/useDragScroll';
 
 import { useState, useEffect, useMemo } from 'react';
-import { supabase } from '../config/supabaseClient';
+import { supabase, withRetry } from '../config/supabaseClient';
 import { useAuth } from '../context/AuthContext';
 import { useAreas } from '../hooks/useAreas';
+import { useEmployees, cleanEmployeeData } from '../hooks/useEmployees';
 import { useShifts } from '../hooks/useShifts';
 import { useAbsences } from '../hooks/useAbsences';
 import { getPeriodoActual } from '../core/dateUtils';
@@ -255,6 +256,8 @@ export default function EmployeesPage() {
   const [provisioningEmployee, setProvisioningEmployee] = useState(null);
   const [viewCredentialsEmployee, setViewCredentialsEmployee] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
   const [sortCol, setSortCol] = useState('nombre');
   const [sortDir, setSortDir] = useState('asc');
   const [inlineAreaEdit, setInlineAreaEdit] = useState(null);
@@ -300,13 +303,15 @@ export default function EmployeesPage() {
 
   // ─── Guardar (crear o actualizar) empleado ─────────────────────────────
   const handleSave = async (formData, selectedAreaId) => {
+    const cleaned = cleanEmployeeData(formData);
     let savedEmployee;
     if (editingEmployee) {
       // Actualizar
       const { data, error } = await supabase
         .from('employees')
-        .update({ ...formData, tenant_id: tenant.id })
+        .update({ ...cleaned, tenant_id: tenant.id })
         .eq('id', editingEmployee.id)
+        .eq('tenant_id', tenant.id)
         .select()
         .single();
       if (error) throw error;
@@ -315,7 +320,7 @@ export default function EmployeesPage() {
       // Crear
       const { data, error } = await supabase
         .from('employees')
-        .insert([{ ...formData, tenant_id: tenant.id }])
+        .insert([{ ...cleaned, tenant_id: tenant.id }])
         .select()
         .single();
       if (error) throw error;
@@ -333,21 +338,64 @@ export default function EmployeesPage() {
     return savedEmployee;
   };
 
-  // ─── Eliminar empleado (soft delete) ──────────────────────────────────
-  const handleDelete = async () => {
-    if (!deleteConfirm) return;
+  // ─── Eliminar colaborador (desactivar o borrar permanente) ───────────
+  const handleDelete = async (permanent = false) => {
+    if (!deleteConfirm || !tenant) return;
     const { id } = deleteConfirm;
-    const { error } = await supabase
-      .from('employees')
-      .update({ activo: false })
-      .eq('id', id);
-    if (error) {
-      alert('Error al eliminar: ' + error.message);
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      // 1. Verificar/refrescar sesión ante tokens expirados
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (!sessionData?.session) {
+          await supabase.auth.refreshSession();
+        }
+      } catch {
+        // Continuar si la sesión ya está activa
+      }
+
+      let res;
+      if (permanent) {
+        // Borrado permanente: desvincular de área y eliminar registro
+        await supabase.from('area_employees').delete().eq('employee_id', id);
+        res = await withRetry(() =>
+          supabase
+            .from('employees')
+            .delete()
+            .eq('id', id)
+            .eq('tenant_id', tenant.id)
+        );
+      } else {
+        // Desactivación (soft delete recomendado para conservar historial)
+        res = await withRetry(() =>
+          supabase
+            .from('employees')
+            .update({ activo: false })
+            .eq('id', id)
+            .eq('tenant_id', tenant.id)
+        );
+      }
+
+      if (res?.error) {
+        throw res.error;
+      }
+
       setDeleteConfirm(null);
-      return;
+      setDeleteError(null);
+      await fetchEmployees();
+    } catch (err) {
+      console.error('Error al eliminar colaborador:', err);
+      const isNetwork = String(err?.message || '').includes('Failed to fetch') ||
+                        String(err?.message || '').includes('NetworkError') ||
+                        String(err?.message || '').includes('ERR_CONNECTION');
+      const userMsg = isNetwork
+        ? 'Error de conexión con el servidor (Failed to fetch). Comprueba tu conexión a internet o intenta nuevamente.'
+        : (err?.message || 'Error al eliminar el colaborador.');
+      setDeleteError(userMsg);
+    } finally {
+      setDeleting(false);
     }
-    setDeleteConfirm(null);
-    await fetchEmployees();
   };
 
   // ─── Helpers para UI ──────────────────────────────────────────────────
@@ -661,10 +709,26 @@ export default function EmployeesPage() {
                       <td style={{ fontWeight: 600 }}>
                         {emp.nombre}
                         {sinTurno && (
-                          <MdWarningAmber
-                            style={{ color: '#f59e0b', fontSize: '1rem', marginLeft: '0.3rem', verticalAlign: 'middle' }}
-                            title="Sin turnos en el período actual"
-                          />
+                          <span
+                            title="Este colaborador aún no tiene turnos programados en el período actual"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              color: '#b45309',
+                              fontSize: '0.68rem',
+                              background: 'rgba(245, 158, 11, 0.14)',
+                              border: '1px solid rgba(245, 158, 11, 0.3)',
+                              padding: '0.1rem 0.4rem',
+                              borderRadius: '4px',
+                              marginLeft: '0.45rem',
+                              fontWeight: 600,
+                              cursor: 'help',
+                              verticalAlign: 'middle',
+                            }}
+                          >
+                            <MdWarningAmber style={{ fontSize: '0.85rem' }} /> Sin turnos
+                          </span>
                         )}
                       </td>
                       <td>{emp.cargo || '—'}</td>
@@ -825,7 +889,10 @@ export default function EmployeesPage() {
                           </button>
                           <button
                             className="cw-btn cw-btn--icon cw-btn--danger"
-                            onClick={() => setDeleteConfirm({ id: emp.id, nombre: emp.nombre })}
+                            onClick={() => {
+                              setDeleteError(null);
+                              setDeleteConfirm({ id: emp.id, nombre: emp.nombre });
+                            }}
                             title="Eliminar"
                           >
                             <MdDelete />
@@ -859,9 +926,10 @@ export default function EmployeesPage() {
             if (refresh) fetchEmployees();
           }}
           onBulkSave={async (employeeData) => {
+            const cleaned = cleanEmployeeData(employeeData);
             const { data, error } = await supabase
               .from('employees')
-              .insert([{ ...employeeData, tenant_id: tenant.id }])
+              .insert([{ ...cleaned, tenant_id: tenant.id }])
               .select()
               .single();
             if (error) throw error;
@@ -891,21 +959,88 @@ export default function EmployeesPage() {
 
       {/* Confirmar eliminación de empleado */}
       {deleteConfirm && (
-        <div className="cw-modal-overlay" onClick={(e) => e.target === e.currentTarget && setDeleteConfirm(null)}>
-          <div className="cw-modal animate-slide-up" style={{ maxWidth: 420 }}>
+        <div className="cw-modal-overlay" onClick={(e) => e.target === e.currentTarget && !deleting && setDeleteConfirm(null)}>
+          <div className="cw-modal animate-slide-up" style={{ maxWidth: 460 }}>
             <div className="cw-modal__header">
               <h3 className="cw-modal__title">🗑️ Eliminar colaborador</h3>
-              <button className="cw-modal__close" onClick={() => setDeleteConfirm(null)}><MdClose /></button>
+              <button className="cw-modal__close" disabled={deleting} onClick={() => setDeleteConfirm(null)}><MdClose /></button>
             </div>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0 1.25rem', marginBottom: '1.25rem' }}>
-              ¿Eliminar a <strong style={{ color: 'var(--text-primary)' }}>{deleteConfirm.nombre}</strong>?
-              El colaborador se marcará como inactivo. Esta acción se puede revertir desde la base de datos.
-            </p>
-            <div className="cw-modal__footer">
-              <button className="cw-btn cw-btn--secondary" onClick={() => setDeleteConfirm(null)}>Cancelar</button>
-              <button className="cw-btn cw-btn--danger" onClick={handleDelete}>
-                <MdDelete /> Eliminar
+            <div style={{ padding: '0 1.25rem 0.5rem' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '0.75rem', lineHeight: 1.5 }}>
+                ¿Deseas eliminar a <strong style={{ color: 'var(--text-primary)' }}>{deleteConfirm.nombre}</strong>?
+              </p>
+
+              {deleteError && (
+                <div className="cw-alert cw-alert--error" style={{ marginBottom: '0.75rem', fontSize: '0.8rem' }}>
+                  ⚠️ {deleteError}
+                </div>
+              )}
+
+              <div style={{
+                background: 'var(--bg-glass, rgba(0,0,0,0.03))',
+                border: '1px solid var(--border-subtle, rgba(0,0,0,0.08))',
+                borderRadius: 8,
+                padding: '0.65rem 0.85rem',
+                fontSize: '0.78rem',
+                color: 'var(--text-muted)',
+                lineHeight: 1.4,
+              }}>
+                💡 <strong>Desactivar:</strong> Oculta al colaborador pero conserva su historial.<br />
+                🗑️ <strong>Borrar definitivo:</strong> Elimina permanentemente el registro (útil si se creó por prueba o error).
+              </div>
+            </div>
+
+            <div className="cw-modal__footer" style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button className="cw-btn cw-btn--secondary" disabled={deleting} onClick={() => setDeleteConfirm(null)}>
+                Cancelar
               </button>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  className="cw-btn"
+                  style={{
+                    background: '#dc2626',
+                    color: '#ffffff',
+                    border: '1px solid #b91c1c',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    fontWeight: 600,
+                    padding: '0.5rem 0.9rem',
+                    cursor: deleting ? 'not-allowed' : 'pointer',
+                  }}
+                  disabled={deleting}
+                  onClick={() => handleDelete(true)}
+                  title="Eliminar registro completamente de la base de datos"
+                >
+                  {deleting ? (
+                    <span className="cw-spinner cw-spinner--sm" style={{ borderColor: '#ffffff', borderTopColor: 'transparent' }}></span>
+                  ) : (
+                    <MdDelete style={{ fontSize: '1.1rem', color: '#ffffff' }} />
+                  )}
+                  <span>Borrar definitivo</span>
+                </button>
+                <button
+                  className="cw-btn cw-btn--secondary"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    fontWeight: 600,
+                    padding: '0.5rem 0.9rem',
+                    cursor: deleting ? 'not-allowed' : 'pointer',
+                  }}
+                  disabled={deleting}
+                  onClick={() => handleDelete(false)}
+                  title="Marcar como inactivo conservando su historial"
+                >
+                  {deleting ? (
+                    <span className="cw-spinner cw-spinner--sm"></span>
+                  ) : (
+                    <MdCheckCircle style={{ color: '#059669', fontSize: '1.1rem' }} />
+                  )}
+                  <span>Solo Desactivar</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

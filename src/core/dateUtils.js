@@ -35,10 +35,15 @@ export function formatFechaHora(fecha) {
 }
 
 /**
- * Genera timestamp ISO completo a partir de fecha (string) y hora (string HH:mm)
+ * Genera timestamp ISO completo a partir de fecha (string) y hora (string HH:mm).
+ *
+ * ⚠️ DEPRECATED: usar getLocalISOString (valida entradas y produce el mismo
+ * formato canónico que consume el resto de la app: "YYYY-MM-DDTHH:00:00Z").
+ * Esta función se mantiene como alias delgado por compatibilidad y delega
+ * en getLocalISOString para garantizar un único formato.
  */
 export function buildISO(fecha, hora) {
-  return `${fecha}T${hora}:00.000Z`;
+  return getLocalISOString(fecha, hora);
 }
 
 /**
@@ -223,6 +228,12 @@ export function getNombreMes(mes) {
 
 /**
  * Determina si una fecha es domingo o festivo.
+ *
+ * ⚠️ Usa consistentemente UTC (getUTCDay + toISOString) porque toda la app
+ * guarda los turnos como "hora de reloj" en UTC (ej: 22:00 → "...T22:00:00Z").
+ * Mezclar getDay() (local) con toISOString() (UTC) desplazaba domingos/festivos
+ * en horas cercanas a medianoche (ej: sábado 20:00 Colombia = domingo 01:00 UTC).
+ *
  * @param {Date|string} fecha
  * @param {string[]} [festivos=[]] - Array de fechas 'YYYY-MM-DD' (desde BD o fallback).
  * @returns {boolean}
@@ -230,7 +241,7 @@ export function getNombreMes(mes) {
 export function esDominicalOFestivo(fecha, festivos = []) {
   const d = fecha instanceof Date ? fecha : new Date(fecha);
   if (isNaN(d.getTime())) return false;
-  const esDOM = d.getDay() === 0;
+  const esDOM = d.getUTCDay() === 0;
   const dateStr = d.toISOString().slice(0, 10);
   const esFestivo = Array.isArray(festivos) ? festivos.includes(dateStr) : false;
   return esDOM || esFestivo;
@@ -257,6 +268,9 @@ export function formatDuracionNovedad(abs) {
     // Por días
     const fInicio = new Date(abs.fecha_inicio + 'T00:00:00');
     const fFin = new Date(abs.fecha_fin + 'T00:00:00');
+    // Validar fechas inválidas (NaN) antes de calcular la diferencia,
+    // si no devuelve "NaN días" o resultados erróneos.
+    if (isNaN(fInicio.getTime()) || isNaN(fFin.getTime())) return '—';
     const diffTime = fFin.getTime() - fInicio.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // Inclusivo
     return `${diffDays} día${diffDays > 1 ? 's' : ''}`;

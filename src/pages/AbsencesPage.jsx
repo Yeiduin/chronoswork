@@ -205,7 +205,10 @@ export default function AbsencesPage() {
   const [search, setSearch] = useState('');
   const [activeTab, setActiveTab] = useState('pendientes');
 
-  const today = new Date().toISOString().slice(0, 10);
+  // "Hoy" en zona horaria de Colombia (America/Bogota, UTC-5).
+  // toISOString() salta al día siguiente después de 19:00 hora Colombia,
+  // lo que marcaba novedades activas como "Finalizadas" por la noche.
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Bogota' });
 
   const filtered = absences.filter(abs => {
     const term = search.toLowerCase();

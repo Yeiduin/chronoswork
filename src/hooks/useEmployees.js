@@ -62,7 +62,7 @@ export function cleanEmployeeData(data) {
 
   if (out.horas_mensuales_contrato === '' || out.horas_mensuales_contrato === null) {
     out.horas_mensuales_contrato = DEFAULT_HORAS_MENSUALES;
-  } else { const n = parseInt(String(out.horas_mensuales_contrato), 10); out.horas_mensuales_contrato = isNaN(n) ? null : n; }
+  } else { const n = parseInt(String(out.horas_mensuales_contrato), 10); out.horas_mensuales_contrato = (isNaN(n) || n <= 0) ? DEFAULT_HORAS_MENSUALES : n; }
 
   if (out.dias_descanso_semana === '' || out.dias_descanso_semana === null) {
     out.dias_descanso_semana = DEFAULT_DIAS_DESCANSO;

@@ -2,6 +2,8 @@
 // VALIDADORES DE NEGOCIO — ChronosWork
 // ============================================================
 
+import { SMLV_HORA_2025 } from '../config/laborCatalog';
+
 /**
  * Valida formato de cédula colombiana (numérico, 5-10 dígitos)
  */
@@ -33,8 +35,10 @@ export function validarValorHora(valor) {
   if (isNaN(num) || num <= 0) {
     return { valid: false, message: 'Ingrese un valor de hora válido mayor a 0.' };
   }
-  if (num < 5000) {
-    return { valid: false, message: 'El valor mínimo por hora en 2026 es $5.000 COP.' };
+  // Umbral dinámico desde el catálogo legal (antes estaba hardcodeado en 5000,
+  // lo que permitía valores por debajo del SMLV/hora legal).
+  if (num < SMLV_HORA_2025) {
+    return { valid: false, message: `El valor mínimo por hora es $${SMLV_HORA_2025.toLocaleString('es-CO')} COP (SMLV/hora).` };
   }
   if (num > 2000000) {
     return { valid: false, message: 'El valor de hora no puede superar $2.000.000 COP.' };
@@ -75,6 +79,11 @@ export function validarPassword(password) {
 export function validarRangoFechas(fechaInicio, fechaFin) {
   const inicio = new Date(fechaInicio);
   const fin = new Date(fechaFin);
+  // Validar fechas inválidas (NaN) antes de comparar — sin esto, una fecha
+  // inválida/vacía pasa la validación porque la comparación con NaN da false.
+  if (isNaN(inicio.getTime()) || isNaN(fin.getTime())) {
+    return { valid: false, message: 'Las fechas proporcionadas no son válidas.' };
+  }
   if (fin < inicio) {
     return { valid: false, message: 'La fecha fin debe ser igual o posterior a la fecha de inicio.' };
   }
@@ -85,8 +94,13 @@ export function validarRangoFechas(fechaInicio, fechaFin) {
  * Valida que un nombre no esté vacío y tenga al menos 2 palabras
  */
 export function validarNombre(nombre) {
+  // Null-guard: sin esto, nombre.trim() lanza TypeError si nombre es null/undefined
+  // (caso común en bulk import con campos vacíos).
+  if (!nombre || typeof nombre !== 'string') {
+    return { valid: false, message: 'El nombre es obligatorio.' };
+  }
   const palabras = nombre.trim().split(/\s+/);
-  if (palabras.length < 2) {
+  if (!nombre.trim() || palabras.length < 2) {
     return { valid: false, message: 'Ingrese nombre y apellido completos.' };
   }
   return { valid: true };

@@ -17,25 +17,40 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
  * @param {number} [options.maxDelay=5000] - Espera máxima entre reintentos
  * @returns {Promise<T>}
  */
-export async function withRetry(fn, { maxRetries = 2, baseDelay = 1000, maxDelay = 5000 } = {}) {
+export async function withRetry(fn, { maxRetries = 3, baseDelay = 800, maxDelay = 4000 } = {}) {
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      const res = await fn();
+      if (res && res.error) {
+        const err = res.error;
+        const isNetworkError = !err.code || err.code === 'NETWORK_ERROR' ||
+          String(err.message || '').includes('Failed to fetch') ||
+          String(err.message || '').includes('NetworkError') ||
+          String(err.message || '').includes('ERR_CONNECTION') ||
+          String(err.message || '').includes('timeout') ||
+          String(err.message || '').includes('Timeout') ||
+          err.status === 0 ||
+          err.status == null;
+        if (isNetworkError && attempt < maxRetries) {
+          const delay = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 300, maxDelay);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+      return res;
     } catch (err) {
       lastError = err;
-      // Solo reintentar en errores de red/conección, no en errores de aplicación
       const isNetworkError = !err.code || err.code === 'NETWORK_ERROR' ||
-        err.message?.includes('Failed to fetch') ||
-        err.message?.includes('NetworkError') ||
-        err.message?.includes('ERR_CONNECTION') ||
-        err.message?.includes('timeout') ||
-        err.message?.includes('Timeout') ||
+        String(err.message || '').includes('Failed to fetch') ||
+        String(err.message || '').includes('NetworkError') ||
+        String(err.message || '').includes('ERR_CONNECTION') ||
+        String(err.message || '').includes('timeout') ||
+        String(err.message || '').includes('Timeout') ||
         err.status === 0 ||
         err.status == null;
       if (!isNetworkError || attempt >= maxRetries) throw err;
-      // Espera exponencial con jitter
-      const delay = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 500, maxDelay);
+      const delay = Math.min(baseDelay * Math.pow(2, attempt) + Math.random() * 300, maxDelay);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

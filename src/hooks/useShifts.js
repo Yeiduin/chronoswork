@@ -4,8 +4,10 @@ import { useAuth } from '../context/AuthContext';
 import { generateAutomaticShifts } from '../core/generateAutomaticShifts';
 import { createCrudHook } from './createCrudHook';
 
-// Activar/desactivar Edge Function (true = servidor, false = navegador)
-const USE_EDGE_FUNCTION = true;
+// Activar/desactivar Edge Function. Configurable vía env para distinguir
+// entornos (dev/local sin Edge Function vs prod con Edge Function).
+// Por defecto true (comportamiento original); override con VITE_USE_EDGE_FUNCTION='false'.
+const USE_EDGE_FUNCTION = import.meta.env.VITE_USE_EDGE_FUNCTION !== 'false';
 
 // ─── Factory: hook base para shifts (fetch con caché + CRUD) ──────────────────
 const useCrudShifts = createCrudHook({
@@ -77,7 +79,9 @@ export function useShifts(periodo = null) {
 
   const getShiftsForEmployee = (employeeId, fecha) => {
     return shifts.filter(s => {
-      const shiftDate = s.start_time.slice(0, 10);
+      // Null guard: start_time podría ser null (turno sin fecha) → .slice lanza
+      const shiftDate = s.start_time?.slice(0, 10);
+      if (!shiftDate) return false;
       return s.employee_id === employeeId && shiftDate === fecha;
     });
   };
@@ -120,20 +124,15 @@ export function useShifts(periodo = null) {
     let areaConfig = {};
     if (areaId) {
       try {
+        // Una sola query con todas las columnas (antes eran 3 queries separadas).
+        // ⚠️ Filtrar por tenant_id para evitar leer config de áreas de otros tenants.
         const { data: ad } = await supabase.from('areas')
-          .select('modo_operacion, estrategia_asignacion, min_empleados_noche, noche_solo_empleados_dedicados, permite_dia_cubrir_noche, slots_por_hora, snap_turnos_minutos, balancear_carga, rotar_slots_entre_asesores, permitir_horas_extras, permitir_turno_partido, min_horas_turno_override, max_horas_turno_override')
-          .eq('id', areaId).single();
+          .select('modo_operacion, estrategia_asignacion, min_empleados_noche, noche_solo_empleados_dedicados, permite_dia_cubrir_noche, slots_por_hora, snap_turnos_minutos, balancear_carga, rotar_slots_entre_asesores, permitir_horas_extras, permitir_turno_partido, min_horas_turno_override, max_horas_turno_override, min_empleados_dia, max_empleados_dia, hora_inicio_dia, hora_fin_dia, break_policy')
+          .eq('id', areaId)
+          .eq('tenant_id', tenant.id)
+          .single();
         areaConfig = ad || {};
       } catch (e) { logger.warn('useShifts', 'areaConfig:', e.message); }
-      try {
-        const { data: hc } = await supabase.from('areas')
-          .select('min_empleados_dia, max_empleados_dia, hora_inicio_dia, hora_fin_dia').eq('id', areaId).single();
-        if (hc) areaConfig = { ...areaConfig, ...hc };
-      } catch (e) { /* ok */ }
-      try {
-        const { data: bp } = await supabase.from('areas').select('break_policy').eq('id', areaId).single();
-        if (bp) areaConfig = { ...areaConfig, ...bp };
-      } catch (e) { /* ok */ }
     }
 
     const { shifts: shiftsToInsert, warnings } = generateAutomaticShifts({

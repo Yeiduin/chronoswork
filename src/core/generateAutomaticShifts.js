@@ -1121,6 +1121,20 @@ export function generateAutomaticShifts({
   };
 
   // ── v6: Equidad de fines de semana ──────────────────────────────────
+  // Calcula los límites (lunes 00:00 - domingo 23:59) de la semana de una fecha.
+  // Declarada AQUÍ (antes del primer uso en weekendCount) para evitar TDZ.
+  const weekBounds = (dateObj) => {
+    const d = new Date(dateObj);
+    const dow = d.getDay() || 7;
+    const monday = new Date(d);
+    monday.setDate(monday.getDate() - dow + 1);
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+    return { monday, sunday };
+  };
+
   // Cuenta cuántos fines de semana (sábado+domingo) ha trabajado cada empleado
   const weekendCount = {};
   [...safeExisting].forEach(s => {
@@ -1278,22 +1292,7 @@ export function generateAutomaticShifts({
     return total;
   };
 
-  /**
-   * Calcula los límites (lunes 00:00 - domingo 23:59) de la semana de una fecha.
-   * @param {Date} dateObj - Fecha dentro de la semana
-   * @returns {{monday:Date, sunday:Date}} Lunes y domingo de la semana
-   */
-  const weekBounds = (dateObj) => {
-    const d = new Date(dateObj);
-    const dow = d.getDay() || 7;
-    const monday = new Date(d);
-    monday.setDate(monday.getDate() - dow + 1);
-    monday.setHours(0, 0, 0, 0);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    sunday.setHours(23, 59, 59, 999);
-    return { monday, sunday };
-  };
+  // (weekBounds declarada arriba, antes del primer uso en weekendCount)
 
   /**
    * Obtiene las horas semanales acumuladas de un empleado hasta una fecha.

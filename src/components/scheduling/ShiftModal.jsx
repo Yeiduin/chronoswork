@@ -14,11 +14,19 @@ export default function ShiftModal({ employee, fecha, areaId, areaTemplates, bre
 
   useEffect(() => {
     if (!areaId && areaTemplates.length === 0) {
-      supabase.from('shift_templates').select('*').is('area_id', null).then(({ data }) => {
-        setExtraTemplates(data || []);
-      });
+      // Patrón cancelled: evita setState tras desmontaje.
+      let cancelled = false;
+      supabase.from('shift_templates').select('*').is('area_id', null)
+        .then(({ data, error }) => {
+          if (cancelled) return;
+          if (error) { logger.warn('ShiftModal', 'Error al cargar plantillas globales:', error.message); return; }
+          setExtraTemplates(data || []);
+        });
+      return () => { cancelled = true; };
     }
-  }, [areaId, areaTemplates]);
+    // Usar areaTemplates.length (primitivo) en deps evita re-disparar cuando
+    // el parent pasa un array nuevo de misma referencia pero contenido igual.
+  }, [areaId, areaTemplates.length]);
 
   const allTemplates = areaTemplates.length > 0 ? areaTemplates : extraTemplates;
 

@@ -49,8 +49,14 @@ describe('formatFecha', () => {
 });
 
 describe('buildISO', () => {
-  it('construye timestamp ISO correcto', () => {
-    expect(buildISO('2026-07-06', '14:00')).toBe('2026-07-06T14:00:00.000Z');
+  // buildISO es ahora un alias de getLocalISOString → mismo formato canónico
+  it('construye timestamp ISO correcto (formato canónico sin .000)', () => {
+    expect(buildISO('2026-07-06', '14:00')).toBe('2026-07-06T14:00:00Z');
+  });
+
+  it('valida entradas inválidas (delega en getLocalISOString)', () => {
+    expect(() => buildISO('', '14:00')).toThrow('Invalid time value');
+    expect(() => buildISO('2026-07-06', 'abc')).toThrow('Invalid time value');
   });
 });
 

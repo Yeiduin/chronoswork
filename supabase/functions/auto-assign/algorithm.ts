@@ -23,6 +23,7 @@ export interface Employee {
   permite_partido?: boolean;
   dias_descanso_semana?: number;
   dias_descanso_fijos?: number[];
+  tipo_contrato?: string;
   // v6: Nuevos campos
   skills?: string[];
   seniority?: number;
@@ -685,6 +686,14 @@ export function generateAutomaticShifts(params: AutoAssignParams): { shifts: Gen
     else {
       const h = parseInt(String(emp?.horas_semanales_contrato), 10);
       base = (!isNaN(h) && h > 0 && h <= 60) ? h : maxSemanales;
+    }
+    // CONTRATO POR_HORAS: el límite legal es 30h/sem (Art. 47 CST), no 42h.
+    // Solo aplica si no hay un valor explícito (horas_max_semana / contrato) —
+    // si el empleador fijó uno, se respeta.
+    if (!emp.horas_max_semana && (!emp.horas_semanales_contrato || emp.horas_semanales_contrato <= 0)) {
+      if (emp.tipo_contrato === "POR_HORAS") {
+        base = LEGAL_DEFAULTS_CO.maxHorasSemanalesPorHoras;
+      }
     }
     return base + extrasSemana;
   };

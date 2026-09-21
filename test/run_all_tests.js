@@ -12,6 +12,7 @@ const tests = [
   { name: 'Tests de headcount v5 (priorización)', file: 'test_headcount_v5.test.js' },
   { name: 'Tests call center 24/7 (caso real)', file: 'test_callcenter_24_7.test.js' },
   { name: 'Tests de Excel empleados (plantilla)', file: 'test_excel_empleados.js' },
+  { name: 'Test importación masiva 5 empleados (Excel)', file: 'test_import_5_empleados.mjs' },
 ];
 
 console.log('═══════════════════════════════════════════════════════════');

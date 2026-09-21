@@ -562,7 +562,6 @@ export default function EmployeeProfilePage() {
     fecha_inicio: '', 
     fecha_fin: '', 
     hora_inicio: '',
-    hora_inicio: '',
     hora_fin: '',
     observaciones: '' 
   });

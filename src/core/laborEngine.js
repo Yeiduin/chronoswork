@@ -69,7 +69,7 @@ const FIN_DIURNA_H = 19;     // 19:00
  * Determina si una fecha cae en el período A (Ene-Jun) o B (Jul-Dic) del 2026
  */
 export function getPeriodo2026(fecha) {
-  const mes = new Date(fecha).getMonth() + 1; // 1-12
+  const mes = new Date(fecha).getUTCMonth() + 1; // 1-12 (UTC: coherente con strings ISO "...T22:00:00Z")
   return mes <= 6 ? 'A' : 'B';
 }
 
@@ -91,9 +91,12 @@ export function esNocturna(hora) {
  * @param {number} [horasExtrasAcumuladas=0] - Horas extras ya acumuladas en la semana
  * @param {number} [breakMinutes=0] - Minutos de descanso a descontar del turno
  * @param {Array<string>} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
+ * @param {number} [maxHorasSemanales=MAX_HORAS_SEMANALES] - Límite de horas
+ *   ordinarias semanales según el tipo de contrato (42 general, 30 para POR_HORAS).
+ *   Si se omite, usa el default legal de 42h (Ley 2101/2021).
  * @returns {ClasificacionTurno} Objeto con horas clasificadas por concepto legal
  */
-export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0, horasExtrasAcumuladas = 0, breakMinutes = 0, festivos = []) {
+export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0, horasExtrasAcumuladas = 0, breakMinutes = 0, festivos = [], maxHorasSemanales = MAX_HORAS_SEMANALES) {
   const inicio = new Date(startISO);
   const fin = new Date(endISO);
 
@@ -105,36 +108,39 @@ export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0,
     advertencias: [],
   };
 
-  // Generar fronteras para dividir el turno
+  // Generar fronteras para dividir el turno.
+  // ⚠️ Usar getUTC*/setUTC* porque los timestamps ISO guardan la "hora de reloj"
+  // en UTC (ej: 22:00 local → "...T22:00:00Z"). getHours() aplicaría el offset
+  // del navegador (UTC-5 en Colombia) y clasificaría 22:00Z como 17:00 → diurno.
   const boundaries = new Set();
   boundaries.add(inicio.getTime());
   boundaries.add(fin.getTime());
 
-  // Medianoches
+  // Medianoches (00:00 UTC de cada día que cruza el turno)
   let curr = new Date(inicio);
-  curr.setHours(0, 0, 0, 0);
-  curr.setDate(curr.getDate() + 1);
+  curr.setUTCHours(0, 0, 0, 0);
+  curr.setUTCDate(curr.getUTCDate() + 1);
   while (curr < fin) {
     boundaries.add(curr.getTime());
-    curr.setDate(curr.getDate() + 1);
+    curr.setUTCDate(curr.getUTCDate() + 1);
   }
 
-  // 06:00
+  // 06:00 UTC (frontera inicio diurna)
   curr = new Date(inicio);
-  curr.setHours(6, 0, 0, 0);
-  if (curr <= inicio) curr.setDate(curr.getDate() + 1);
+  curr.setUTCHours(6, 0, 0, 0);
+  if (curr <= inicio) curr.setUTCDate(curr.getUTCDate() + 1);
   while (curr < fin) {
     boundaries.add(curr.getTime());
-    curr.setDate(curr.getDate() + 1);
+    curr.setUTCDate(curr.getUTCDate() + 1);
   }
 
-  // 19:00
+  // 19:00 UTC (frontera inicio nocturna)
   curr = new Date(inicio);
-  curr.setHours(19, 0, 0, 0);
-  if (curr <= inicio) curr.setDate(curr.getDate() + 1);
+  curr.setUTCHours(19, 0, 0, 0);
+  if (curr <= inicio) curr.setUTCDate(curr.getUTCDate() + 1);
   while (curr < fin) {
     boundaries.add(curr.getTime());
-    curr.setDate(curr.getDate() + 1);
+    curr.setUTCDate(curr.getUTCDate() + 1);
   }
 
   const sortedBoundaries = Array.from(boundaries).sort((a, b) => a - b);
@@ -153,7 +159,7 @@ export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0,
       duration: durationHours,
       domingo: esDominicalOFestivo(mid, festivos),
       periodo: getPeriodo2026(mid),
-      nocturna: esNocturna(mid.getHours())
+      nocturna: esNocturna(mid.getUTCHours())
     });
   }
 
@@ -190,8 +196,8 @@ export function clasificarTurno(startISO, endISO, horasOrdinariasAcumuladas = 0,
     let ordToAssign = 0;
     let extToAssign = 0;
 
-    if (horasOrdActual < MAX_HORAS_SEMANALES) {
-      const espacioOrdinario = MAX_HORAS_SEMANALES - horasOrdActual;
+    if (horasOrdActual < maxHorasSemanales) {
+      const espacioOrdinario = maxHorasSemanales - horasOrdActual;
       if (intv.duration <= espacioOrdinario) {
         ordToAssign = intv.duration;
       } else {
@@ -351,9 +357,17 @@ export function calcularTotalBruto(desglose) {
  * @param {Array<{start_time: string, end_time: string, break_minutes?: number}>} turnos - Array de turnos con timestamps ISO 8601
  * @param {number} valorHoraBase - Valor hora ordinaria pactada del empleado
  * @param {Array<string>} [festivos=[]] - Array de fechas 'YYYY-MM-DD' con festivos
+ * @param {string} [tipoContrato='INDEFINIDO'] - Tipo de contrato del empleado.
+ *   'POR_HORAS' usa límite de 30h/sem para horas extras; resto usa 42h (Ley 2101).
  * @returns {ResumenEmpleado} Resumen completo con clasificación, desglose y totales
  */
-export function procesarTurnosEmpleado(turnos, valorHoraBase, festivos = []) {
+export function procesarTurnosEmpleado(turnos, valorHoraBase, festivos = [], tipoContrato = 'INDEFINIDO') {
+  // Límite de horas ordinarias semanales según tipo de contrato:
+  // POR_HORAS → 30h/sem (Art. 47 CST), resto → 42h (Ley 2101/2021).
+  // Sin esto, un empleado POR_HORAS que trabaja 35h recibe 35h ordinarias
+  // (no extras) porque 35 < 42, cuando debería recibir 30h ord + 5h extras.
+  const maxHorasSemanales = tipoContrato === 'POR_HORAS' ? 30 : MAX_HORAS_SEMANALES;
+
   let horasOrdAcumuladas = 0;
   let horasExtAcumuladas = 0;
 
@@ -377,7 +391,8 @@ export function procesarTurnosEmpleado(turnos, valorHoraBase, festivos = []) {
       horasOrdAcumuladas, 
       horasExtAcumuladas, 
       turno.break_minutes || 0,
-      festivos
+      festivos,
+      maxHorasSemanales
     );
 
     // Acumular resultados

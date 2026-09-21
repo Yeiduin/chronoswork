@@ -49,10 +49,22 @@ describe('validarValorHora', () => {
     expect(validarValorHora('15000')).toEqual({ valid: true });
   });
 
-  it('rechaza valor menor a 5000', () => {
+  it('rechaza valor menor al SMLV/hora legal', () => {
     const result = validarValorHora('1000');
     expect(result.valid).toBe(false);
-    expect(result.message).toContain('$5.000');
+    // El umbral ahora usa SMLV_HORA_2025 (5180) en vez del hardcoded 5000
+    expect(result.message).toContain('$5.180');
+  });
+
+  it('rechaza valor entre 5000 y 5180 (gap del viejo hardcodeo)', () => {
+    // Antes del fix, 5100 pasaba la validación (estaba bajo el SMLV legal)
+    const result = validarValorHora('5100');
+    expect(result.valid).toBe(false);
+  });
+
+  it('acepta valor exactamente en el SMLV/hora', () => {
+    const result = validarValorHora('5180');
+    expect(result.valid).toBe(true);
   });
 
   it('rechaza valor mayor a 2 millones', () => {
